@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Firmware Update</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#F3F2F1; --surface:#FFFFFF; --surface-2:#FAF9F8;
+  --ink:#201F1E; --ink-muted:#605E5C; --rule:#E1DFDD;
+  --accent:#0078D4; --accent-dark:#005A9E;
+  --good:#107C10; --danger:#A4262C;
+  --sans:'Segoe UI',-apple-system,BlinkMacSystemFont,Roboto,Helvetica,Arial,sans-serif;
+  --radius:8px;
+}
+html,body{height:100%;background:var(--bg);color:var(--ink)}
+body{font-family:var(--sans);display:flex;justify-content:center;padding:24px 16px}
+.card{background:var(--surface);border-radius:var(--radius);padding:24px;max-width:420px;width:100%;box-shadow:0 1px 3px rgba(0,0,0,.12)}
+h1{font-size:19px;margin-bottom:4px}
+.back{display:inline-block;margin-bottom:16px;color:var(--accent);text-decoration:none;font-size:14px}
+.sub{color:var(--ink-muted);font-size:13px;margin-bottom:18px;line-height:1.5}
+.ver{background:var(--surface-2);border-radius:var(--radius);padding:10px 14px;font-size:13px;color:var(--ink-muted);margin-bottom:18px}
+.ver b{color:var(--ink);font-weight:600}
+#filePick{display:block;width:100%;padding:16px;border:2px dashed var(--rule);border-radius:var(--radius);text-align:center;cursor:pointer;font-size:15px;color:var(--ink-muted);margin-bottom:14px}
+#filePick.has-file{border-color:var(--accent);color:var(--ink);border-style:solid}
+input[type=file]{display:none}
+button{width:100%;padding:14px;border:none;border-radius:var(--radius);background:var(--accent);color:#fff;font-size:16px;font-weight:600;cursor:pointer}
+button:disabled{background:var(--rule);color:var(--ink-muted);cursor:default}
+button:active:not(:disabled){background:var(--accent-dark)}
+.bar-wrap{height:10px;background:var(--surface-2);border-radius:5px;overflow:hidden;margin-top:16px;display:none}
+.bar{height:100%;width:0%;background:var(--accent);transition:width .2s}
+#msg{margin-top:16px;font-size:15px;line-height:1.5;text-align:center;display:none;padding:14px;border-radius:var(--radius)}
+#msg.ok{display:block;background:#E8F5E8;color:var(--good)}
+#msg.err{display:block;background:#FBE9E9;color:var(--danger)}
+#msg.wait{display:block;background:var(--surface-2);color:var(--ink-muted)}
+</style>
+</head>
+<body>
+<div class="card">
+  <a class="back" href="/">&larr; Back</a>
+  <h1>Update the clock</h1>
+  <div class="sub">Choose the update file you received (its name ends in <b>.jcupdate</b>), then tap Update.
+    The clock restarts by itself, once or twice. It takes about 2 minutes - keep this page open until it says <b>Done</b>.
+    Settings and events stay as they are.</div>
+  <div class="ver">Current version: <b id="curVer">checking...</b></div>
+
+  <label id="filePick" for="fileInput">Tap to choose the update file</label>
+  <input type="file" id="fileInput" accept=".jcupdate,.bin">
+
+  <button id="goBtn" disabled onclick="startUpdate()">Update</button>
+
+  <div class="bar-wrap" id="barWrap"><div class="bar" id="bar"></div></div>
+  <div id="msg"></div>
+</div>
+
+<script>
+function el(id){ return document.getElementById(id); }
+
+let oldVersion = null;   // version before the update
+let newVersion = null;   // version the clock said it is installing (package only)
+let finished = false;
+
+fetch('/api/status').then(r=>r.json()).then(s=>{ oldVersion = s.firmware; el('curVer').textContent = s.firmware || 'unknown'; })
+  .catch(()=>{ el('curVer').textContent = 'unknown'; });
+
+el('fileInput').addEventListener('change', function(){
+  const f = this.files[0];
+  const pick = el('filePick');
+  if (f) { pick.textContent = f.name; pick.classList.add('has-file'); el('goBtn').disabled = false; }
+  else { pick.textContent = 'Tap to choose the update file'; pick.classList.remove('has-file'); el('goBtn').disabled = true; }
+});
+
+function showMsg(text, cls){
+  const m = el('msg');
+  m.textContent = text;
+  m.className = cls;
+}
+
+function fail(text){
+  finished = true;
+  showMsg(text || 'The update failed. Nothing was changed on the clock.', 'err');
+  el('goBtn').disabled = false;
+  el('fileInput').disabled = false;
+}
+
+function startUpdate(){
+  const f = el('fileInput').files[0];
+  if (!f) return;
+  finished = false;
+  newVersion = null;
+  el('goBtn').disabled = true;
+  el('fileInput').disabled = true;
+  el('barWrap').style.display = 'block';
+  showMsg('Sending the update to the clock...', 'wait');
+
+  const data = new FormData();
+  data.append('firmware', f);
+  let sent = false;
+
+  const xhr = new XMLHttpRequest();
+  xhr.upload.addEventListener('progress', function(e){
+    if (e.lengthComputable) el('bar').style.width = Math.round(e.loaded / e.total * 100) + '%';
+  });
+  xhr.upload.addEventListener('load', function(){ sent = true; showMsg('Checking the update file...', 'wait'); });
+  xhr.addEventListener('load', function(){
+    if (xhr.status !== 200) { fail(xhr.responseText); return; }
+    const m = xhr.responseText.match(/Installing version (\d+(?:\.\d+)+)/);   // not the sentence's own full stop
+    newVersion = m ? m[1] : null;
+    showMsg('Installing - the clock is restarting. About 2 minutes; keep this page open.', 'wait');
+    watch();
+  });
+  xhr.addEventListener('error', function(){
+    // The clock restarting can cut the connection right after a successful
+    // upload - then follow it; a failure before the file was sent is real.
+    if (sent) { showMsg('Installing - the clock is restarting. About 2 minutes; keep this page open.', 'wait'); watch(); }
+    else fail('Could not reach the clock. Check this phone/computer is on the same Wi-Fi as the clock, and try again.');
+  });
+  xhr.open('POST', '/update');
+  xhr.send(data);
+}
+
+// Follows the clock through its restart(s) until the outcome is clear:
+// new version confirmed ("ok"), or back on the old version (rolled back).
+// A restart is recognized by the clock's uptime going DOWN - not by waiting
+// for a request to fail: browsers quietly retry a request whose connection
+// broke, and that retry simply succeeds once the clock is back, so a failure
+// may never be seen (found 2026-10-17: the page sat on "Installing" while
+// the clock was long done). Each request also gets STATUS_TIMEOUT_MS, so a
+// hanging one counts as "unreachable" instead of freezing the page.
+const POLL_MS = 2000, STATUS_TIMEOUT_MS = 4000, GIVE_UP_MS = 10 * 60 * 1000;
+function watch(){
+  const startedAt = Date.now();
+  let lastUptime = null, restarted = false;
+  const again = () => setTimeout(tick, POLL_MS);
+  function tick(){
+    if (finished) return;
+    if (Date.now() - startedAt > GIVE_UP_MS) {
+      showMsg('This is taking longer than expected. Wait a few minutes, then reload this page and look at the version shown.', 'err');
+      return;
+    }
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), STATUS_TIMEOUT_MS);
+    fetch('/api/status', { cache: 'no-store', signal: ctl.signal }).then(r => r.json()).then(s => {
+      clearTimeout(timer);
+      if (lastUptime !== null && s.uptimeMs < lastUptime) restarted = true;
+      lastUptime = s.uptimeMs;
+      const v = s.firmware;
+      const settled = s.updateState === 'ok';
+      const newIsRunning = newVersion && v === newVersion && (restarted || v !== oldVersion);
+      if (newIsRunning) {
+        if (settled) { finished = true; el('bar').style.width = '100%'; showMsg('Done! The clock now runs version ' + v + '.', 'ok'); return; }
+        showMsg('The new version has started. The clock now checks that it works properly - about a minute. If anything is wrong, it goes back to the previous version by itself.', 'wait');
+      } else if (newVersion && restarted && v === oldVersion && settled) {
+        finished = true;
+        showMsg("The update didn't take, so the clock went back to the version it had before (" + v + "). Nothing is lost - please let us know.", 'err');
+        return;
+      } else if (!newVersion && restarted && settled) {   // plain firmware file
+        finished = true; el('bar').style.width = '100%'; showMsg('Done! The clock now runs version ' + v + '.', 'ok'); return;
+      }
+      again();
+    }).catch(() => { clearTimeout(timer); restarted = true; again(); });
+  }
+  again();
+}
+</script>
+</body>
+</html>

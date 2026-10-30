@@ -1,0 +1,24 @@
+#pragma once
+// Simulator controls (simulator only - see sim/README.md).
+#include <string>
+#include <ctime>
+
+namespace Sim {
+    extern bool quiet;              // true = the clock's own log lines are not printed
+    extern std::string fsRoot;      // PC folder playing the clock's file system
+    extern std::string httpCacheDir;
+    void advanceMillis(unsigned long ms);
+    void waitForTasks();            // let a running download finish (in zero simulated time)
+    void setTimezone(const char* posix);
+    long utcOffsetAt(time_t utc);   // seconds east of UTC, DST included
+    void setUtc(time_t utc);        // the simulated "now" (sim_modules.cpp)
+    time_t utcNow();
+    // Startup and download timing in simulated ms: random within ranges
+    // measured on the clock (see sim_platform.cpp). startTiming() draws this
+    // run's Wi-Fi-up and time-sync moments; each download draws its own.
+    struct Range { unsigned long lo, hi; };
+    extern Range setupTime, wifiUp, ntpAfterWifi, netMain, netZmanim, netGeo;
+    extern unsigned long setupMs, wifiUpMs, ntpSyncMs;
+    void startTiming(uint32_t seed);
+    void pinTiming(const std::string& name, unsigned long ms);   // "main#2" (2nd main download) or "main" (all)
+}

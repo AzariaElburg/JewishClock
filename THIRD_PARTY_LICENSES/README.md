@@ -1,0 +1,35 @@
+# Third-party font licenses
+
+The clock's font (`include/Font.h`) is drawn from one external font. Its
+exact, unmodified license text is kept here (from the font's own
+repository) so the required copyright notices and license terms travel
+with the source, not just as an external link that could go stale.
+
+## Noto Sans Hebrew (all characters: Latin, digits, Hebrew)
+
+- File: `NotoSansHebrew-OFL.txt` (SIL Open Font License 1.1)
+- Source: https://github.com/notofonts/hebrew (font file used:
+  `assets/fonts/NotoSansHebrew-Variable.ttf`, from Google Fonts' repository)
+- Copyright 2022 The Noto Project Authors
+- `utils/generate_font.py` renders it (Bold, narrowed, the colon smaller)
+  into the clock's own 4-bit pixel format - since 2026-10-21. Before that:
+  Assistant ExtraBold (2026-10-20, OFL), and before that the pixel fonts
+  Spleen (Latin, BSD 2-Clause) and Terminus (Hebrew, OFL); their files left
+  with them (git history has all of them).
+
+## What this means in practice for this project
+
+The OFL explicitly permits what this project does: converting the glyphs
+into a custom pixel-data format and embedding them in firmware, including
+firmware that gets built, flashed, shared, or otherwise distributed. Two
+things to keep in mind going forward:
+
+- **Don't distribute the converted glyph data (or this repo's `Font.h`) as
+  a standalone "font product" on its own.** Embedded inside this project
+  (or any larger project) is fine.
+- **If the glyphs are ever turned back into an installable font file and
+  redistributed**, check the OFL's Reserved Font Name rules for the name it
+  may carry.
+
+Keep this folder, and the attribution comment at the top of `include/Font.h`,
+intact if the font data in `Font.h` is ever changed again.

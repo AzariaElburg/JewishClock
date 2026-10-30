@@ -1,0 +1,84 @@
+<!doctype html>
+<!-- Draws the clock's characters in the chosen font, antialiased, for
+     utils/generate_font.py (which serves this page, runs it in headless Edge
+     and writes include/Font.h). The browser is the font renderer here. -->
+<html><head><meta charset="utf-8">
+</head><body><pre id="out"></pre>
+<script>
+const P = new URLSearchParams(location.search);
+// The font file (generate_font.py's FONT_FILE), loaded as "ClockFont".
+const face = document.createElement('style');
+face.textContent = '@font-face { font-family: "ClockFont"; src: url("/' + P.get('font') + '"); font-weight: 100 900; }';
+document.head.append(face);
+const WEIGHT = +(P.get('weight') || 800);
+const LETTER_H = +(P.get('letterH') || 40);     // Hebrew letter height (א), px - as the old font
+const BASE = +(P.get('base') || 52);            // baseline: the row below the last ink row of א
+const COLON_SCALE = +(P.get('colonScale') || 0.7);
+const OLD_INK = JSON.parse(P.get('oldInk') || '{}');   // old font's ink widths, to match its width
+const CPS = (P.get('cps') || '').split(',').map(Number);
+const ROWS = +(P.get('rows') || 64), PAD = 40;
+
+function fontAt(size) { return WEIGHT + ' ' + size + 'px "ClockFont"'; }
+// Coverage (0..1) of one character, drawn with its baseline at BASE.
+function draw(ch, size, sx, scale = 1, dy = 0) {
+  const c = document.createElement('canvas'); c.width = 200; c.height = ROWS;
+  const g = c.getContext('2d');
+  g.font = fontAt(size); g.fillStyle = '#fff'; g.textBaseline = 'alphabetic';
+  g.setTransform(sx * scale, 0, 0, scale, PAD, BASE + dy);
+  g.fillText(ch, 0, 0);
+  const d = g.getImageData(0, 0, c.width, ROWS).data;
+  const a = new Float32Array(c.width * ROWS);
+  for (let i = 0; i < a.length; i++) a[i] = d[i * 4 + 3] / 255;
+  return { a, w: c.width };
+}
+function ink(r) {
+  let x0 = 1e9, x1 = -1, y0 = 1e9, y1 = -1;
+  for (let y = 0; y < ROWS; y++) for (let x = 0; x < r.w; x++) if (r.a[y * r.w + x] >= 1 / 30) {
+    x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+  }
+  return x1 < 0 ? null : { x0, x1, y0, y1 };
+}
+async function main() {
+  await document.fonts.load(fontAt(40), 'אב05:Aa');
+  // Size: Hebrew letters LETTER_H tall.
+  const m = (() => { const g = document.createElement('canvas').getContext('2d'); g.font = fontAt(100); return g.measureText('א'); })();
+  const size = 100 * LETTER_H / (m.actualBoundingBoxAscent + m.actualBoundingBoxDescent);
+  // Width: fixed by the script, or Hebrew letters as wide, in total, as the old font's.
+  let sx = +(P.get('sx') || 0);
+  if (!sx) {
+    let oldW = 0, newW = 0;
+    for (let cp = 0x5D0; cp <= 0x5EA; cp++) {
+      if (!OLD_INK[cp]) continue;
+      const e = ink(draw(String.fromCodePoint(cp), size, 1));
+      if (e) { oldW += OLD_INK[cp]; newW += e.x1 - e.x0 + 1; }
+    }
+    sx = oldW / newW;
+  }
+  // The colon: smaller, centred on the digits' height (the user, 2026-10-20).
+  const zero = ink(draw('0', size, sx));
+  const glyphs = {}, warn = [];
+  for (const cp of CPS) {
+    const ch = String.fromCodePoint(cp);
+    let r = draw(ch, size, sx);
+    // A character reaching above the cell (Assistant's backtick): moved down to fit.
+    for (let dy = 2; ink(r) && ink(r).y0 === 0 && dy <= 20; dy += 2) r = draw(ch, size, sx, 1, dy);
+    if (cp === 58) {
+      const e0 = ink(draw(ch, size, sx, COLON_SCALE));
+      const want = (zero.y0 + zero.y1) / 2, have = (e0.y0 + e0.y1) / 2;
+      r = draw(ch, size, sx, COLON_SCALE, Math.round(want - have));
+    }
+    const e = ink(r);
+    if (!e) { glyphs[cp] = { w: 0, rows: [] }; continue; }
+    if (e.y0 === 0 || e.y1 === ROWS - 1) warn.push(ch + ' touches the cell top/bottom');
+    const rows = [];
+    for (let y = 0; y < ROWS; y++) {
+      let s = '';
+      for (let x = e.x0; x <= e.x1; x++) s += Math.round(r.a[y * r.w + x] * 15).toString(16);
+      rows.push(s);
+    }
+    glyphs[cp] = { w: e.x1 - e.x0 + 1, top: e.y0, bottom: e.y1, rows };
+  }
+  document.getElementById('out').textContent = JSON.stringify({ size, sx, weight: WEIGHT, colonScale: COLON_SCALE, warn, glyphs });
+}
+main();
+</script></body></html>

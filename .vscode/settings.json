@@ -1,0 +1,7 @@
+{
+    // The PlatformIO extension runs the OFFICIAL PlatformIO, which must never
+    // handle firmware 2.x (pioarduino, built in C:\pio3 - see CLAUDE.md).
+    // The project file is pioarduino.ini (not platformio.ini) so the extension
+    // doesn't see a project here at all; this setting stays as a second guard.
+    "platformio-ide.autoRebuildAutocompleteIndex": false
+}
