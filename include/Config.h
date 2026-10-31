@@ -138,8 +138,8 @@ static constexpr uint16_t TFT_HEIGHT = 128;
 // was permanent: a full frame now takes ~30 ms to send instead of ~55 ms
 // at 20 MHz. (Back on the earlier temporary wiring, 40 MHz left the screen
 // blank - if that ever happens again, suspect the wiring and drop to 20.)
-// Settings -> Advanced -> "Screen connection test" switches speed live,
-// until the next restart, to compare without reflashing.
+// (A live speed switch in Settings -> Advanced never took effect and was
+// removed 2026-10-26 - changing the speed means changing it here and reflashing.)
 // 80 MHz since 2026-10-26 (the chip datasheet allows a 12.5 ns write cycle,
 // docs/hardware/NV3041A_chip_datasheet_V1.2 8.3.2): picture clean (user),
 // whole frame 23.4 ms instead of 35.8 ms. The live speed switch in Advanced

@@ -1,4 +1,14 @@
-# Third-party font licenses
+# Third-party licenses
+
+Exact license texts of everything in the firmware made by others (libraries,
+framework parts, the font, SortableJS), copied from each project or from the
+framework's own source headers (2026-10-31). `utils/make_licenses.py` turns
+them into `Data/licenses.txt`, which the clock serves (Settings > Clock
+software > Licenses) and every update package carries. The list of parts,
+and the online data services with their terms, is in that script - edit it
+there and rerun it when a library, the framework, the font or a service changes.
+
+## The font
 
 The clock's font (`include/Font.h`) is drawn from one external font. Its
 exact, unmodified license text is kept here (from the font's own

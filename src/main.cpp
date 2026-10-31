@@ -275,10 +275,10 @@ void loop() {
 
     if (doLog) lastLogMs = now;
 
-    // --- Temporary diagnostic (restored from the 2026-09-30 investigation's
-    // own checkpoint, commit 33bd2f7 - same tool, same purpose: find out
-    // whether any single loop() step is taking long enough to plausibly
-    // delay the web server's request handling). Threshold: SLOW_STEP_US.
+    // --- Permanent diagnostic (CLAUDE.md, "Never run a blocking call"): logs
+    // any loop() step slow enough to stall the screen or the web server.
+    // Removed once and the bug it catches came back - keep it. First added
+    // in the 2026-09-30 investigation (commit 33bd2f7). Threshold: SLOW_STEP_US.
     uint32_t __loopStartUs = micros();
     #define TIMED_STEP(label, code) do { \
         uint32_t __stepStartUs = micros(); \
@@ -378,7 +378,7 @@ void loop() {
     TIMED_STEP("DiagnosticLog::loop", DiagnosticLog::loop());
     TIMED_STEP("Storage::loop", Storage::loop(g_cfg));
 
-    // --- Temporary diagnostic: total loop() time, same SLOW_STEP_US threshold.
+    // --- Permanent diagnostic: total loop() time, same SLOW_STEP_US threshold.
     uint32_t __loopTotalUs = micros() - __loopStartUs;
     if (__loopTotalUs > SLOW_STEP_US) DiagnosticLog::record("Timing", "SLOW LOOP: total %u us", __loopTotalUs);
     #undef TIMED_STEP

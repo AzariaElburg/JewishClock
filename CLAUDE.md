@@ -103,7 +103,9 @@ re-telling the story.
   itself is ever broken: `http://<clock>/update-safe` (built into firmware).
   Tested 2026-10-17: good update, crash at startup, no Wi-Fi - all correct.
 - Library versions in `pioarduino.ini` are exact on purpose; upgrade one
-  deliberately and test it on the clock, never via a `^` range.
+  deliberately and test it on the clock, never via a `^` range. After adding,
+  removing or upgrading a library (or the framework, font, an online service):
+  `python utils/make_licenses.py` (2026-10-31; see THIRD_PARTY_LICENSES/README.md).
 - **Firmware 2.x builds with a separate PlatformIO** (2026-10-18). 2.0 moved
   to Arduino-ESP32 3.x (ESP-IDF 5.5, 64-bit time - see the gotcha below),
   which only the community **pioarduino** platform supports. Its platform

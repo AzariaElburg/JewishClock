@@ -608,6 +608,10 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
     g_server->on("/sortable.min.js", HTTP_GET, [](AsyncWebServerRequest *req)
                  { req->send(LittleFS, "/sortable.min.js", "application/javascript"); }).setFilter(ON_ANY_INCL_SETUP_FILTER);
 
+    // Third-party licenses (utils/make_licenses.py) - streamed from the file, ~100 KB.
+    g_server->on("/licenses.txt", HTTP_GET, [](AsyncWebServerRequest *req)
+                 { req->send(LittleFS, "/licenses.txt", "text/plain; charset=utf-8"); }).setFilter(ON_ANY_INCL_SETUP_FILTER);
+
     // The page in restore-only view (it checks its own address): "Restore
     // from backup" on the setup page links here - a factory-new clock, put
     // back in one step from an Excel backup (settings incl. Wi-Fi, events,
@@ -1219,9 +1223,6 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
 
     g_server->on("/api/calendar", HTTP_GET, [](AsyncWebServerRequest *req)
                  {
-        // TEMPORARY timing instrumentation (calendar-load-latency investigation)
-        unsigned long __t0 = millis();
-        CLOCK_LOG("WebUI", "[Timing] ENTER /api/calendar");
         JsonDocument doc;
         const DayInfo& today = Calendar::getToday();
         doc["hebrewDate"]   = Calendar::formatUserHebrewDate(today.hebrewDateStr);
@@ -1241,7 +1242,6 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
                   today.parashaHebrew[0] ? today.parashaHebrew : "empty",
                   today.dafYomi[0]       ? today.dafYomi       : "empty",
                   today.mishnaYomit[0]   ? today.mishnaYomit   : "empty");
-        CLOCK_LOG("WebUI", "[Timing] EXIT /api/calendar after %lu ms (handler-internal)", millis() - __t0);
         WebUI::sendJson(req, doc); }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
 
     // ── /api/calendar/refresh (POST) ──────────────────────────────────────────

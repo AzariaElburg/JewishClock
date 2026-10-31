@@ -59,6 +59,15 @@ def find_clock(addresses, max_s):
     return False
 
 
+def emptied(folder):
+    """The folder, existing and empty. Emptied rather than deleted: OneDrive marks
+    pinned folders read-only, so removing the folder itself fails (2026-10-31)."""
+    folder.mkdir(exist_ok=True)
+    for p in folder.iterdir():
+        shutil.rmtree(p) if p.is_dir() else p.unlink()
+    return folder
+
+
 def pre():
     print("note:", note("Data flashing initiated"))
     backup = json.loads(get("/api/backup", 60).decode("utf-8"))
@@ -86,11 +95,10 @@ def pre():
     (data / "log" / "diagnostic_log.txt").write_bytes(diag)
 
     # Event pictures: Data/images (or, from older firmware, Data/photos).
-    for old in ("photos", "images"):
-        shutil.rmtree(data / old, ignore_errors=True)
+    shutil.rmtree(data / "photos", ignore_errors=True)
+    emptied(data / "images")
     try:
         images = json.loads(get("/api/images/list", 60).decode("utf-8"))
-        (data / "images").mkdir()
         for im in images:
             (data / "images" / (im["id"] + ".bmp")).write_bytes(get("/api/images/get?id=" + im["id"], 30))
         print("pictures copied:", len(images))
@@ -103,12 +111,11 @@ def pre():
         print("photos copied (old firmware):", len(photos))
 
     # The clock's own pictures the family replaced: Data/custom.
-    shutil.rmtree(data / "custom", ignore_errors=True)
+    emptied(data / "custom")
     try:
         builtin = json.loads(get("/api/builtin/list", 60).decode("utf-8"))
         custom = [p["name"] for p in builtin["pictures"] if p.get("custom")]
         if custom:
-            (data / "custom").mkdir()
             for name in custom:
                 (data / "custom" / (name + ".bmp")).write_bytes(get("/api/builtin/get?which=custom&name=" + name, 60))
         print("replaced built-in pictures copied:", len(custom))
