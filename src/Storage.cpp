@@ -192,6 +192,8 @@ void Storage::applyDefaults(AppConfig& cfg) {
     cfg.showLiturgical        = true;
     cfg.showSwitchoverPhrases = true;
     cfg.switchoverWindowDays  = SWITCHOVER_DISPLAY_DAYS;
+    cfg.nusach                = NUSACH_DEFAULT;
+    cfg.eventDayChange        = EVENT_DAY_CHANGE_DEFAULT;
     cfg.showAllMessages       = true;
 
     // Default order matches the historical hardcoded build order in
@@ -353,6 +355,8 @@ bool Storage::loadConfig(AppConfig& cfg) {
     cfg.showSpecialShabbat    = doc["showSpecialShabbat"] | true;
     cfg.showLiturgical        = doc["showLiturgical"]     | true;
     cfg.showSwitchoverPhrases = doc["showSwitchover"]     | true;
+    cfg.nusach                = doc["nusach"].as<int>() == 1 ? Nusach::Sefard : Nusach::Ashkenaz;
+    cfg.eventDayChange        = doc["eventDayChange"].as<int>() == 1 ? EventDayChange::Midnight : EventDayChange::WithHebrewDay;
     cfg.switchoverWindowDays  = doc["prayerSwitchDays"]   | SWITCHOVER_DISPLAY_DAYS;   // new key (2026-10-17): the old "switchoverDays" was an unused setting whose saved 0 meant something else
     cfg.showAllMessages       = doc["showAll"]            | true;
 
@@ -517,6 +521,8 @@ bool Storage::saveConfig(const AppConfig& cfg) {
     doc["showLiturgical"]     = cfg.showLiturgical;
     doc["showSwitchover"]     = cfg.showSwitchoverPhrases;
     doc["prayerSwitchDays"]   = cfg.switchoverWindowDays;
+    doc["nusach"]             = static_cast<int>(cfg.nusach);
+    doc["eventDayChange"]     = static_cast<int>(cfg.eventDayChange);
     doc["showAll"]            = cfg.showAllMessages;
 
     JsonArray orderArr = doc["contentOrder"].to<JsonArray>();

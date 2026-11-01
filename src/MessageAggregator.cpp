@@ -109,51 +109,38 @@ static long getTodayAbsolute() {
     return JewishDateEngine::gregorianToAbsolute(dt.year, dt.month, dt.day);
 }
 
-static int getEventOffsetDays(const PersonalEvent& event, int& age) {
-    age = -1; // Default: no age
+static bool nextOccurrence(const PersonalEvent& ev, bool hebrew, long todayAbs, long& outAbs, int& outAge);
+
+// Days until an event's next date (0 = today), the age then (-1 = no year)
+// and whether that date is its Hebrew one. An event with both dates counts
+// from whichever comes first; on a tie, the Gregorian one. Only coming dates
+// count: until 2026-11-01 the nearest date counted even if it had passed - a
+// Gregorian birthday yesterday then hid a Hebrew one's advance warning.
+// hebrewTodayAbs: "today" for the Hebrew date - the Hebrew day as the clock
+// shows it (changes at the rollover, צאת הכוכבים), or the civil day
+// (EventDayChange::Midnight, or Hebrew date unknown: 0). Gregorian dates
+// always count from the civil day.
+static int getEventOffsetDays(const PersonalEvent& event, long hebrewTodayAbs, int& age, bool& hebrewDate) {
+    age = -1;
+    hebrewDate = false;
     long todayAbs = getTodayAbsolute();
     if (todayAbs <= 0) return INT_MAX;
+    long hebToday = hebrewTodayAbs > 0 ? hebrewTodayAbs : todayAbs;
 
-    int curY, curM, curD, curHY, curHM, curHD;
-    JewishDateEngine::absoluteToGregorian(todayAbs, curY, curM, curD);
-    JewishDateEngine::absoluteToHebrew(todayAbs, curHY, curHM, curHD);
-
-    int bestOffset = INT_MAX;
-
-    if (event.hasGregorian) {
-        // Check Gregorian recurrence (last year, this year, next year)
-        int candidates[] = {curY - 1, curY, curY + 1};
-        for (int y : candidates) {
-            long absEvt = JewishDateEngine::gregorianToAbsolute(y, event.gMonth, event.gDay);
-            int diff = (int)(absEvt - todayAbs);
-            if (abs(diff) < abs(bestOffset)) {
-                bestOffset = diff;
-                if (event.gYear > 0) age = y - event.gYear;
-            }
-        }
+    int best = INT_MAX;
+    long abs; int a;
+    if (event.hasGregorian && nextOccurrence(event, false, todayAbs, abs, a)) {
+        best = (int)(abs - todayAbs);
+        age = a;
     }
-
-    if (event.hasJewish) {
-        // Check Hebrew recurrence. Yahrzeits and birthdays/other resolve the
-        // Cheshvan/Kislev-30 and Adar-I/II questions differently - see the
-        // comments on JewishDateEngine::resolveYahrzeit / resolveBirthdayOrAnniversary.
-        HebrewDate original = { event.jYear, event.jMonth, event.jDay };
-        bool isYahrzeit = strcmp(event.type, "yahrzeit") == 0;
-        int candidates[] = {curHY - 1, curHY, curHY + 1};
-        for (int y : candidates) {
-            HebrewDate resolved = isYahrzeit
-                ? JewishDateEngine::resolveYahrzeit(y, original)
-                : JewishDateEngine::resolveBirthdayOrAnniversary(y, original);
-            long absEvt = JewishDateEngine::hebrewToAbsolute(resolved.year, resolved.month, resolved.day);
-            int diff = (int)(absEvt - todayAbs);
-            if (abs(diff) < abs(bestOffset)) {
-                bestOffset = diff;
-                if (event.jYear > 0) age = y - event.jYear;
-            }
-        }
+    // Yahrzeits and birthdays/other resolve the Cheshvan/Kislev-30 and
+    // Adar-I/II questions differently - see nextOccurrence().
+    if (event.hasJewish && nextOccurrence(event, true, hebToday, abs, a) && (int)(abs - hebToday) < best) {
+        best = (int)(abs - hebToday);
+        age = a;
+        hebrewDate = true;
     }
-
-    return bestOffset;
+    return best;
 }
 
 void MessageAggregator::begin(const AppConfig& cfg, const EventList& events) {
@@ -418,15 +405,23 @@ static String eventIconPath(const char* icon) {
     return String();
 }
 
+// " בעוד 3 ימים" - an event's reminder, or "" on the day itself.
+static String formatEventReminder(int diffDays, const DisplayStrings& strings) {
+    if (diffDays <= 0) return String();
+    return String(" ") + strings.omerIn + " " + String(diffDays) + " " + (diffDays == 1 ? strings.daySingular : strings.dayPlural);
+}
+
 // "🎂 Name (33)", or with a reminder "... בעוד 3 ימים". age < 0 = no age.
 // withIcon = false: without the icon (it is shown as a picture instead).
+// withReminder = false: without the reminder (appendEvent() puts the
+// Hebrew-date star between the two).
 static String formatEventLabel(const PersonalEvent& ev, int age, int diffDays, const DisplayStrings& strings,
-                               bool withIcon = true) {
+                               bool withIcon = true, bool withReminder = true) {
     char iconBuf[sizeof(ev.icon) + 2] = "";   // the icon (up to 31 bytes) + a space
     if (withIcon && ev.icon[0]) snprintf(iconBuf, sizeof(iconBuf), "%s ", ev.icon);
     String label = String(iconBuf) + ev.name;
     if (age >= 0) label += " (" + String(age) + ")";
-    if (diffDays > 0) label += String(" ") + strings.omerIn + " " + String(diffDays) + " " + (diffDays == 1 ? strings.daySingular : strings.dayPlural);
+    if (withReminder) label += formatEventReminder(diffDays, strings);
     return label;
 }
 
@@ -445,13 +440,17 @@ static const char* defaultEventIcon(const char* type) {
 // has one the screen can show, otherwise its icon (decided 2026-10-21: the
 // image replaces the icon; the icon is the fallback). Several events of a
 // day are glued on after ", ".
+// hebrewDate: its Hebrew date brought it to the screen - on an event with
+// both dates, a small Star of David after the age says so (2026-11-01; the
+// Gregorian date gets no mark; utils/generate_star.py).
 static void appendEvent(std::vector<OnScreenElement>& out, const PersonalEvent& ev, int age, int diffDays,
-                        const DisplayStrings& strings) {
+                        const DisplayStrings& strings, bool hebrewDate = false) {
     if (!out.empty()) {   // every event ends with its text element
         bool glued = out.back().glueToPrevious;
         out.back() = textElement(out.back().content + ", ");
         out.back().glueToPrevious = glued;
     }
+    const bool star = hebrewDate && ev.hasJewish && ev.hasGregorian;
     String picture = ev.image[0] ? imagePath(ev.image) : String();
     bool ownImage = picture.length() && DisplayManager::hasImage(picture.c_str());
     if (!ownImage) {
@@ -465,9 +464,19 @@ static void appendEvent(std::vector<OnScreenElement>& out, const PersonalEvent& 
     }
     // No picture at all: the icon stays in the text (a typed text icon).
     OnScreenElement t = textElement(String(picture.length() ? " " : "") +
-                                    formatEventLabel(ev, age, diffDays, strings, picture.length() == 0));
+                                    formatEventLabel(ev, age, diffDays, strings, picture.length() == 0, !star) +
+                                    (star ? " " : ""));
     t.glueToPrevious = !out.empty();
     out.push_back(t);
+    if (star) {
+        OnScreenElement mark(OnScreenElementType::STATIC_IMAGE, builtinImage("HebrewDate"), FONT_H);
+        mark.glueToPrevious = true;
+        out.push_back(mark);
+        // the reminder after it - and the text element every event ends with
+        OnScreenElement rest = textElement(formatEventReminder(diffDays, strings));
+        rest.glueToPrevious = true;
+        out.push_back(rest);
+    }
 }
 
 // Examples (he): "צום: מחר 05:10-19:03" (day before), "צום: 05:10-19:03"
@@ -542,13 +551,17 @@ static std::vector<OnScreenElement> buildContentType(ContentType type, size_t pa
     case ContentType::Events: {
     // Personal Events
     if (s_events && !s_events->empty()) {
+        const DayInfo& hd = Calendar::getToday();
+        long hebrewTodayAbs = (cfg.eventDayChange == EventDayChange::WithHebrewDay && hd.hYear > 0)
+            ? JewishDateEngine::hebrewToAbsolute(hd.hYear, hd.hMonth, hd.hDay) : 0;
         EventsLock::take();
         for (const auto& ev : *s_events) {
             int age = -1;
-            int diffDays = getEventOffsetDays(ev, age);
+            bool hebrewDate = false;
+            int diffDays = getEventOffsetDays(ev, hebrewTodayAbs, age, hebrewDate);
 
             if (diffDays < 0 || diffDays > ev.warningDays) continue;
-            appendEvent(out, ev, age, diffDays, strings);
+            appendEvent(out, ev, age, diffDays, strings, hebrewDate);
         }
         EventsLock::give();
     }
@@ -632,12 +645,26 @@ static std::vector<OnScreenElement> buildContentType(ContentType type, size_t pa
     out.push_back(textElement(formatFast(f, strings)));   // examples: see formatFast()
     break; }
     case ContentType::PrayerSwitch: {
-    // "משיב הרוח מ-מחר", "מוריד הטל מהיום", ... - or, with the window set to
-    // 0, just the phrase, on the switch day only.
-    PrayerSwitchNotice p = Calendar::getPrayerSwitch(cfg.switchoverWindowDays);
-    if (!p.phrase) break;
-    String msg = p.phrase;
-    if (cfg.switchoverWindowDays > 0) msg += String(" ") + strings.prayerSwitchWhen[p.daysFromSwitch + 2];
+    // "משיב הרוח מ-מחר", "משיב הרוח ממוסף מחר" (from צאת the evening before),
+    // "משיב הרוח ממוסף", "משיב הרוח מ-אתמול". The rain request: "ותן טל ומטר
+    // מהערב" (it starts at Maariv). At Pesach both switch at Musaf of the
+    // same day: "מוריד הטל, ותן ברכה ממוסף".
+    const long civilAbs = getTodayAbsolute();
+    PrayerSwitchNotice p = Calendar::getPrayerSwitch(cfg.switchoverWindowDays, cfg.nusach, cfg.inIsrael, civilAbs);
+    RainRequestNotice r = Calendar::getRainRequest(cfg.switchoverWindowDays, cfg.nusach, cfg.inIsrael, civilAbs);
+    String pWhen = !p.phrase ? String() : p.daysFromSwitch == 0 ? String(strings.prayerSwitchMusaf[p.musafTomorrow ? 1 : 0])
+                                                                : String(strings.prayerSwitchWhen[p.daysFromSwitch + 2]);
+    String rWhen = !r.phrase ? String() : r.evening ? String(strings.prayerSwitchEvening[r.eveningsAhead])
+                                        : r.atMusaf ? String(strings.prayerSwitchMusaf[r.musafTomorrow ? 1 : 0])
+                                                    : String(strings.prayerSwitchWhen[r.daysFromSwitch + 2]);
+    String msg;
+    if (p.phrase && r.phrase && pWhen == rWhen) {
+        msg = String(p.phrase) + ", " + r.phrase + " " + rWhen;
+    } else {
+        if (p.phrase) msg = String(p.phrase) + " " + pWhen;
+        if (r.phrase) msg += String(msg.length() ? ", " : "") + r.phrase + " " + rWhen;
+    }
+    if (!msg.length()) break;
     out.emplace_back(OnScreenElementType::TEXT, msg, _measureString(msg.c_str()));
     break; }
     case ContentType::GregorianDate: {
@@ -758,8 +785,10 @@ static std::vector<std::vector<OnScreenElement>> buildDemoSlides(const AppConfig
     text(formatOmer(23, omerFull, OmerMode::FullText, strings));
 
     // Rain / dew prayer.
-    text(String("משיב הרוח ") + strings.prayerSwitchWhen[1]);
-    text(String("מוריד הטל ") + strings.prayerSwitchWhen[2]);
+    text(String("משיב הרוח ") + strings.prayerSwitchMusaf[1]);
+    text(String(cfg.nusach == Nusach::Sefard ? "ברך עלינו " : "ותן טל ומטר ") + strings.prayerSwitchEvening[0]);
+    const bool noDew = cfg.nusach == Nusach::Ashkenaz && !cfg.inIsrael;   // see Calendar::getPrayerSwitch()
+    text(String(noDew ? "" : "מוריד הטל, ") + (cfg.nusach == Nusach::Sefard ? "ברכנו " : "ותן ברכה ") + strings.prayerSwitchMusaf[0]);
 
     // Daily learning.
     text(String(strings.dafYomi) + ": נדה מ׳");
@@ -793,7 +822,7 @@ static std::vector<std::vector<OnScreenElement>> buildDemoSlides(const AppConfig
             if (!nextOccurrence(*ev, hebrew, todayAbs, abs, age)) return;
             addDateSlides(slides, abs - daysBefore, cfg, strings);
             std::vector<OnScreenElement> slide;
-            appendEvent(slide, *ev, age, daysBefore, strings);
+            appendEvent(slide, *ev, age, daysBefore, strings, hebrew);
             slides.push_back(slide);
         };
         showOn(hebBday, true, 0);

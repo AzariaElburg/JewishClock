@@ -30,6 +30,13 @@ settings page and travel in every update package, and each later release
 - Display modes: alternating (one item at a time) vs single scroll; speed.
 - Calendar content: which items show, their order, how often (frequency).
 - The day changes at צאת הכוכבים (as printed calendars do) - Chanukah too.
+- Rain/dew in prayer, two separate switches, one slide: משיב הרוח (from Musaf
+  of 22 Tishrei and 15 Nisan - "ממוסף", the evening before "ממוסף מחר") and
+  the request ותן טל ומטר (from Maariv of 7 Cheshvan in Israel, 4/5 December
+  abroad - shown as "from tonight"). Nusach Ashkenaz or Sefard (ברך עלינו /
+  ברכנו); days shown before and after; nothing before Pesach. Israel or abroad
+  follows the place; Ashkenazim abroad get no מוריד הטל (they say nothing) -
+  and no reminder to stop משיב הרוח (known gap, docs/rain_dew_abroad.md).
 - Brightness: fixed or automatic (light sensor); night/day levels; learning the room.
 
 **Wi-Fi and place**
@@ -42,6 +49,13 @@ settings page and travel in every update package, and each later release
 **Events**
 - Types: birthday, anniversary, yahrzeit, other; Hebrew and/or Gregorian date;
   "after sunset" for Hebrew dates; advance warning days.
+- An event with both dates shows on each of them; a small Star of David after
+  the age means "today / soon is its Hebrew date" (no mark = its Gregorian date).
+  The age is counted in that calendar.
+- An event on a Hebrew date shows from the evening before (צאת הכוכבים, when
+  the Hebrew date changes), or only from midnight if chosen (Events row). Only
+  the event follows this choice - the Hebrew date itself always changes at
+  צאת. Gregorian dates: midnight.
 - Icons and pictures (incl. short animations from a video); one shared picture library.
 - Download all events as Excel, edit, upload - with a preview of what changes.
 

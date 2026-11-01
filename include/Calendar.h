@@ -101,9 +101,25 @@ struct FastNotice {
 
 // Rain/dew prayer switch: משיב הרוח from Musaf of Shemini Atzeret (22 Tishrei), מוריד
 // הטל from Musaf of the first day of Pesach (15 Nisan) - fixed Hebrew dates.
+// On the switch day itself it's "ממוסף" - "ממוסף מחר" from צאת the evening
+// before, when the clock already shows that Hebrew day (the user, 2026-11-01).
 struct PrayerSwitchNotice {
     const char* phrase = nullptr;   // nullptr = nothing to show today
     int daysFromSwitch = 0;         // -2..2: negative = the switch is still ahead
+    bool musafTomorrow = false;     // daysFromSwitch 0 and still its evening before
+};
+
+// The rain request in ברכת השנים (a separate switch from the one above):
+// winter wording from Maariv of 7 Cheshvan in Israel, of 4 December abroad
+// (5 December before a leap year; a day later from 2100), summer wording
+// from Pesach, together with מוריד הטל. Calendar::getRainRequest().
+struct RainRequestNotice {
+    const char* phrase = nullptr;   // nullptr = nothing to show today
+    bool evening = false;           // true: starts at Maariv, eveningsAhead evenings from now
+    int eveningsAhead = 0;          // 0..2 (evening = true)
+    int daysFromSwitch = 0;         // 0..2 days since (evening = false)
+    bool atMusaf = false;           // Pesach's switch day: from Musaf, like מוריד הטל
+    bool musafTomorrow = false;     // ... and still its evening before
 };
 
 // ─── Calendar API ─────────────────────────────────────────────────────────────
@@ -140,7 +156,12 @@ public:
     static const char*     getTodaySummary();
     static FastNotice getFastNotice();
     // windowDays (0-2): how many days before/after the switch day to show it.
-    static PrayerSwitchNotice getPrayerSwitch(int windowDays);
+    // civilTodayAbs: today's civil date (absolute day), for "ממוסף מחר".
+    // Ashkenazim abroad say nothing in summer: no מוריד הטל for them.
+    static PrayerSwitchNotice getPrayerSwitch(int windowDays, Nusach nusach, bool inIsrael, long civilTodayAbs);
+    // civilTodayAbs: today's civil date (absolute day) - the switch is at the
+    // evening's Maariv, so "this evening" is counted on the civil calendar.
+    static RainRequestNotice getRainRequest(int windowDays, Nusach nusach, bool inIsrael, long civilTodayAbs);
 
     // Side Effects
     static void clearCacheAndRefresh();

@@ -476,6 +476,11 @@ never matched (2026-10-15). Hebcal also sends its own fast times as
 "Fast ends"), which stays English regardless of `lg=`. Tisha B'Av's begin
 item sits on the eve; Yom Kippur has none (candles/havdalah cover it).
 
+### Rain/dew slide outside Israel has a known gap (2026-11-01)
+Built for Israel; abroad works except that Ashkenazim abroad get no reminder
+to stop משיב הרוח at Pesach (they say nothing - the slide doesn't mention what
+isn't said). Decisions and points to check: `docs/rain_dew_abroad.md`.
+
 ### Testing with the debug time offset (`POST /api/debug/time`)
 The offset is saved in `config.json` and applied at boot. Since 2026-10-21 the
 route also takes `{"offset": seconds}` or `{"local": "YYYY-MM-DDTHH:MM"}`

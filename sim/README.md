@@ -26,7 +26,7 @@ second copy, e.g. while a long test is using `jcsim.exe`).
 | Slides of a moment as images | `C:/pio3/jc_clean/sim/build/jcsim.exe --fs C:/pio3/jc_clean/sim/work/fs --time "2027-04-21 15:00" --seconds 90 --out C:/pio3/jc_clean/sim/work/out` -> `NNN.bmp` + `slides.txt` |
 | Simulator vs the clock, now | `python sim/compare.py --clock <clock-ip>` |
 | Simulator vs the clock, 33 moments (holidays, Shabbat, fasts, sunset, rain/dew prayer switch) | `C:/pio3/jc_clean/venv/Scripts/python sim/moments.py --clock <clock-ip>` (~2 h; restarts the clock over USB, puts it back on real time at the end) |
-| Rain/dew prayer slide, every day around both switch days, settings 0/1/2 | `python sim/test_prayer.py` (~1 min) |
+| Rain/dew prayer slide (both switches), every day around each switch day, settings 0/1/2, evenings, nusach, abroad | `python sim/test_prayer.py` (~2 min) |
 | Every slide of a whole year, to read through | `python sim/sweep.py --days 365` -> `C:/pio3/jc_clean/sim/work/sweep/slides.tsv` (~15 min) |
 | The Demo (Advanced settings' button) | `C:/pio3/jc_clean/sim/build/jcsim.exe --fs C:/pio3/jc_clean/sim/work/fs --out C:/pio3/jc_clean/sim/work/out --instant-boot --seconds 240 --demo-at 20` |
 

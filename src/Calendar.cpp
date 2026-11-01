@@ -1375,10 +1375,14 @@ FastNotice Calendar::getFastNotice() {
 // Based on the clock's Hebrew date (s_today - it changes at the configured
 // rollover, normally sunset), compared with this Hebrew year's two switch
 // days. Both lie well inside the year (Tishrei 22, Nisan 15), so a +-2 day
-// window never crosses a year boundary.
-PrayerSwitchNotice Calendar::getPrayerSwitch(int windowDays) {
+// window never crosses a year boundary. Pesach's switch is shown only from
+// the day itself on (the user, 2026-11-01: nobody needs reminding that Pesach
+// is coming, and before it the screen is full enough).
+// Ashkenazim outside Israel say nothing in summer instead of מוריד הטל, so
+// for them there's no summer phrase (the request's ותן ברכה still shows).
+PrayerSwitchNotice Calendar::getPrayerSwitch(int windowDays, Nusach nusach, bool inIsrael, long civilTodayAbs) {
     PrayerSwitchNotice n;
-    if (s_today.hYear < 5000) return n;   // Hebrew date not known yet
+    if (s_today.hYear < 5000 || civilTodayAbs <= 0) return n;   // date not known yet
     if (windowDays < 0) windowDays = 0;
     if (windowDays > 2) windowDays = 2;
     long today = JewishDateEngine::hebrewToAbsolute(s_today.hYear, s_today.hMonth, s_today.hDay);
@@ -1387,16 +1391,76 @@ PrayerSwitchNotice Calendar::getPrayerSwitch(int windowDays) {
         { 7, 15, "מוריד הטל" },   // Nisan 15, first day of Pesach
     };
     for (const auto& sw : kSwitches) {
-        long d = today - JewishDateEngine::hebrewToAbsolute(s_today.hYear, sw.month, sw.day);
-        if (d >= -windowDays && d <= windowDays) {
+        if (sw.month == 7 && !inIsrael && nusach == Nusach::Ashkenaz) continue;
+        long switchAbs = JewishDateEngine::hebrewToAbsolute(s_today.hYear, sw.month, sw.day);
+        long d = today - switchAbs;
+        const int before = sw.month == 7 ? 0 : windowDays;   // Pesach: no notice ahead of it
+        if (d >= -before && d <= windowDays) {
             n.phrase = sw.phrase;
             n.daysFromSwitch = (int)d;
+            n.musafTomorrow = d == 0 && civilTodayAbs < switchAbs;
             return n;
         }
     }
     return n;
 }
 
+// The winter request starts at Maariv, which opens Hebrew day `startAbs`:
+// before that, counted in evenings on the civil calendar ("from tonight" all
+// through the civil day before); from it on, in Hebrew days ("from today",
+// "since yesterday"), like getPrayerSwitch(). Shown windowDays evenings ahead
+// - this evening always, so 0 still says when. The summer wording only from
+// Pesach on (its first day: from Musaf), as getPrayerSwitch(). The two
+// switches lie in the same Hebrew year as today: 7 Cheshvan / early December
+// are 1-3 months after Rosh Hashana, Pesach far from both ends.
+RainRequestNotice Calendar::getRainRequest(int windowDays, Nusach nusach, bool inIsrael, long civilTodayAbs) {
+    RainRequestNotice n;
+    if (s_today.hYear < 5000 || civilTodayAbs <= 0) return n;
+    if (windowDays < 0) windowDays = 0;
+    if (windowDays > 2) windowDays = 2;
+    const bool sefard = nusach == Nusach::Sefard;
+    const int hy = s_today.hYear;
+    long today = JewishDateEngine::hebrewToAbsolute(hy, s_today.hMonth, s_today.hDay);
+
+    long startAbs;   // the Hebrew day whose Maariv starts the winter request
+    if (inIsrael) {
+        startAbs = JewishDateEngine::hebrewToAbsolute(hy, HebrewMonths::CHESHVAN, 7);
+    } else {
+        // 60 days after the autumn tekufah of the Talmud's (Julian) calendar:
+        // Maariv of 21 November Julian, 22 November before a Julian leap year.
+        // In Gregorian dates: 4/5 December now, 13 days added; the gap grows
+        // by a day each century not divisible by 400 (2100: 5/6 December).
+        int gy, gm, gd;
+        JewishDateEngine::absoluteToGregorian(JewishDateEngine::hebrewToAbsolute(hy, HebrewMonths::TISHREI, 1), gy, gm, gd);
+        int julianGap = gy / 100 - gy / 400 - 2;
+        int day = 21 + ((gy + 1) % 4 == 0 ? 1 : 0) + julianGap - 30;   // November 21+gap = December (21+gap-30)
+        startAbs = JewishDateEngine::gregorianToAbsolute(gy, 12, day) + 1;   // its evening opens the next day
+    }
+    if (today < startAbs) {
+        long evenings = (startAbs - 1) - civilTodayAbs;
+        if (evenings >= 0 && evenings <= windowDays) {
+            n.phrase = sefard ? "ברך עלינו" : "ותן טל ומטר";
+            n.evening = true;
+            n.eveningsAhead = (int)evenings;
+        }
+        return n;
+    }
+    long d = today - startAbs;
+    if (d <= windowDays) {
+        n.phrase = sefard ? "ברך עלינו" : "ותן טל ומטר";
+        n.daysFromSwitch = (int)d;
+        return n;
+    }
+    long pesachAbs = JewishDateEngine::hebrewToAbsolute(hy, HebrewMonths::NISSAN, 15);
+    d = today - pesachAbs;
+    if (d >= 0 && d <= windowDays) {
+        n.phrase = sefard ? "ברכנו" : "ותן ברכה";
+        n.daysFromSwitch = (int)d;
+        n.atMusaf = d == 0;   // asking for rain ends at Musaf's announcement
+        n.musafTomorrow = d == 0 && civilTodayAbs < pesachAbs;
+    }
+    return n;
+}
 
 String Calendar::formatUserHebrewDate(const char* fullDate) {
     if (!fullDate || !*fullDate) return "";

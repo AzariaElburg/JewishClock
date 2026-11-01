@@ -260,6 +260,7 @@ static void simSleepUntil(unsigned long targetMs) {
     g_task.cv.wait(lk, [targetMs] { return g_simMillis >= targetMs; });
     g_task.sleeping = false;
 }
+void vTaskDelay(TickType_t ticks) { simSleepUntil(millis() + ticks); }   // pdMS_TO_TICKS: 1 tick = 1 ms
 void Sim::advanceMillis(unsigned long ms) {
     std::unique_lock<std::mutex> lk(g_task.m);
     g_simMillis += ms;

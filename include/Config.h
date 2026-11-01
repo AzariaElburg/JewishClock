@@ -55,12 +55,29 @@ enum class OmerMode : int {
     Abbreviated = 3
 };
 
+// Wording of the rain request in ברכת השנים: Ashkenaz "ותן טל ומטר" /
+// "ותן ברכה", Sefard "ברך עלינו" / "ברכנו" (Calendar::getRainRequest()).
+enum class Nusach : int {
+    Ashkenaz = 0,
+    Sefard = 1
+};
+
+// When an event on a Hebrew date starts and ends: with the Hebrew day (at the
+// rollover - צאת הכוכבים by default) or at midnight. Gregorian dates always
+// change at midnight. Decided 2026-11-01: the user chooses, default Hebrew day.
+enum class EventDayChange : int {
+    WithHebrewDay = 0,
+    Midnight = 1
+};
+
 // Default Mode Constants
 // The Hebrew day changes at צאת הכוכבים (after Shabbat/Yom Tov: at Havdalah) -
 // the user's father, 2026-10-20 (see Calendar.cpp, applyZmanimPayload).
 static constexpr RolloverMode ROLLOVER_MODE_DEFAULT = RolloverMode::Tzeit;
 static constexpr RotationMode ROTATION_MODE_DEFAULT = RotationMode::Alternating;
 static constexpr OmerMode     OMER_MODE_DEFAULT     = OmerMode::ShortText;
+static constexpr Nusach       NUSACH_DEFAULT        = Nusach::Ashkenaz;
+static constexpr EventDayChange EVENT_DAY_CHANGE_DEFAULT = EventDayChange::WithHebrewDay;
 
 // ─── Message content types (order + frequency) ─────────────────────────────
 //
@@ -475,6 +492,8 @@ struct AppConfig {
     bool     showLiturgical;         // יעלה ויבוא, הלל, אין תחנון…
     bool     showSwitchoverPhrases;  // משיב הרוח, טל ומטר
     int      switchoverWindowDays;   // Rain/dew prayer slide: days before/after the switch day, 0-2 (see SWITCHOVER_DISPLAY_DAYS)
+    Nusach   nusach;                 // rain request wording (NUSACH_DEFAULT)
+    EventDayChange eventDayChange;   // Hebrew-date events: with the Hebrew day or at midnight
     bool     showAllMessages;        // Master on/off
 
     // -- Message content order + frequency (see ContentType in Config.h) --

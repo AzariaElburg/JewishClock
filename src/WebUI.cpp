@@ -853,6 +853,8 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         doc["showLiturgical"]     = g_cfg->showLiturgical;
         doc["showSwitchover"]     = g_cfg->showSwitchoverPhrases;
         doc["prayerSwitchDays"]   = g_cfg->switchoverWindowDays;
+        doc["nusach"]             = static_cast<int>(g_cfg->nusach);
+        doc["eventDayChange"]     = static_cast<int>(g_cfg->eventDayChange);
         doc["showAll"]            = g_cfg->showAllMessages;
 
         JsonArray orderArr = doc["contentOrder"].to<JsonArray>();
@@ -952,6 +954,8 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         if (doc["showLiturgical"].is<bool>())      g_cfg->showLiturgical        = doc["showLiturgical"];
         if (doc["showSwitchover"].is<bool>())      g_cfg->showSwitchoverPhrases = doc["showSwitchover"];
         if (doc["prayerSwitchDays"].is<int>())     g_cfg->switchoverWindowDays  = constrain(doc["prayerSwitchDays"].as<int>(), 0, 2);
+        if (doc["nusach"].is<int>())               g_cfg->nusach                = doc["nusach"].as<int>() == 1 ? Nusach::Sefard : Nusach::Ashkenaz;
+        if (doc["eventDayChange"].is<int>())       g_cfg->eventDayChange        = doc["eventDayChange"].as<int>() == 1 ? EventDayChange::Midnight : EventDayChange::WithHebrewDay;
         if (doc["showAll"].is<bool>())             g_cfg->showAllMessages       = doc["showAll"];
 
         if (doc["contentOrder"].is<JsonArray>()) {

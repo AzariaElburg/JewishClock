@@ -71,6 +71,12 @@ struct DisplayStrings {
     // from today. Index 0..4 = switch day is 2 days ahead .. 2 days ago.
     // The phrases themselves stay Hebrew in every language.
     const char* const* prayerSwitchWhen;
+    // ותן טל ומטר starts at Maariv: index 0..2 = this evening .. the evening
+    // after tomorrow (Calendar::getRainRequest()).
+    const char* const* prayerSwitchEvening;
+    // The switch day itself: [0] "from Musaf", [1] "from Musaf tomorrow" (its
+    // evening before, already that Hebrew day).
+    const char* const* prayerSwitchMusaf;
 };
 
 // ─── String tables ────────────────────────────────────────────────────────────

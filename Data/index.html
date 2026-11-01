@@ -896,7 +896,7 @@ const CONTENT_TYPES = {
   hebrewdate:  { icon: '<span class="cal-ico"><b>ט״ז</b></span>', label: 'Hebrew Date' },
   gregoriandate: { icon: '<span class="cal-ico"><b>17</b></span>', label: 'Gregorian Date' },
   fast:        { icon: '⏳', label: 'Fast Times' },
-  prayerswitch: { icon: '🌧️', label: 'משיב הרוח / מוריד הטל', title: 'Rain / dew prayer switch (22 Tishrei / 15 Nisan), and how many days before & after it is shown' }
+  prayerswitch: { icon: '🌧️', label: 'משיב הרוח · טל ומטר', title: 'Rain / dew in prayer: משיב הרוח (22 Tishrei, 15 Nisan) and טל ומטר (7 Cheshvan, abroad 4/5 December, 15 Nisan)' }
 };
 // A row's own extra choice, shown between its label and its frequency (the
 // row's "Off" is the frequency's). value: the config key it saves to.
@@ -904,13 +904,18 @@ const CONTENT_TYPES = {
 // The Omer choices are samples of the clock's own text (day 23), in a
 // right-to-left list: mixed English+Hebrew options came out in the wrong
 // order (browsers ignore direction marks inside a <select>).
+// A row may have several (a list).
 const CONTENT_EXTRAS = {
-  omer: { cfg: 'omerMode', dir: 'rtl', title: 'How the Omer count is worded on the clock (shown for day 23)',
-          options: [[1, '23 לעומר'], [3, '23 שהם 3 שבועות + 2 ימים לעומר'], [2, 'היום שלושה ועשרים יום, שהם שלושה שבועות ושני ימים לעומר']] },
-  prayerswitch: { cfg: 'prayerSwitchDays', title: 'Days shown before &amp; after the switch day (0 = only that day)',
-          options: [[0, 'That day only'], [1, '±1 day'], [2, '±2 days']] }
+  events: [{ cfg: 'eventDayChange', title: 'When an event on a Hebrew date starts and ends',
+          options: [[0, 'Hebrew-date event message: evening before'], [1, 'Hebrew-date event message: midnight']] }],
+  omer: [{ cfg: 'omerMode', dir: 'rtl', title: 'How the Omer count is worded on the clock (shown for day 23)',
+          options: [[1, '23 לעומר'], [3, '23 שהם 3 שבועות + 2 ימים לעומר'], [2, 'היום שלושה ועשרים יום, שהם שלושה שבועות ושני ימים לעומר']] }],
+  prayerswitch: [{ cfg: 'nusach', dir: 'rtl', title: 'Wording of the rain request',
+          options: [[0, 'אשכנז'], [1, 'ספרד']] },
+        { cfg: 'prayerSwitchDays', title: 'Days shown before &amp; after the switch day (0 = only that day; Pesach: from the day itself)',
+          options: [[0, 'Only on the day'], [1, '1 day before &amp; after'], [2, '2 days before &amp; after']] }]
 };
-const contentExtraValues = { omerMode: 1, prayerSwitchDays: 1 };
+const contentExtraValues = { omerMode: 1, prayerSwitchDays: 1, nusach: 0, eventDayChange: 0 };
 const CONTENT_ORDER_DEFAULT = ['events','candle','havdalah','holiday','mevarchim','parasha','omer','dafyomi','mishnayomit','hebrewdate','gregoriandate','fast','prayerswitch'];
 
 function renderContentOrder(order, freq) {
@@ -928,10 +933,9 @@ function renderContentOrder(order, freq) {
       '<span class="drag-handle">⠿</span>' +
       '<span class="content-icon">' + meta.icon + '</span>' +
       '<span class="content-label">' + meta.label + '</span>' +
-      (CONTENT_EXTRAS[key]
-        ? '<select class="content-extra" dir="' + (CONTENT_EXTRAS[key].dir || 'ltr') + '" data-cfg="' + CONTENT_EXTRAS[key].cfg + '" title="' + CONTENT_EXTRAS[key].title + '">' +
-            CONTENT_EXTRAS[key].options.map(([val, label]) => '<option value="' + val + '">' + label + '</option>').join('') + '</select>'
-        : '') +
+      (CONTENT_EXTRAS[key] || []).map(x =>
+        '<select class="content-extra" dir="' + (x.dir || 'ltr') + '" data-cfg="' + x.cfg + '" title="' + x.title + '">' +
+          x.options.map(([val, label]) => '<option value="' + val + '">' + label + '</option>').join('') + '</select>').join('') +
       '<select class="content-freq">' +
         '<option value="0">Off</option>' +
         '<option value="1">Every time</option>' +
@@ -941,7 +945,7 @@ function renderContentOrder(order, freq) {
       '</select>';
     const f = (freq && freq[key] !== undefined) ? freq[key] : 1;
     row.querySelector('.content-freq').value = [0,1,2,3,4].indexOf(f) >= 0 ? f : 1;
-    if (CONTENT_EXTRAS[key]) row.querySelector('.content-extra').value = String(contentExtraValues[CONTENT_EXTRAS[key].cfg]);
+    row.querySelectorAll('.content-extra').forEach(s => { s.value = String(contentExtraValues[s.dataset.cfg]); });
     list.appendChild(row);
   });
   if (el('view-settings').classList.contains('active')) filterSettings();   // a search in progress covers the new rows too
@@ -1445,6 +1449,8 @@ async function loadConfig() {
   // Shown by renderContentOrder below, in their rows.
   contentExtraValues.prayerSwitchDays = Math.max(0, Math.min(2, cfg.prayerSwitchDays));
   contentExtraValues.omerMode = [1, 2, 3].includes(cfg.omerMode) ? cfg.omerMode : 1;
+  contentExtraValues.nusach = cfg.nusach === 1 ? 1 : 0;
+  contentExtraValues.eventDayChange = cfg.eventDayChange === 1 ? 1 : 0;
   renderContentOrder(cfg.contentOrder, cfg.contentFrequency);
 
   syncBrightnessBlocks();
