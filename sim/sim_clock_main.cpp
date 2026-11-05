@@ -44,6 +44,8 @@
 #include "Config.h"
 #include "Storage.h"
 #include "Version.h"
+#include "Display.h"
+#include "OnScreenElement.h"
 #include "sim_clock.h"
 
 namespace stdfs = std::filesystem;
@@ -170,6 +172,12 @@ static std::string controlAnswer(const std::string& method, const std::string& p
         d["wifi"] = WiFi.status(); d["sta"] = Sim::staUp(); d["ip"] = Sim::staIpString(); d["ssid"] = WiFi.SSID();
         d["ap"] = Sim::apUp(); d["internet"] = Sim::wifiInternet(); d["lux"] = Sim::roomLux;
         d["psramUsed"] = sim_psram_used();
+        std::string screen;   // what the display shows now, as the screen simulator writes it
+        for (auto& e : DisplayManager::getCurrentMessageElements()) {
+            if (!screen.empty()) screen += " | ";
+            screen += e.type == OnScreenElementType::TEXT ? std::string(e.content.c_str()) : "[" + std::string(e.content.c_str()) + "]";
+        }
+        d["screen"] = screen;
         std::string ota; if (simOtaStateJson(ota)) d["ota"] = serialized(ota);
         std::string s; serializeJson(d, s); return s;
     }
@@ -185,7 +193,13 @@ static void controlServer() {
     SOCKET ls = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     sockaddr_in a{}; a.sin_family = AF_INET; a.sin_port = htons((u_short)g_controlPort); a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     BOOL yes = TRUE; setsockopt(ls, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char*)&yes, sizeof(yes));
-    if (bind(ls, (sockaddr*)&a, sizeof(a)) || listen(ls, 8)) { fprintf(stderr, "[sim] control port %d in use\n", g_controlPort); return; }
+    // The run before this one (a restart) may still hold the port for a moment.
+    int tries = 0;
+    while (bind(ls, (sockaddr*)&a, sizeof(a)) != 0) {
+        if (++tries > 75) { fprintf(stderr, "[sim] control port %d in use\n", g_controlPort); return; }
+        Sleep(200);
+    }
+    if (listen(ls, 8)) { fprintf(stderr, "[sim] control port %d: listen failed\n", g_controlPort); return; }
     for (;;) {
         SOCKET c = accept(ls, nullptr, nullptr);
         if (c == INVALID_SOCKET) continue;
@@ -224,6 +238,7 @@ static int runClock() {
     // NTPManager.cpp sets it from a real time server (sim_ntp.cpp).
     Sim::internetUp = Sim::wifiInternet;
     Sim::liveNetwork = true;   // downloads go out for real, at their real speed
+    Sim::fsFull = true;        // LittleFS's 4 MB can run full
     Sim::startTiming((uint32_t)std::random_device{}());
 
     // The networks around: <state>/world.json, else every known network.

@@ -54,6 +54,22 @@ only the ticks of `millis()`). Downloads (Hebcal, place) go out for real.
   `utils/ap_tests.py --sim` runs all four trips against it (22/22, 2026-11-05).
 - **Not on a PC**: the panel itself (speed, tear lines), flash-write pauses,
   real radio behaviour, heap fragmentation.
+- **Drills** (`sim/drills.py`, `--list`, `--only NAME`, `--exe` for a before/after):
+  what the clock does when things go wrong - NTP at start, RTC memory (reset
+  keeps / power cut loses), a network vanishing, all networks gone, wrong
+  password, no internet, power cuts around saves, room light, broken update
+  files, an update whose trial fails, a power cut during a trial, flash full of
+  pictures, 2000 events, and a complaint reproduced (the family's Excel backup on
+  a factory-new clock, set to a date, its screen compared with jcsim's). Run
+  them all for every version (~20 min). 2026-11-06: found the clock's own
+  Wi-Fi unusable when the home Wi-Fi is gone - fixed in 2.1.1.
+- **Older versions on today's stand-ins** (to reproduce what a version the
+  family has does): `git worktree add C:/pio3/jc_clean/wt v2.1.0`, then
+  `python sim/build_clock.py --tree C:/pio3/jc_clean/wt` -> versions/2.1.0/. The
+  version always comes from git (as the firmware build's), never a stale file.
+- **Flash space** is counted as LittleFS counts it (4 KB blocks, small files
+  inline, 2 blocks per folder) and writes fail when the 4 MB is full - a model:
+  calibrate with the clock's boot log line "LittleFS mounted. Free: N bytes".
 
 ## The screen simulator (jcsim.exe)
 

@@ -169,6 +169,9 @@ static String makeMdnsHost(const String& projectName) {
 static DNSServer       dnsServer;
 static AsyncWebServer* server = nullptr;
 static bool            g_apActive = false;
+// The AP that's up is the synchronized one (startAP()), not the setup one.
+// Atomic: the web server's filters read it (ON_STA_OR_SYNCED_AP_FILTER).
+static std::atomic<bool> g_syncedApUp{false};
 static AppConfig*      g_cfgPtr = nullptr;
 static String          g_mdnsHost = makeMdnsHost(PROJECT_NAME_DEFAULT);  // Hostname without .local suffix
 static const char* portal_html = R"rawliteral(
@@ -709,7 +712,11 @@ String WiFiManager::getStatusMessage() {
         // for better context (it can show the SSID name).
         case WiFiState::AP_PORTAL:
             {
-                String apName = String(AP_SSID_PREFIX) + "Setup";
+                // The Wi-Fi that's really up: once the clock has been online
+                // its own synchronized one stays up (startAPPortal() doesn't
+                // replace it) - naming "...Setup" then sent people to a
+                // network that didn't exist (found on the simulator, 2026-11-06).
+                String apName = g_syncedApUp ? String(g_cfgPtr->projectName) : String(AP_SSID_PREFIX) + "Setup";
                 // Scrolls, and starts over when read (MessageAggregator::loop()).
                 info = "Setup: join Wi-Fi " + apName + " - password " + String(AP_PASSWORD_DEFAULT) + " - open 192.168.4.1";
             }
@@ -725,6 +732,8 @@ bool WiFiManager::isApActive() {
     WiFiLock::Guard guard;
     return g_apActive;
 }
+
+bool WiFiManager::syncedApUp() { return g_syncedApUp; }
 
 // ─── Private Actions (Triggered by State Transitions) ───────────────────────
 
@@ -859,6 +868,7 @@ void WiFiManager::startAP(AppConfig& cfg) {
 
     dnsServer.start(53, "*", apIP);
     g_apActive = true;
+    g_syncedApUp = true;
 
     // Start the web server now that both interfaces are ready
     WebUI::startServer(cfg);
@@ -873,6 +883,7 @@ void WiFiManager::stopAP() {
     dnsServer.stop();
     WiFi.softAPdisconnect(true);
     g_apActive = false;
+    g_syncedApUp = false;
     CLOCK_LOG("WiFi", "AP stopped.");
 }
 

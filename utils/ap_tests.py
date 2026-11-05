@@ -69,9 +69,15 @@ def use_simulator(home_port=8080, ap_port=8081):
         # the normal page redirects it. On the clock the setup network itself
         # only exists then - here the clock's Wi-Fi side answers all along, and
         # a restore sent before the factory reset had happened was erased by it.
+        # Not through a redirect: since 2.1.1 the normal page answers 200 on the
+        # clock's own Wi-Fi too, and a followed redirect looked like setup mode.
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *a, **k):
+                return None
         try:
-            with urllib.request.urlopen(AP_URL + "/wifi-scan", timeout=4) as r:
-                return r.status == 200 and b"networks" in r.read()
+            with urllib.request.build_opener(NoRedirect).open(AP_URL + "/wifi-scan", timeout=4) as r:
+                b = r.read()
+                return r.status == 200 and b.lstrip().startswith(b"{") and b"networks" in b
         except Exception:
             return False
 

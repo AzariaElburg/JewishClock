@@ -23,8 +23,10 @@ Expected (decided 2026-11-02), all in civil days (midnight to midnight):
 Exit code 1 on any wrong text.
 """
 import json
+import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from datetime import date, timedelta
@@ -121,7 +123,13 @@ def main():
     if not (base / "config.json").exists():
         sys.exit("run sim/prepare_fs.py first")
     root = WORK / "test_prayer"
-    shutil.rmtree(root, ignore_errors=True)
+    # Not ignore_errors: copies of a read-only base folder are read-only, and
+    # rmtree then left them silently - the next run failed copying over them.
+    def clear_readonly(func, path, _):
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    if root.exists():
+        shutil.rmtree(root, onerror=clear_readonly)
     fails = 0
     for i, (label, w, extra, day, hhmm, want) in enumerate(cases()):
         fs = root / ("fs%03d" % i)

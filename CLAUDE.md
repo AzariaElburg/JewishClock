@@ -197,7 +197,9 @@ feature is tested on the full simulator: the clock's whole program (all of
 `src/`, unchanged) on PC stand-ins for the hardware only, real NTP, real
 downloads, web on 127.0.0.1:8080 (home) / 8081 (its own Wi-Fi), updates
 across versions with trial and rollback. `utils/ap_tests.py --sim` = the four
-trips. See `sim/README.md`. **A stand-in must behave like the hardware/library
+trips; `sim/drills.py` = failure drills (Wi-Fi gone, power cuts, bad updates,
+full flash, a complaint from a backup) - **both, plus `compare_web.py` and
+`replay_moments.py`, before every release**. See `sim/README.md`. **A stand-in must behave like the hardware/library
 it replaces, never like a shortcut** (the user, 2026-11-05: no PC time, no
 "replacing" project code). Real clock's answers and screenshots:
 `reference/` (out of git, OneDrive-backed - an exception to "generated files

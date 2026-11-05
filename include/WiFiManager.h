@@ -21,6 +21,10 @@ public:
     static void loop();
     static String getStatusMessage();
     static bool   isApActive();
+    // The clock's own Wi-Fi is up as its synchronized AP (projectName, the
+    // full page - startAP()), not the setup one (startAPPortal()). Stays up
+    // while the home network is gone. Any task, no lock (web filters ask).
+    static bool   syncedApUp();
     // The known network being joined (or joined); "" while still choosing.
     static String joiningSsid();
     // Join known network `slot` now ("Connect" on the page; any task).

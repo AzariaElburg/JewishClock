@@ -601,8 +601,14 @@ static void removeUnusedImages() {
 // startAPPortal(), before Wi-Fi has ever been configured) - STA is never
 // WL_CONNECTED there either way, so these routes still return nothing
 // until setup completes, exactly as before.
+// The synchronized AP counts on its own too (2026-11-06): it stays up when
+// the home network goes away (router off, password changed), and at the
+// parents' it is the only way to the page - with only WiFi.status() checked,
+// every route redirected to "/" and "/" to itself (found on the simulator:
+// all networks gone -> the page unreachable until the router came back).
+// Setup mode's own AP is not the synchronized one: there this stays false.
 static bool ON_STA_OR_SYNCED_AP_FILTER(AsyncWebServerRequest *req) {
-    return WiFi.status() == WL_CONNECTED;
+    return WiFi.status() == WL_CONNECTED || WiFiManager::syncedApUp();
 }
 
 // The few routes a restore from the setup page needs (factory-new clock, no

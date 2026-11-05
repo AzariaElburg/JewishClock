@@ -25,6 +25,7 @@ namespace Sim {
     // The full simulator (jcclock) only - the screen one leaves them alone:
     extern bool (*internetUp)();    // downloads fail when this says no (no network, or one without internet)
     extern bool liveNetwork;        // downloads for real, uncached, at their real speed (not the measured simulated one)
+    extern bool fsFull;             // file writes fail when LittleFS's 4 MB is full (counted as LittleFS counts)
     extern float roomLux;           // what the light sensor reads
     extern bool lightSensorPresent; // false: the clock runs on its simulated value, as without a sensor
 }

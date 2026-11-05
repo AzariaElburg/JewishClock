@@ -367,10 +367,12 @@ void listenOn(int port, bool viaAp) {
     BOOL yes = TRUE;
     setsockopt(ls, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char*)&yes, sizeof(yes));
     sockaddr_in a{}; a.sin_family = AF_INET; a.sin_port = htons((u_short)port); a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (bind(ls, (sockaddr*)&a, sizeof(a)) != 0 || listen(ls, 32) != 0) {
-        fprintf(stderr, "[sim] cannot listen on 127.0.0.1:%d (in use?)\n", port);
-        std::exit(10);
+    int tries = 0;   // the run before this one (a restart) may still hold the port for a moment
+    while (bind(ls, (sockaddr*)&a, sizeof(a)) != 0) {
+        if (++tries > 75) { fprintf(stderr, "[sim] cannot listen on 127.0.0.1:%d (in use?)\n", port); std::exit(10); }
+        Sleep(200);
     }
+    if (listen(ls, 32) != 0) { fprintf(stderr, "[sim] listen failed on 127.0.0.1:%d\n", port); std::exit(10); }
     fprintf(stderr, "[sim] %s at http://127.0.0.1:%d\n", viaAp ? "clock's own Wi-Fi (192.168.4.1)" : "home network", port);
     for (;;) {
         SOCKET c = accept(ls, nullptr, nullptr);

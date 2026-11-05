@@ -59,7 +59,7 @@ std::string simImageVersion(const std::string& bytes) {
 
 static int g_runningSlot = 0;   // set by sim_clock_main.cpp from the supervisor
 void simSetRunningSlot(int s) { g_runningSlot = s; }
-static esp_partition_t g_parts[2] = { {0, "app0", 0x300000}, {1, "app1", 0x300000} };
+static esp_partition_t g_parts[2] = { {0, "app0", 0x600000}, {1, "app1", 0x600000} };   // partitions_forClock.csv
 
 const esp_partition_t* esp_ota_get_running_partition() { return &g_parts[g_runningSlot]; }
 esp_err_t esp_ota_get_state_partition(const esp_partition_t* p, esp_ota_img_states_t* st) {

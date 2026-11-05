@@ -84,6 +84,7 @@ void Sim::pinTiming(const std::string& name, unsigned long ms) { g_pinned[name] 
 unsigned long Sim::drawTiming(const Range& r, const std::string& kind) { return draw(r, kind); }
 bool (*Sim::internetUp)() = nullptr;
 bool Sim::liveNetwork = false;
+bool Sim::fsFull = false;   // the full simulator: writes fail when the partition is full, as on the clock
 float Sim::roomLux = 120.0f;
 bool Sim::lightSensorPresent = true;
 void Sim::startTiming(uint32_t seed) {
@@ -161,8 +162,33 @@ File::File(const std::string& clockPath, const std::string& pc) : isDir_(true), 
     std::sort(entries_->begin(), entries_->end());
 }
 File::~File() {}
-size_t File::write(uint8_t c) { return fp_ ? fwrite(&c, 1, 1, fp_.get()) : 0; }
-size_t File::write(const uint8_t* buf, size_t n) { return fp_ ? fwrite(buf, 1, n, fp_.get()) : 0; }
+// LittleFS's space, as it counts it (lfs_fs_size() x block size): whole 4 KB
+// blocks; a file of up to 512 bytes lives in its folder's own block (inline);
+// every folder takes a metadata pair (2 blocks), the file system 2 more.
+// Copy-on-write and metadata compaction need a little more than this - the
+// clock's boot log ("LittleFS mounted. Free: N bytes") calibrates it.
+static const size_t LFS_BLOCK = 4096, LFS_INLINE_MAX = 512;
+static size_t lfsBlocksFor(size_t bytes) { return bytes <= LFS_INLINE_MAX ? 0 : (bytes + LFS_BLOCK - 1) / LFS_BLOCK; }
+static bool roomFor(const std::string& pcPath, size_t newSize) {
+    if (!Sim::fsFull) return true;
+    std::error_code ec;
+    size_t now = stdfs::exists(pcPath, ec) ? (size_t)stdfs::file_size(pcPath, ec) : 0;
+    size_t extra = lfsBlocksFor(newSize) > lfsBlocksFor(now) ? (lfsBlocksFor(newSize) - lfsBlocksFor(now)) * LFS_BLOCK : 0;
+    return !extra || LittleFS.usedBytes() + extra <= LittleFS.totalBytes();
+}
+size_t File::write(uint8_t c) { return write(&c, 1); }
+size_t File::write(const uint8_t* buf, size_t n) {
+    if (!fp_) return 0;
+    // Space is looked at only when the write reaches into a new block - the
+    // events file is written a character at a time (2000 events timed out
+    // when every character walked the whole file system).
+    size_t pos = (size_t)ftell(fp_.get());
+    if (Sim::fsFull && lfsBlocksFor(pos + n) > lfsBlocksFor(pos)) {
+        fflush(fp_.get());
+        if (!roomFor(pcPath_, pos + n)) return 0;   // no room: LFS_ERR_NOSPC, as the clock's write returns
+    }
+    return fwrite(buf, 1, n, fp_.get());
+}
 int File::available() { if (!fp_) return 0; long here = ftell(fp_.get()); return (int)((long)size() - here); }
 int File::read() { if (!fp_) return -1; int c = fgetc(fp_.get()); return c == EOF ? -1 : c; }
 int File::peek() { if (!fp_) return -1; int c = fgetc(fp_.get()); if (c != EOF) ungetc(c, fp_.get()); return c == EOF ? -1 : c; }
@@ -215,9 +241,13 @@ bool FS::rename(const char* from, const char* to) {
 bool FS::mkdir(const char* path) { std::error_code ec; stdfs::create_directories(pcPath(path), ec); return !ec; }
 bool FS::rmdir(const char* path) { std::error_code ec; return stdfs::remove(pcPath(path), ec); }
 size_t FS::usedBytes() {
-    size_t total = 0; std::error_code ec;
-    for (auto& e : stdfs::recursive_directory_iterator(Sim::fsRoot, ec)) if (e.is_regular_file(ec)) total += (size_t)e.file_size(ec);
-    return total;
+    size_t blocks = 2 + 2;   // superblock pair + the root folder's pair
+    std::error_code ec;
+    for (auto& e : stdfs::recursive_directory_iterator(Sim::fsRoot, ec)) {
+        if (e.is_directory(ec)) blocks += 2;
+        else if (e.is_regular_file(ec)) blocks += lfsBlocksFor((size_t)e.file_size(ec));
+    }
+    return blocks * LFS_BLOCK;
 }
 } // namespace fs
 
