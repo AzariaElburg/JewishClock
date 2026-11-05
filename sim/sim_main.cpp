@@ -110,12 +110,21 @@ static bool readBmp(const std::string& path, std::vector<uint8_t>& rgb) {
     return true;
 }
 
+// Only the calibrated window counts: outside it (behind the box's frame) the
+// panel keeps whatever startup screens left there - white on the clock, gold
+// in the simulator for one run (2026-11-02: 3 pixels at x=0 failed every
+// screenshot of a moment).
 static int pixelDiff(const std::vector<uint8_t>& rgb, const uint16_t* fb) {
     int diff = 0;
-    for (int i = 0; i < TFT_WIDTH * TFT_HEIGHT; i++) {
-        uint16_t c = fb[i];
-        const uint8_t* p = &rgb[(size_t)i * 3];   // R, G, B in BMP order B, G, R
-        if (p[0] != (uint8_t)((c & 0x1F) << 3) || p[1] != (uint8_t)(((c >> 5) & 0x3F) << 2) || p[2] != (uint8_t)(((c >> 11) & 0x1F) << 3)) diff++;
+    int x0 = std::max(0, g_cfg.calibX), y0 = std::max(0, g_cfg.calibY);
+    int x1 = std::min<int>(TFT_WIDTH, g_cfg.calibX + g_cfg.calibW), y1 = std::min<int>(TFT_HEIGHT, g_cfg.calibY + g_cfg.calibH);
+    for (int y = y0; y < y1; y++) {
+        for (int x = x0; x < x1; x++) {
+            int i = y * TFT_WIDTH + x;
+            uint16_t c = fb[i];
+            const uint8_t* p = &rgb[(size_t)i * 3];   // R, G, B in BMP order B, G, R
+            if (p[0] != (uint8_t)((c & 0x1F) << 3) || p[1] != (uint8_t)(((c >> 5) & 0x3F) << 2) || p[2] != (uint8_t)(((c >> 11) & 0x1F) << 3)) diff++;
+        }
     }
     return diff;
 }
@@ -226,6 +235,7 @@ int main(int argc, char** argv) {
     std::string fsDir = "sim_fs", outDir = "sim_out", when, cacheDir, matchDir;
     double seconds = 90, speed = 1; bool live = false, utc = false, printEpoch = false; long long epoch = -1;
     uint32_t seed = 0; bool seedGiven = false;
+    std::string measureFile;   // --measure FILE: each line's width in pixels (UTF-8 file - Windows turns Hebrew arguments into "?")
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         auto next = [&]() -> std::string { if (i + 1 >= argc) { fprintf(stderr, "%s needs a value\n", a.c_str()); std::exit(2); } return argv[++i]; };
@@ -257,6 +267,7 @@ int main(int argc, char** argv) {
         else if (a == "--demo-at") g_demoAtMs = (long)(atof(next().c_str()) * 1000);
         else if (a == "--every-message") g_everyMessage = true;
         else if (a == "--frame-diff") g_frameDiffPath = next();
+        else if (a == "--measure") measureFile = next();
         else if (a == "--setup-mode") { extern bool g_simSetupMode; g_simSetupMode = true; }
         else if (a == "--calibration") {
             std::string m = next();
@@ -284,6 +295,18 @@ int main(int argc, char** argv) {
         return 0;
     }
     setupLikeTheClock();
+    if (!measureFile.empty()) {   // does a wording stand still? It must fit the window (calibW)
+        FILE* f = fopen(measureFile.c_str(), "rb");
+        if (!f) { fprintf(stderr, "cannot read %s\n", measureFile.c_str()); return 2; }
+        char line[512];
+        while (fgets(line, sizeof(line), f)) {
+            std::string m(line);
+            while (!m.empty() && (m.back() == '\n' || m.back() == '\r')) m.pop_back();
+            if (!m.empty()) printf("%d\t%d\t%s\n", DisplayManager::measureString(m.c_str()), g_cfg.calibW, m.c_str());
+        }
+        fclose(f);
+        return 0;
+    }
     if (g_calibration) {   // as the web page's Calibrate switch does
         DisplayManager::setCalibrationPattern(g_calibration == 2);
         DisplayManager::setMode(DisplayMode::Calibration);

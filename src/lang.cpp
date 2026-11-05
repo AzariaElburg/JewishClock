@@ -12,21 +12,12 @@
 
 // ─── English ──────────────────────────────────────────────────────────────────
 
-static const char* const s_prayerSwitchWhenEn[5] = {
-    "from the day after tomorrow", "from tomorrow", "from today", "since yesterday", "since 2 days ago"
-};
-static const char* const s_prayerSwitchWhenHe[5] = {
-    "מ-מחרתיים", "מ-מחר", "מהיום", "מ-אתמול", "מ-שלשום"
-};
-static const char* const s_prayerSwitchWhenNl[5] = {
-    "vanaf overmorgen", "vanaf morgen", "vanaf vandaag", "sinds gisteren", "sinds eergisteren"
-};
 static const char* const s_prayerSwitchEveningEn[3] = { "from tonight", "from tomorrow evening", "from the evening after tomorrow" };
-static const char* const s_prayerSwitchEveningHe[3] = { "מהערב", "מ-מחר בערב", "מ-מחרתיים בערב" };
+static const char* const s_prayerSwitchEveningHe[3] = { "מהערב", "ממחר בערב", "ממחרתיים בערב" };
 static const char* const s_prayerSwitchEveningNl[3] = { "vanaf vanavond", "vanaf morgenavond", "vanaf overmorgenavond" };
-static const char* const s_prayerSwitchMusafEn[2] = { "from Musaf", "from Musaf tomorrow" };
-static const char* const s_prayerSwitchMusafHe[2] = { "ממוסף", "ממוסף מחר" };
-static const char* const s_prayerSwitchMusafNl[2] = { "vanaf Musaf", "vanaf Musaf morgen" };
+static const char* const s_prayerSwitchFromEn[3] = { "from Musaf", "from tomorrow", "from the day after tomorrow" };
+static const char* const s_prayerSwitchFromHe[3] = { "ממוסף", "ממחר", "ממחרתיים" };
+static const char* const s_prayerSwitchFromNl[3] = { "vanaf Musaf", "vanaf morgen", "vanaf overmorgen" };
 
 static const char* const s_gregorianMonthsEn[12] = {
     "January", "February", "March", "April", "May", "June",
@@ -71,9 +62,8 @@ const DisplayStrings STRINGS_EN = {
     /* until           */ "until",
     /* seudaMafseket   */ "Pre-fast meal until",
     /* gregorianMonths */ s_gregorianMonthsEn,
-    /* prayerSwitchWhen */ s_prayerSwitchWhenEn,
+    /* prayerSwitchFrom */ s_prayerSwitchFromEn,
     /* prayerSwitchEvening */ s_prayerSwitchEveningEn,
-    /* prayerSwitchMusaf */ s_prayerSwitchMusafEn,
 };
 
 // ─── Hebrew (UTF-8) ───────────────────────────────────────────────────────────
@@ -107,9 +97,8 @@ const DisplayStrings STRINGS_HE = {
     /* until           */ "עד",
     /* seudaMafseket   */ "סעודה מפסקת עד",
     /* gregorianMonths */ s_gregorianMonthsHe,
-    /* prayerSwitchWhen */ s_prayerSwitchWhenHe,
+    /* prayerSwitchFrom */ s_prayerSwitchFromHe,
     /* prayerSwitchEvening */ s_prayerSwitchEveningHe,
-    /* prayerSwitchMusaf */ s_prayerSwitchMusafHe,
 };
 
 // ─── Dutch ────────────────────────────────────────────────────────────────────
@@ -142,9 +131,8 @@ const DisplayStrings STRINGS_NL = {
     /* until           */ "tot",
     /* seudaMafseket   */ "Laatste maaltijd tot",
     /* gregorianMonths */ s_gregorianMonthsNl,
-    /* prayerSwitchWhen */ s_prayerSwitchWhenNl,
+    /* prayerSwitchFrom */ s_prayerSwitchFromNl,
     /* prayerSwitchEvening */ s_prayerSwitchEveningNl,
-    /* prayerSwitchMusaf */ s_prayerSwitchMusafNl,
 };
 
 // ─── Lookup ───────────────────────────────────────────────────────────────────

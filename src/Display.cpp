@@ -58,8 +58,17 @@ static const uint32_t FLASH_WRITE_GATHER_MS = 2000UL;
 // ... and the screen counts as still only after standing this long (a frame
 // or two between moving items isn't a moment to write in - seen 2026-10-30).
 static const uint32_t STILL_SETTLE_MS = 300UL;
+// Text: the letters and digits (FONT_LETTER_H rows on the baseline) are
+// centred in the window, then moved down this much - chosen by the user from
+// previews 2026-11-04 (85-row window: 20 rows empty above them, 17 below).
+static const int      TEXT_BELOW_MIDDLE_PX = 2;
 
-static void IRAM_ATTR onTe();   // the panel's TE pulse - see keepTeOn()
+// Top row of the text's character cell in a window (y, h) - see TEXT_BELOW_MIDDLE_PX.
+static int textTopY(int winY, int winH) {
+    return winY + (winH + FONT_LETTER_H) / 2 + TEXT_BELOW_MIDDLE_PX - FONT_BASELINE;
+}
+
+static void onTe();   // the panel's TE pulse - see keepTeOn(); IRAM_ATTR on the definition only (each use is a new section: two clashed)
 
 /**
  * @brief Draws a standardized error icon on the canvas.
@@ -432,10 +441,6 @@ void DisplayManager::setWindow(int x, int y, int w, int h) {
     // but we log it to avoid confusion during debugging.
 }
 
-int DisplayManager::getWindowWidth() {
-    return _winW;
-}
-
 void DisplayManager::clearWindow() {
     if (_canvas) {
         _canvas->fillRect(_winX, _winY, _winW, _winH, COLOR_BACKGROUND);
@@ -536,10 +541,6 @@ void DisplayManager::setScrollSpeed(int pixelsPerFrame) {
     _scrollSpeed = pixelsPerFrame;
 }
 
-int DisplayManager::getScrollSpeed() {
-    return _scrollSpeed;
-}
-
 void DisplayManager::setMessage(const std::vector<OnScreenElement>& elements, uint16_t color, const AppConfig& cfg) {
     DisplayLock::Guard guard;
     if (_mode == DisplayMode::Blank || _mode == DisplayMode::Setup) _mode = DisplayMode::Normal;
@@ -559,7 +560,7 @@ void DisplayManager::analyzeElements(std::vector<OnScreenElement>& elements, con
     // (e.g. a Havdalah time); an English/Dutch clock scrolls LTR even for a
     // message that happens to be all Hebrew (e.g. a holiday name).
     // One exception (decided 2026-10-18): text with Latin letters and no
-    // Hebrew at all scrolls LTR on any clock - "Connecting to MyNetwork..."
+    // Hebrew at all scrolls LTR on any clock - "Connecting to MyNetwork2..."
     // and the other status messages (always English, on purpose), or an
     // event name typed in English, used to come in from the left on a
     // Hebrew clock. Per-character bidi analysis (getRunType) is still used
@@ -726,7 +727,7 @@ void DisplayManager::update(const AppConfig& cfg) {
         if (!s_stillDrawn && _canvas && _gfx) {
             _canvas->fillRect(_winX, _winY, _winW, _winH, COLOR_BACKGROUND);
             int w = measureString(s_stillText.c_str());
-            drawString(_winX + (_winW - w) / 2, _winY + (_winH - FONT_H) / 2, s_stillText.c_str(), COLOR_GOLD, false, s_stillRtl);
+            drawString(_winX + (_winW - w) / 2, textTopY(_winY, _winH), s_stillText.c_str(), COLOR_GOLD, false, s_stillRtl);
             _gfx->draw16bitRGBBitmap(0, 0, ((Arduino_Canvas*)_canvas)->getFramebuffer(), TFT_WIDTH, TFT_HEIGHT);
             s_stillDrawn = true;
         }
@@ -964,7 +965,7 @@ void DisplayManager::update(const AppConfig& cfg) {
 
         // --- Drawing Logic ---
         int currentX = _winX + _scrollX;
-        const int drawY = _winY + (_winH - FONT_H) / 2;
+        const int drawY = textTopY(_winY, _winH);
 
         auto drawOneElement = [&](int x, const OnScreenElement& p, bool isRtl) {
             if (p.type == OnScreenElementType::TEXT) {

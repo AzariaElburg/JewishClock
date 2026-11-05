@@ -16,7 +16,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "utils"))
-from local_dirs import SIM_WORK  # noqa: E402 - outside the OneDrive folder
+from local_dirs import SIM_WORK, SIM_EXE  # noqa: E402 - outside the OneDrive folder
 ROOT = Path(__file__).resolve().parent.parent
 WORK = SIM_WORK
 
@@ -27,7 +27,7 @@ def main():
     ap.add_argument("--from", dest="start", default=date.today().isoformat())
     ap.add_argument("--days", type=int, default=365)
     ap.add_argument("--times", nargs="+", default=["12:00", "21:00"])
-    ap.add_argument("--exe", default=str(ROOT / "sim" / "build" / "jcsim.exe"))
+    ap.add_argument("--exe", default=str(SIM_EXE))
     args = ap.parse_args()
     args.exe = str(Path(args.exe).resolve())
     out = WORK / "sweep"

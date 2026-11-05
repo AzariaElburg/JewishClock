@@ -1,6 +1,6 @@
 """
 The real clock against the simulator at many moments: holidays, Shabbat,
-fasts, sunset, and every day around the two rain/dew prayer switch days.
+fasts, sunset, and every day around the three rain/dew prayer switch days.
 
     C:/pio3/jc_clean/venv/Scripts/python sim/moments.py --clock <clock-ip> [--only NAME ...]
 
@@ -8,7 +8,7 @@ For each moment: set the clock's debug time (POST /api/debug/time), restart
 it with a reset pulse over USB (COM5 - writes nothing to the clock), wait
 for it to fetch that day's calendar, then take screenshots while the
 simulator runs the same moment and compares them pixel for pixel (see
-compare.py). Rain/dew prayer days are run with the setting at 0, 1 and 2
+compare.py). Rain/dew prayer moments are run with the setting at 0, 1 and 2
 (changed live), and the clock's slides are checked against the expected
 text, not only against the simulator.
 
@@ -38,7 +38,7 @@ WORK = SIM_WORK
 EXE = SIM_EXE
 OUT = WORK / "moments"
 
-WHEN = ["מ-מחרתיים", "מ-מחר", "מהיום", "מ-אתמול", "מ-שלשום"]   # lang.cpp prayerSwitchWhen, Hebrew
+from test_prayer import mention, pesach, request, PRAYER  # noqa: E402
 
 MOMENTS = [   # name, local time (Israel)
     ("weekday", "2026-10-20 12:00"),
@@ -74,10 +74,20 @@ MOMENTS = [   # name, local time (Israel)
     ("y2240-hebrew-6000", "2240-09-03 12:00"),
     ("y2300", "2300-03-04 12:00"),
 ]
-SWITCHES = [("משיב הרוח", date(2026, 10, 3)), ("מוריד הטל", date(2027, 4, 22))]
-for _phrase, _day in SWITCHES:
+# Rain/dew prayer: every day around each switch day, and the evening before
+# it after צאת; expected text per setting from test_prayer.py (the rules).
+PRAYER_EXPECT = {}   # moment name -> f(setting) -> expected lines
+for _kind, _day, _rule in (("atzeret", date(2026, 10, 3), mention),    # 22 Tishrei 5787
+                           ("pesach", date(2027, 4, 22), pesach),       # 15 Nisan 5787
+                           ("request", date(2026, 10, 17), request)):   # its evening opens 7 Cheshvan 5787
     for _d in range(-3, 4):
-        MOMENTS.append(("prayer-%s%+d" % (_day, _d), "%s 12:00" % (_day + timedelta(days=_d))))
+        MOMENTS.append(("prayer-%s%+d" % (_kind, _d), "%s 12:00" % (_day + timedelta(days=_d))))
+        PRAYER_EXPECT["prayer-%s%+d" % (_kind, _d)] = (lambda r, d: lambda w: r(d, w))(_rule, _d)
+for _name, _when, _rule, _d in (("prayer-atzeret-eve", "2026-10-02 20:00", mention, -1),   # after צאת: no change
+                                ("prayer-pesach-eve", "2027-04-21 20:30", pesach, -1),
+                                ("prayer-request-eve", "2026-10-17 19:30", request, 0)):
+    MOMENTS.append((_name, _when))
+    PRAYER_EXPECT[_name] = (lambda r, d: lambda w: r(d, w))(_rule, _d)
 
 
 def log(*a):
@@ -259,11 +269,9 @@ def main():
                 verdict = "OK" if not bad and not only_clock else "MISMATCH"
                 extra = ""
                 if prayer:
-                    phrase, sday = [(p, d) for p, d in SWITCHES if name.startswith("prayer-%s" % d)][0]
-                    d = int(name.rsplit(str(sday), 1)[1])
-                    want = None if abs(d) > w else (phrase if w == 0 else phrase + " " + WHEN[d + 2])
-                    got = sorted(t for t in texts if t.startswith(phrase))
-                    p_ok = got == ([want] if want else [])
+                    want = PRAYER_EXPECT[name](w)
+                    got = sorted({p.strip() for t in texts for p in t.split(" | ") if PRAYER.search(p)})
+                    p_ok = got == sorted(want)
                     extra = "\tprayer %s: expected %r, clock showed %r" % ("OK" if p_ok else "WRONG", want, got)
                     if not p_ok:
                         verdict = "MISMATCH"

@@ -67,16 +67,13 @@ struct DisplayStrings {
     // slide, formatted as "<day> <month> <year>".
     const char* const* gregorianMonths;
 
-    // Rain/dew prayer slide (משיב הרוח / מוריד הטל): when the switch is, seen
-    // from today. Index 0..4 = switch day is 2 days ahead .. 2 days ago.
-    // The phrases themselves stay Hebrew in every language.
-    const char* const* prayerSwitchWhen;
+    // Rain/dew prayer slide (Calendar::getPrayerSwitch() / getRainRequest()).
+    // The phrases themselves stay Hebrew in every language. Index = days
+    // ahead (0..2): "from Musaf" (on the day), "from tomorrow", ...
+    const char* const* prayerSwitchFrom;
     // ותן טל ומטר starts at Maariv: index 0..2 = this evening .. the evening
-    // after tomorrow (Calendar::getRainRequest()).
+    // after tomorrow.
     const char* const* prayerSwitchEvening;
-    // The switch day itself: [0] "from Musaf", [1] "from Musaf tomorrow" (its
-    // evening before, already that Hebrew day).
-    const char* const* prayerSwitchMusaf;
 };
 
 // ─── String tables ────────────────────────────────────────────────────────────

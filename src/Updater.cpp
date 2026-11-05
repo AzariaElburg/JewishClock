@@ -326,7 +326,7 @@ void installPendingWebFiles() {
     }
     // Only with a believable list: one without the page itself would wipe it.
     bool listOk = false;
-    for (const String& p : paths) if (p == "/index.html") listOk = true;
+    for (const String& p : paths) if (p == "/index.html" || p == "/index.html.gz") listOk = true;   // gzipped since 2026-11-04
     if (!listOk) { DiagnosticLog::record("OTA", "web file list of %s has no /index.html - nothing removed", version.c_str()); files.clear(); dirs.clear(); }
     for (const String& fp : files) {
         bool listed = false;

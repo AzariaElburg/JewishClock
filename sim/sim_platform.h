@@ -21,4 +21,10 @@ namespace Sim {
     extern unsigned long setupMs, wifiUpMs, ntpSyncMs;
     void startTiming(uint32_t seed);
     void pinTiming(const std::string& name, unsigned long ms);   // "main#2" (2nd main download) or "main" (all)
+    unsigned long drawTiming(const Range& r, const std::string& kind);   // one more value, by name (printed)
+    // The full simulator (jcclock) only - the screen one leaves them alone:
+    extern bool (*internetUp)();    // downloads fail when this says no (no network, or one without internet)
+    extern bool liveNetwork;        // downloads for real, uncached, at their real speed (not the measured simulated one)
+    extern float roomLux;           // what the light sensor reads
+    extern bool lightSensorPresent; // false: the clock runs on its simulated value, as without a sensor
 }

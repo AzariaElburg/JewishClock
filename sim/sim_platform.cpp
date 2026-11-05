@@ -15,6 +15,7 @@
 #include "sim_platform.h"
 
 #include <filesystem>
+#include <chrono>
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -80,6 +81,11 @@ static unsigned long draw(const Sim::Range& r, const std::string& kind) {
     return v;
 }
 void Sim::pinTiming(const std::string& name, unsigned long ms) { g_pinned[name] = ms; }
+unsigned long Sim::drawTiming(const Range& r, const std::string& kind) { return draw(r, kind); }
+bool (*Sim::internetUp)() = nullptr;
+bool Sim::liveNetwork = false;
+float Sim::roomLux = 120.0f;
+bool Sim::lightSensorPresent = true;
 void Sim::startTiming(uint32_t seed) {
     g_seed = seed;
     setupMs   = draw(setupTime, "setup");
@@ -95,7 +101,7 @@ static unsigned long latencyFor(const std::string& url) {
 // ── Globals the clock's code expects ──────────────────────────────────────────
 HardwareSerial Serial;
 EspClass ESP;
-WiFiClass WiFi;
+WiFiClass WiFi;     // the screen simulator's (stubs/WiFi.h) or the full one's (clock_stubs/WiFi.h, sim_wifi.cpp)
 LittleFSFS LittleFS;
 spi_dev_t GPSPI2, GPSPI3;
 bool Sim::quiet = true;
@@ -103,8 +109,13 @@ bool Sim::quiet = true;
 size_t HardwareSerial::write(uint8_t c) { if (!Sim::quiet) fputc(c, stderr); return 1; }
 size_t HardwareSerial::write(const uint8_t* buf, size_t n) { if (!Sim::quiet) fwrite(buf, 1, n, stderr); return n; }
 
-uint32_t esp_random() {   // deterministic: event ids etc. repeat run to run
-    static uint32_t x = 0x9E3779B9u;
+// Deterministic in the screen simulator: event ids etc. repeat run to run.
+// The full one seeds it at every start, as the clock's hardware random does
+// differ (ids made after a restart must not repeat earlier ones).
+uint32_t& sim_random_seed() { static uint32_t x = 0x9E3779B9u; return x; }
+uint32_t esp_random() {
+    uint32_t& x = sim_random_seed();
+    if (!x) x = 0x9E3779B9u;
     x ^= x << 13; x ^= x >> 17; x ^= x << 5;
     return x;
 }
@@ -165,6 +176,15 @@ size_t File::size() const {
     return ec ? 0 : (size_t)s;
 }
 void File::close() { fp_.reset(); isDir_ = false; }
+time_t File::getLastWrite() {
+    std::error_code ec;
+    auto t = stdfs::last_write_time(pcPath_, ec);
+    if (ec) return 0;
+    // file_time_type's clock to seconds since 1970 (C++17: no clock_cast yet).
+    auto sys = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+        t - stdfs::file_time_type::clock::now() + std::chrono::system_clock::now());
+    return (time_t)std::chrono::duration_cast<std::chrono::seconds>(sys.time_since_epoch()).count();
+}
 void File::flush() { if (fp_) fflush(fp_.get()); }
 const char* File::name() const {
     size_t slash = clockPath_.find_last_of('/');
@@ -210,6 +230,21 @@ int HTTPClient::GET() {
     body_ = String();
     std::string url = url_.c_str();
     if (url.empty()) return -1;
+    if (Sim::liveNetwork) {   // jcclock: the real download, now, as the clock makes it
+        if (Sim::internetUp && !Sim::internetUp()) return -1;
+        std::error_code ec;
+        stdfs::create_directories(Sim::httpCacheDir, ec);
+        std::string file = Sim::httpCacheDir + "/live_" + std::to_string((uintptr_t)this) + ".txt";
+        std::string cmd = "curl.exe -s -f -m 30 -o \"" + file + "\" \"" + url + "\"";
+        int rc = std::system(cmd.c_str());
+        FILE* fp = rc == 0 ? fopen(file.c_str(), "rb") : nullptr;
+        if (!fp) { stdfs::remove(file, ec); return -1; }
+        std::string data; char buf[8192]; size_t n;
+        while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) data.append(buf, n);
+        fclose(fp); stdfs::remove(file, ec);
+        body_ = String(data);
+        return 200;
+    }
     done.at = startMs + latencyFor(url);
     uint64_t h = 1469598103934665603ULL;   // FNV-1a of the URL = cache file name
     for (unsigned char c : url) { h ^= c; h *= 1099511628211ULL; }
@@ -265,7 +300,8 @@ void Sim::advanceMillis(unsigned long ms) {
     std::unique_lock<std::mutex> lk(g_task.m);
     g_simMillis += ms;
     g_task.cv.notify_all();
-    g_task.cv.wait(lk, [] { return taskSettled(); });   // a woken download finishes first
+    // The full simulator: the task runs alongside the main loop, as on the clock.
+    if (!Sim::liveNetwork) g_task.cv.wait(lk, [] { return taskSettled(); });   // a woken download finishes first
 }
 BaseType_t xTaskCreatePinnedToCore(TaskFunction_t fn, const char*, uint32_t, void* param, UBaseType_t, TaskHandle_t* handle, BaseType_t) {
     if (handle) *handle = &g_task;

@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import local_dirs  # noqa: E402
 
 # === TUNABLES ===
-FRAME_H = 100           # default; --h N. The final box's window height, once calibrated
+FRAME_H = 97            # default; --h N. The final box's window height (2026-11-04)
 SS = 4                  # supersampling per axis
 PREVIEW_SCALE = 6
 

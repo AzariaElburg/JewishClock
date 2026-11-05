@@ -60,9 +60,21 @@ function el(id){ return document.getElementById(id); }
 let oldVersion = null;   // version before the update
 let newVersion = null;   // version the clock said it is installing (package only)
 let finished = false;
+let apName = '', homeName = '';   // the clock's own Wi-Fi, and the one it is on
 
-fetch('/api/status').then(r=>r.json()).then(s=>{ oldVersion = s.firmware; el('curVer').textContent = s.firmware || 'unknown'; })
-  .catch(()=>{ el('curVer').textContent = 'unknown'; });
+fetch('/api/status').then(r=>r.json()).then(s=>{
+  oldVersion = s.firmware; el('curVer').textContent = s.firmware || 'unknown';
+  apName = s.apSsid || ''; homeName = s.ssid || '';
+}).catch(()=>{ el('curVer').textContent = 'unknown'; });
+
+// While the clock restarts its Wi-Fi is gone, and the phone or computer
+// usually moves to its home network - and stays there (the user, 2026-11-03).
+function restartingMsg(){
+  let t = 'Update received - the clock is restarting. About 2 minutes; keep this page open.';
+  if (apName) t += ' When the clock is back, choose the Wi-Fi "' + apName + '" again: your phone or computer will probably switch to ' +
+    (homeName ? '"' + homeName + '"' : 'another network') + ' while the clock restarts.';
+  return t;
+}
 
 el('fileInput').addEventListener('change', function(){
   const f = this.files[0];
@@ -105,15 +117,18 @@ function startUpdate(){
   xhr.upload.addEventListener('load', function(){ sent = true; showMsg('Checking the update file...', 'wait'); });
   xhr.addEventListener('load', function(){
     if (xhr.status !== 200) { fail(xhr.responseText); return; }
-    const m = xhr.responseText.match(/Installing version (\d+(?:\.\d+)+)/);   // not the sentence's own full stop
+    // The whole version, "2.0.1-3-g1a2b3c4" too (Updater.cpp's message) - not
+    // the sentence's own full stop. Until 2026-11-02 only "2.0.1" was taken,
+    // so the page never said "Done!" for a build between releases.
+    const m = xhr.responseText.match(/Installing version (\S+)\. /);
     newVersion = m ? m[1] : null;
-    showMsg('Installing - the clock is restarting. About 2 minutes; keep this page open.', 'wait');
+    showMsg(restartingMsg(), 'wait');
     watch();
   });
   xhr.addEventListener('error', function(){
     // The clock restarting can cut the connection right after a successful
     // upload - then follow it; a failure before the file was sent is real.
-    if (sent) { showMsg('Installing - the clock is restarting. About 2 minutes; keep this page open.', 'wait'); watch(); }
+    if (sent) { showMsg(restartingMsg(), 'wait'); watch(); }
     else fail('Could not reach the clock. Check this phone/computer is on the same Wi-Fi as the clock, and try again.');
   });
   xhr.open('POST', '/update');

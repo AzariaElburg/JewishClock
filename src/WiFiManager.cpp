@@ -43,6 +43,13 @@ static const uint32_t      PICK_SCAN_MS_PER_CH  = 100;
 static const unsigned long PICK_SCAN_GIVE_UP_MS = 6000;
 // In setup mode with known networks (none could be joined): try them again this often.
 static const unsigned long PORTAL_RETRY_MS = 2UL * 60UL * 1000UL;
+// The settings page's list of networks around (serviceListScan()): per
+// channel like ROAM_SCAN_MS_PER_CH (connected, AP up - same reason), a list
+// this young is handed out again instead of scanning anew, and a scan with no
+// result by LIST_SCAN_GIVE_UP_MS counts as failed (an empty list).
+static const uint32_t      LIST_SCAN_MS_PER_CH  = 300;
+static const unsigned long LIST_FRESH_MS        = 30UL * 1000UL;
+static const unsigned long LIST_SCAN_GIVE_UP_MS = 15000;
 
 // ─── State Machine Globals ──────────────────────────────────────────────────
 
@@ -72,6 +79,14 @@ static int             g_nextSlot = -1;            // join this one next: "Conne
 static std::atomic<int> g_connectRequest{-1};      // "Connect" pressed (web server task) - loop() takes it
 static bool            g_pickScanRunning = false;
 static unsigned long   g_pickScanStartedMs = 0;
+
+// The settings page's list (heardNetworks() / serviceListScan()). The request
+// comes from the web server task; the rest is under WiFiLock.
+static std::atomic<bool> g_listRequest{false};
+static bool            g_listScanRunning = false;
+static unsigned long   g_listScanStartedMs = 0;
+static std::vector<WiFiManager::HeardNetwork> g_heard;
+static unsigned long   g_heardAtMs = 0;            // when g_heard was made (0 = never)
 
 // 2026-10-08: tried deferring the very first WiFi.begin() by 1.5s, on the
 // theory that reason=202 (AUTH_FAIL) - a well-documented ESP32 Arduino core
@@ -552,6 +567,7 @@ void WiFiManager::loop() {
 
         default: break;
     }
+    serviceListScan();
 
     if (g_apActive) {
         dnsServer.processNextRequest();
@@ -613,6 +629,7 @@ void WiFiManager::serviceRoaming() {
         }
         return;
     }
+    if (g_listScanRunning) return;   // one scan at a time: they share the results
     if (now - g_roamLastSampleMs < ROAM_SAMPLE_MS) return;
     g_roamLastSampleMs = now;
     int rssi = WiFi.RSSI();
@@ -631,6 +648,57 @@ void WiFiManager::serviceRoaming() {
     }
     g_roamScanStartedMs = now;
     g_roamScanRunning = true;
+}
+
+bool WiFiManager::heardNetworks(std::vector<HeardNetwork>& out, bool rescan) {
+    WiFiLock::Guard guard;
+    if (rescan) g_heardAtMs = 0;   // wait for the next result (a running scan counts)
+    if (g_heardAtMs && millis() - g_heardAtMs < LIST_FRESH_MS) {
+        out = g_heard;
+        return true;
+    }
+    // Not while one runs: the page asks every second, and each ask started
+    // the next scan right after the last - it never saw a result (2026-11-03).
+    if (!g_listScanRunning) g_listRequest = true;
+    return false;
+}
+
+// Runs with WiFiLock held (from loop()). A scan the page asked for starts
+// only while connected and no scan of the clock's own runs (they share the
+// one result list); until then the request waits. While connecting, the
+// radio is busy - connectSTA() cancels a running one.
+void WiFiManager::serviceListScan() {
+    if (g_listScanRunning) {
+        int n = WiFi.scanComplete();
+        if (n == WIFI_SCAN_RUNNING && millis() - g_listScanStartedMs < LIST_SCAN_GIVE_UP_MS) return;
+        if (n == WIFI_SCAN_RUNNING) esp_wifi_scan_stop();
+        g_listScanRunning = false;
+        g_heard.clear();
+        for (int i = 0; i < n; i++) {
+            String ssid = WiFi.SSID(i);
+            if (!ssid.length()) continue;   // hidden network
+            bool secure = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
+            auto same = std::find_if(g_heard.begin(), g_heard.end(), [&](const HeardNetwork& h) { return h.ssid == ssid; });
+            if (same == g_heard.end()) g_heard.push_back({ ssid, WiFi.RSSI(i), secure });
+            else if (WiFi.RSSI(i) > same->rssi) same->rssi = WiFi.RSSI(i);
+        }
+        std::sort(g_heard.begin(), g_heard.end(), [](const HeardNetwork& a, const HeardNetwork& b) { return a.rssi > b.rssi; });
+        WiFi.scanDelete();
+        g_heardAtMs = millis() | 1;
+        if (n < 0) DiagnosticLog::record("WIFI", "network list for the page: scan %s (code %d)", n == WIFI_SCAN_RUNNING ? "gave no result" : "failed", n);
+        else CLOCK_LOG("WiFi", "network list for the page: %d names (%d access points)", (int)g_heard.size(), n);
+        return;
+    }
+    if (!g_listRequest || g_state != WiFiState::STA_CONNECTED || g_roamScanRunning || g_pickScanRunning) return;
+    g_listRequest = false;
+    if (WiFi.scanNetworks(true /*async*/, false, false, LIST_SCAN_MS_PER_CH) == WIFI_SCAN_FAILED) {
+        DiagnosticLog::record("WIFI", "network list for the page: scan could not start");
+        g_heard.clear();
+        g_heardAtMs = millis() | 1;
+        return;
+    }
+    g_listScanStartedMs = millis();
+    g_listScanRunning = true;
 }
 
 String WiFiManager::getStatusMessage() {
@@ -715,6 +783,10 @@ void WiFiManager::connectSTA(AppConfig& cfg) {
     // at -64..-73. A full scan costs ~1-2 s per connect; sorting by signal is
     // already the default but only matters with a full scan. (beginSlot())
     if (g_roamScanRunning) { WiFi.scanDelete(); g_roamScanRunning = false; }
+    if (g_listScanRunning) {   // the page gets "none heard"
+        esp_wifi_scan_stop(); WiFi.scanDelete();
+        g_listScanRunning = false; g_heard.clear(); g_heardAtMs = millis() | 1;
+    }
     g_pickScanRunning = false;
     int known = knownNetworkCount(cfg);
     if (!known) return;

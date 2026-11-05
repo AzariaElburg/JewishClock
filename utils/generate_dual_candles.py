@@ -39,6 +39,16 @@ def create_dual_candle_bmp(filename="dual_candle_anim.bmp"):
     # Candle positions relative to frame center
     candle_centers_offset = [-22.0, 22.0]
 
+    # Flame, wick and wax top raised by this many rows. 17 = the tallest flame
+    # (frame 3) touches the top row (the user, 2026-11-04: flame to the top).
+    lift_rows = 17
+    # The wax ends above this row, the rest of the frame stays empty (the
+    # picture keeps its full height, so the flame stays at the window's top).
+    # 96: halfway between wax to the bottom (dwarfed the time next to it) and
+    # 85 (~3 rows below the digits on a 97-row window - too short); the user,
+    # 2026-11-04. Another window height moves it a little against the text.
+    wax_bottom_y = 96
+
     for f in range(frame_count):
         frame_offset_x = f * frame_width
         frame_center_x = frame_offset_x + (frame_width / 2.0)
@@ -72,8 +82,8 @@ def create_dual_candle_bmp(filename="dual_candle_anim.bmp"):
                 max_w = 9.5
 
             wick_x = center_x
-            wick_top_y = 66.0
-            wax_top_y = 78.0
+            wick_top_y = 66.0 - lift_rows
+            wax_top_y = 78.0 - lift_rows
 
             # Render Pixel Grid for current candle
             for y in range(total_height):
@@ -84,6 +94,8 @@ def create_dual_candle_bmp(filename="dual_candle_anim.bmp"):
                 for px in range(x_start, x_end):
 
                     # --- 1. Wax Body & Rim ---
+                    if y >= wax_bottom_y:
+                        continue
                     if y >= wax_top_y:
                         dx = abs(px - center_x)
                         if dx < 16:
@@ -91,7 +103,7 @@ def create_dual_candle_bmp(filename="dual_candle_anim.bmp"):
                                 (px - center_x) / 16.0 * (math.pi / 2)
                             )
                             depth = (y - wax_top_y) / (
-                                total_height - wax_top_y
+                                wax_bottom_y - wax_top_y
                             )
                             r = int(
                                 (210 * shade + 30) * (1.0 - depth * 0.3)
@@ -120,7 +132,7 @@ def create_dual_candle_bmp(filename="dual_candle_anim.bmp"):
                     # --- 3. Dynamic Flame ---
                     if y < wax_top_y:
                         flame_base_y = wax_top_y - 2
-                        flame_top_y = 20.0 + flame_height_mod
+                        flame_top_y = 20.0 - lift_rows + flame_height_mod
                         flame_len = flame_base_y - flame_top_y
 
                         if flame_top_y <= y <= flame_base_y:

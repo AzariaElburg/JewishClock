@@ -31,6 +31,7 @@
   --radius:6px;
 }
 html,body{height:100%;background:var(--bg);color:var(--ink);overflow-x:hidden}
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}   /* phones: no text enlarged on their own */
 body{font-family:var(--sans);font-size:13px;line-height:1.45;display:flex;flex-direction:column;-webkit-font-smoothing:antialiased}
 button,input,select{font-family:inherit;font-size:inherit;color:inherit}
 h1,h2,h3{font-weight:600}
@@ -342,6 +343,7 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
 .rowmenu button{background:none;border:0;text-align:left;padding:5px 10px;font-size:12px;color:var(--ink);border-radius:4px;cursor:pointer;white-space:nowrap}
 .rowmenu button:hover{background:var(--accent-wash)}
 .rowmenu button.danger{color:var(--danger)}
+.place-line{display:inline-flex;align-items:center;gap:7px}
 .place-txt{font-size:12px;color:var(--ink-muted)}
 .place-tag{font-size:10.5px;color:var(--ink-faint);border:1px solid var(--rule);border-radius:3px;padding:0 4px}
 .place-tag.place-warn{color:var(--warn);border-color:var(--warn)}
@@ -417,8 +419,16 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
   .rail-item .ic{font-size:15px}
   #main{order:1}
   .grp{flex-direction:column;gap:4px;align-items:stretch}
-  .frow > .k{min-width:96px}
-  .frow .sl-row{flex-wrap:wrap}
+  .frow > .k{min-width:84px}
+  .frow{gap:6px}
+  .frow .sl-row{flex-wrap:wrap;gap:5px;min-width:0}
+  .frow .txtfield{min-width:0;max-width:100%}
+  /* Wi-Fi rows: name and ⋯ on one line, the place under them (the user,
+     2026-11-04: the section overflowed a phone screen) */
+  .wifi-row .rowmenu-wrap{order:1}
+  .wifi-row .place-line{order:2;flex-basis:100%}
+  .wifi-row .place-txt{font-size:11px}
+  .place-edit .sl-row .txtfield{flex:1}
   .glabel{width:auto}
   .gbody{max-width:none}
   .frow-pair{grid-template-columns:1fr}
@@ -501,8 +511,8 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
               <div class="frow" title="On: the clock sets its own brightness from the light in the room - dim in the dark, bright in daylight. Off: one fixed brightness"><span class="k">Adjust to room light</span><label class="tgl"><input type="checkbox" id="cfg-use-sensor" data-auto-toggle><span class="sl"></span></label></div>
               <div class="swapslot">
                 <div data-auto-block>
-                  <div class="frow has-now" title="Faintest: in a dark room - just readable, without lighting up the room (Off = no backlight at all). Brightest: in a light room. In between it adjusts gradually. The clock shows the level while you move a handle. "Now": the brightness now"><span class="k">Brightness</span><span class="sl-row"><div class="dualrange" id="dr-bright"><div class="dr-track"></div><div class="dr-fill"></div><div class="dr-now" hidden></div><input type="range" min="0" max="100" step="0.5"><input type="range" min="0" max="100" step="0.5"></div><span class="v" id="dr-bright-lbl"></span></span></div>
-                  <div class="frow has-now" title="How much light counts as a dark room (left) and as a light room (right), 0-100%. Set them by hand, or let the clock learn them. "Now": the room light now"><span class="k">Room light</span><span class="sl-row"><div class="dualrange" id="dr-room"><div class="dr-track"></div><div class="dr-fill"></div><div class="dr-now" hidden></div><input type="range" min="0" max="100" step="0.5"><input type="range" min="0" max="100" step="0.5"></div><span class="v" id="dr-room-lbl"></span></span></div>
+                  <div class="frow has-now" title="Faintest: in a dark room - just readable, without lighting up the room (Off = no backlight at all). Brightest: in a light room. In between it adjusts gradually. The clock shows the level while you move a handle. "Now": the brightness now"><span class="k">Brightness</span><span class="sl-row"><div class="dualrange" id="dr-bright"><div class="dr-track"></div><div class="dr-fill"></div><div class="dr-now" hidden></div><input type="range" min="0" max="100" step="1"><input type="range" min="0" max="100" step="1"></div><span class="v" id="dr-bright-lbl"></span></span></div>
+                  <div class="frow has-now" title="How much light counts as a dark room (left) and as a light room (right), 0-100%. Set them by hand, or let the clock learn them. "Now": the room light now"><span class="k">Room light</span><span class="sl-row"><div class="dualrange" id="dr-room"><div class="dr-track"></div><div class="dr-fill"></div><div class="dr-now" hidden></div><input type="range" min="0" max="100" step="1"><input type="range" min="0" max="100" step="1"></div><span class="v" id="dr-room-lbl"></span></span></div>
                   <div class="frow" title="On: the clock learns how dark and how light this room gets, and keeps adjusting over the days. Off: the room light ends stay where they are"><span class="k">Learn room light</span><label class="tgl"><input type="checkbox" id="cfg-learn-room"><span class="sl"></span></label></div>
                 </div>
                 <div data-manual-block style="display:none">
@@ -524,7 +534,6 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
           <div class="glabel"><div class="t">Calendar Content</div><div class="d">What appears on the clock</div></div>
           <div class="gbody">
             <div class="toggle-grid">
-              <div class="frow"><span class="k">All messages</span><label class="tgl"><input type="checkbox" id="t-all"><span class="sl"></span></label></div>
               <div class="frow" title="Include the year in the Hebrew and Gregorian date messages"><span class="k">Show year</span><label class="tgl"><input type="checkbox" id="t-heb-year"><span class="sl"></span></label></div>
             </div>
             <div class="content-order-hint">Drag <span class="drag-handle-inline">⠿</span> to reorder — items higher up appear earlier in the sequence. Use the dropdown to control how often each one shows.</div>
@@ -541,7 +550,7 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
         </div>
 
         <div class="grp">
-          <div class="glabel"><div class="t">Connectivity</div><div class="d">Name, network, region, language</div></div>
+          <div class="glabel"><div class="t">Wi-Fi</div><div class="d">Name, network, region, language</div></div>
           <div class="gbody">
             <div class="frow"><span class="k">Clock name</span><input type="text" class="txtfield" id="cfg-name"></div>
             <div class="subcluster" id="wifi-networks" title="Up to three Wi-Fi networks. The clock joins whichever of them it hears strongest - at power-up, after losing the connection, and when the signal stays weak.">
@@ -549,7 +558,7 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
               <!-- one block per network, filled in by wifiSlotsHtml() below -->
             </div>
             <div class="frow"><span class="k">24-hour clock</span><label class="tgl"><input type="checkbox" id="cfg-24h"><span class="sl"></span></label></div>
-            <button class="mbtn mbtn-primary" style="margin-top:10px" onclick="saveConnectivity()">Save Connectivity</button>
+            <button class="mbtn mbtn-primary" style="margin-top:10px" onclick="saveWifi()">Save Wi-Fi</button>
             <div class="frow" style="margin-top:12px"><span class="k"></span><button class="mbtn mbtn-danger mbtn-sm" onclick="confirmForget()">❌ Reset Wi-Fi</button></div>
           </div>
         </div>
@@ -583,7 +592,7 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
           <div class="gbody">
             <div class="iorow">
               <div class="txt"><b>Version</b><div id="fwupd-version" style="font-family:var(--mono)">—</div></div>
-              <div class="btns"><a href="/licenses.txt" target="_blank" class="mbtn mbtn-ghost">Licenses</a></div>
+              <div class="btns"><a href="/start.html" target="_blank" class="mbtn mbtn-ghost">Quick start guide</a><a href="/manual.html" target="_blank" class="mbtn mbtn-ghost">Manual</a><a href="/licenses.txt" target="_blank" class="mbtn mbtn-ghost">Licenses</a></div>
             </div>
             <div class="iorow">
               <div class="txt"><b>Update</b><div>Install an update file (.jcupdate) you received.</div></div>
@@ -604,9 +613,9 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
               <div class="subcap" style="font-size:10.5px;color:var(--ink-faint);margin-bottom:4px">Debug time - test the clock at another date</div>
               <div class="frow"><span class="k">The clock's time</span><span class="v" id="dbg-state">—</span></div>
               <div class="frow"><span class="k">Shift by</span><span class="sl-row">
-                <input type="number" class="txtfield" style="width:56px" id="dbg-d" placeholder="0"> d
-                <input type="number" class="txtfield" style="width:48px" id="dbg-h" placeholder="0"> h
-                <input type="number" class="txtfield" style="width:48px" id="dbg-m" placeholder="0"> min
+                d <input type="number" class="txtfield" style="width:56px" id="dbg-d" placeholder="0">
+                h <input type="number" class="txtfield" style="width:48px" id="dbg-h" placeholder="0">
+                min <input type="number" class="txtfield" style="width:48px" id="dbg-m" placeholder="0">
                 <button class="mbtn mbtn-ghost mbtn-sm" onclick="debugShift()">Apply</button></span></div>
               <div class="frow"><span class="k">Set to (Gregorian)</span><span class="sl-row">
                 <input type="datetime-local" class="txtfield" id="dbg-g">
@@ -912,7 +921,7 @@ const CONTENT_EXTRAS = {
           options: [[1, '23 לעומר'], [3, '23 שהם 3 שבועות + 2 ימים לעומר'], [2, 'היום שלושה ועשרים יום, שהם שלושה שבועות ושני ימים לעומר']] }],
   prayerswitch: [{ cfg: 'nusach', dir: 'rtl', title: 'Wording of the rain request',
           options: [[0, 'אשכנז'], [1, 'ספרד']] },
-        { cfg: 'prayerSwitchDays', title: 'Days shown before &amp; after the switch day (0 = only that day; Pesach: from the day itself)',
+        { cfg: 'prayerSwitchDays', title: 'Days shown before &amp; after the switch day (0 = only that day; Pesach: from its eve)',
           options: [[0, 'Only on the day'], [1, '1 day before &amp; after'], [2, '2 days before &amp; after']] }]
 };
 const contentExtraValues = { omerMode: 1, prayerSwitchDays: 1, nusach: 0, eventDayChange: 0 };
@@ -1335,6 +1344,7 @@ async function loadStatus() {
     el('fw-version').textContent = 'v' + (s.firmware || '1.0.0');
     el('wifi-ssid').textContent = s.ssid || '(none)';
     if (connectedSsid !== (s.ssid || '')) { connectedSsid = s.ssid || ''; markConnectedWifi(); }
+    clockApSsid = s.apSsid || clockApSsid;
     updateWifiGauge(s.rssi, !!s.ssid);
     const fwupd = el('fwupd-version');
     if (fwupd) fwupd.textContent = 'v' + (s.firmware || '?') + ' — built ' + (s.beBuild || '?');
@@ -1348,7 +1358,7 @@ async function loadStatus() {
     syncDemo(s);
     // Used to be baked into the HTML server-side on every page load via a
     // %TOKEN% scan; now read from here, which is already polled every
-    // second - saveConnectivity() has no reason to touch the title/brand
+    // second - saveWifi() has no reason to touch the title/brand
     // itself, so a rename still shows up within a second via this poll
     // instead of needing a reload.
     if (s.projectNameText) {
@@ -1444,7 +1454,6 @@ async function loadConfig() {
   el('cfg-dwell-lbl').textContent = cfg.messageDwellSec + ' s';
   showDebugTime(cfg.debugTimeOffset || 0);
 
-  el('t-all').checked = cfg.showAll;
   el('t-heb-year').checked = cfg.showHebrewYear;
   // Shown by renderContentOrder below, in their rows.
   contentExtraValues.prayerSwitchDays = Math.max(0, Math.min(2, cfg.prayerSwitchDays));
@@ -1457,7 +1466,7 @@ async function loadConfig() {
   syncManualBrightness();
 }
 
-async function saveConnectivity() {
+async function saveWifi() {
   const obj = { projectName: v('cfg-name') };
   Object.assign(obj, wifiChanges());
   toast(await apiPost('/api/config', obj));
@@ -1466,7 +1475,7 @@ async function saveConnectivity() {
 
 /* ── Live settings ──
    Everything except name / Wi-Fi / location (which keep "Save
-   Connectivity" - applying them half-typed would be disruptive) is sent
+   Wi-Fi" - applying them half-typed would be disruptive) is sent
    the moment it changes, one field at a time, so changing one setting can
    never resend - and overwrite - another (the old "Save Advanced" quietly
    reset the debug time offset that way). The clock applies it at once and
@@ -1528,13 +1537,12 @@ function dualRange(id, label, onMove, nowLabel) {
     },
   };
 }
-const pctLabel = pct => (pct < 10 ? pct.toFixed(1) : Math.round(pct)) + '%';
+const pctLabel = pct => Math.round(pct) + '%';
 const brightRange = dualRange('dr-bright', (a, b) => brightLabel(a) + '–' + brightLabel(b),
   (a, b, which) => liveSave(which === 'lo' ? { nightPct: a } : { dayPct: b }), v => brightLabel(v));
 const roomRange = dualRange('dr-room', (a, b) => pctLabel(a) + '–' + pctLabel(b),
   (a, b, which) => liveSave(which === 'lo' ? { roomDarkPct: a } : { roomLightPct: b }), v => pctLabel(v));
 onLive('cfg-learn-room', 'change', () => ({ learnRoomLight: b('cfg-learn-room') }));
-onLive('t-all', 'change', () => ({ showAll: b('t-all') }));
 onLive('t-heb-year', 'change', () => ({ showHebrewYear: b('t-heb-year') }));
 onLive('cfg-24h', 'change', () => ({ use24Hour: b('cfg-24h') }));
 onLive('cfg-ntp0', 'change', () => ({ ntpServers: [v('cfg-ntp0')] }));
@@ -1572,8 +1580,9 @@ function syncBrightnessBlocks() {
 }
 el('cfg-use-sensor').addEventListener('change', syncBrightnessBlocks);
 
-// Brightness in % as shown: 0 is "Off", fractions only where they matter (Night).
-const brightLabel = pct => pct <= 0 ? 'Off' : (pct < 10 ? pct.toFixed(1) : Math.round(pct)) + '%';
+// Brightness in whole % as shown (the user, 2026-11-04): 0 is "Off", anything
+// above it at least 1%.
+const brightLabel = pct => pct <= 0 ? 'Off' : Math.max(1, Math.round(pct)) + '%';
 function syncManualBrightness() {
   const slider = el('cfg-bright-s'), num = el('cfg-bright-n');
   slider.oninput = () => { num.value = slider.value; liveSave({ brightPct: parseInt(slider.value) }); };
@@ -1631,20 +1640,32 @@ async function debugSetHebrew() {
 
 /* ── Known Wi-Fi networks (up to three; the clock joins the strongest) ──
    Network 1 is the config's "wifiSSID"/"wifiPassword", 2 and 3
-   "wifiSSID2"/"wifiPassword2" etc. Saved with "Save Connectivity" and used
+   "wifiSSID2"/"wifiPassword2" etc. Saved with "Save Wi-Fi" and used
    from the clock's next connection - the current one is not dropped. */
 const WIFI_SLOTS = 3;
 const wifiKey = (base, n) => n === 1 ? base : base + n;
 let connectedSsid = '';
+let clockApSsid = '';   // the clock's own Wi-Fi (status "apSsid")
+// After a restart: the clock's own Wi-Fi is gone for a while, and the phone
+// or computer usually moves to its home network and stays there (the user,
+// 2026-11-03). ap = the clock's Wi-Fi after the restart, home = the network
+// the device will probably switch to ('' = unknown).
+function wifiBackText(ap, home) {
+  if (!ap) return '';
+  return 'When the clock is back, choose the Wi-Fi "' + ap + '" again: your phone or computer will probably switch to ' +
+    (home ? '"' + home + '"' : 'another network') + ' while the clock restarts.';
+}
 (function wifiSlotsHtml() {
   let html = '';
   for (let n = 1; n <= WIFI_SLOTS; n++) {
     html +=
-      '<div class="frow"><span class="k">Network ' + n + '</span><span class="sl-row">' +
+      '<div class="frow wifi-row"><span class="k">Network ' + n + '</span><span class="sl-row">' +
         '<span class="staticfield wifi-name" id="cfg-ssid-display-' + n + '">—</span>' +
-        '<span class="place-txt" style="visibility:hidden" id="place-txt-' + n + '">📍 —</span>' +
+        '<span class="place-line">' +
+        '<span class="place-txt" style="visibility:hidden" id="place-txt-' + n + '">—</span>' +
         '<span class="place-tag hidden" id="place-detected-' + n + '" title="Looked up automatically - confirm it, or change it">detected</span>' +
         '<span class="place-tag place-warn hidden" id="place-warn-' + n + '" title="No summer-time rule for this zone: a fixed offset is used">⚠</span>' +
+        '</span>' +
         '<span class="rowmenu-wrap"><button class="mbtn mbtn-ghost mbtn-sm rowmenu-btn" onclick="toggleRowMenu(this)" title="Actions">⋯</button>' +
           '<span class="rowmenu hidden">' +
             '<button id="cfg-wifi-connect-' + n + '" onclick="closeRowMenus(); connectWifi(' + n + ')" title="Move the clock to this network now">Connect</button>' +
@@ -1661,8 +1682,13 @@ let connectedSsid = '';
         '<div class="place-results" id="place-results-' + n + '"></div>' +
       '</div>' +
       '<div id="cfg-wifi-fields-' + n + '" style="display:none">' +
-        '<div class="frow"><span class="k">Network name</span><input type="text" class="txtfield" id="cfg-ssid-' + n + '" placeholder="SSID" autocomplete="off"></div>' +
-        '<div class="frow"><span class="k">Password</span><input type="password" class="txtfield" id="cfg-pass-' + n + '" placeholder="••••••••" autocomplete="new-password"></div>' +
+        '<div class="frow"><span class="k">Network name</span><span class="sl-row">' +
+          '<select class="txtfield" id="cfg-ssid-pick-' + n + '" onchange="pickWifi(' + n + ')"></select>' +
+          '<button class="mbtn mbtn-ghost mbtn-sm" id="cfg-ssid-rescan-' + n + '" onclick="scanWifi(' + n + ', true)" title="Search again">↻</button></span></div>' +
+        '<div class="frow hidden" id="cfg-ssid-row-' + n + '"><span class="k"></span><input type="text" class="txtfield" id="cfg-ssid-' + n + '" placeholder="Network name" autocomplete="off"></div>' +
+        '<div class="frow"><span class="k">Password</span><span class="sl-row">' +
+          '<input type="password" class="txtfield" id="cfg-pass-' + n + '" placeholder="••••••••" autocomplete="new-password">' +
+          '<button type="button" class="mbtn mbtn-ghost mbtn-sm" id="cfg-pass-show-' + n + '" onclick="showWifiPass(' + n + ')">Show</button></span></div>' +
       '</div>';
   }
   el('wifi-networks').insertAdjacentHTML('beforeend', html);
@@ -1677,6 +1703,46 @@ document.addEventListener('click', e => { if (!e.target.closest('.rowmenu-wrap')
 function toggleWifiFields(n) {
   const f = el('cfg-wifi-fields-' + n);
   f.style.display = f.style.display === 'none' ? '' : 'none';
+  showWifiPass(n, false);   // opens hidden again
+  if (f.style.display === '') scanWifi(n, false);
+}
+// The typed password shown as text, or hidden again (show: true/false; none = switch).
+function showWifiPass(n, show) {
+  const input = el('cfg-pass-' + n);
+  if (show === undefined) show = input.type === 'password';
+  input.type = show ? 'text' : 'password';
+  el('cfg-pass-show-' + n).textContent = show ? 'Hide' : 'Show';
+}
+// "Network name": the networks the clock hears (/api/wifi/networks),
+// strongest first, then "Other…" for typing one. The chosen name goes into
+// the text box cfg-ssid-N, which is what Save reads (wifiChanges()).
+const WIFI_LIST_WAIT_MS = 20000;
+const wifiScanSeq = {};
+async function scanWifi(n, rescan) {
+  const pick = el('cfg-ssid-pick-' + n), seq = wifiScanSeq[n] = (wifiScanSeq[n] || 0) + 1;
+  pick.innerHTML = '<option>Searching…</option>';
+  pick.disabled = true; el('cfg-ssid-rescan-' + n).disabled = true;
+  let list = null, url = '/api/wifi/networks' + (rescan ? '?rescan=1' : '');
+  for (const t0 = Date.now(); Date.now() - t0 < WIFI_LIST_WAIT_MS; url = '/api/wifi/networks') {
+    try { const r = await apiJson(url); if (r.status === 'done') { list = r.networks || []; break; } } catch (e) {}
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  if (seq !== wifiScanSeq[n]) return;   // a newer search took over
+  const known = Array.from({ length: WIFI_SLOTS }, (_, i) => el('cfg-wifi-remove-' + (i + 1)).dataset.ssid || '');
+  const bars = r => r >= -55 ? '▂▄▆█' : r >= -67 ? '▂▄▆' : r >= -78 ? '▂▄' : '▂';
+  let html = list && list.length ? '<option value="" selected disabled>Choose…</option>' : '<option value="" disabled>None found</option>';
+  for (const w of list || [])
+    html += '<option value="' + htmlEsc(w.ssid) + '">' + htmlEsc(w.ssid) + '  ' + bars(w.rssi) + (w.secure ? ' 🔒' : '') + (known.includes(w.ssid) ? ' · saved' : '') + '</option>';
+  html += '<option value="" data-other="1"' + (list && list.length ? '' : ' selected') + '>Other…</option>';
+  pick.innerHTML = html;
+  pick.disabled = false; el('cfg-ssid-rescan-' + n).disabled = false;
+  pickWifi(n);
+}
+function pickWifi(n) {
+  const opt = el('cfg-ssid-pick-' + n).selectedOptions[0], other = !!(opt && opt.dataset.other);
+  el('cfg-ssid-row-' + n).classList.toggle('hidden', !other);
+  el('cfg-ssid-' + n).value = other ? '' : (opt ? opt.value : '');
+  if (other) el('cfg-ssid-' + n).focus();
 }
 function showWifiNetworks(cfg) {
   for (let n = 1; n <= WIFI_SLOTS; n++) {
@@ -1719,7 +1785,7 @@ async function removeWifi(n) {
   toast(await apiPost('/api/config', { [wifiKey('wifiSSID', n)]: '' }));
   loadConfig();
 }
-// Name and/or password typed for any network, for saveConnectivity().
+// Name and/or password typed for any network, for saveWifi().
 function wifiChanges() {
   const obj = {};
   for (let n = 1; n <= WIFI_SLOTS; n++) {
@@ -2830,7 +2896,7 @@ function showPlaces(cfg) {
   for (let n = 1; n <= WIFI_SLOTS; n++) {
     const p = placesCfg[n - 1] || {}, ssid = cfg[wifiKey('wifiSSID', n)] || '';
     el('place-txt-' + n).style.visibility = ssid ? '' : 'hidden';   // keeps its width: the "..." line up
-    el('place-txt-' + n).textContent = p.set ? '📍 ' + p.city + ', ' + p.country : '📍 —';
+    el('place-txt-' + n).textContent = p.set ? p.city + ', ' + p.country : '—';
     el('place-txt-' + n).title = p.set ? p.tzid + (p.ruleKnown ? '' : ' - no summer-time rule for this zone: a fixed offset is used') : 'Looked up when the clock joins this network';
     el('place-warn-' + n).classList.toggle('hidden', !p.set || p.ruleKnown);
     el('place-detected-' + n).classList.toggle('hidden', !p.set || p.confirmed);
@@ -3517,7 +3583,9 @@ async function runImport(what) {
   const { incoming, config, pics } = pendingImport;
   pendingImport = null;
   if (what === 'events') { await importEventsNow(incoming, pics); return; }
-  showDataBox('<b>Importing…</b> The clock restarts; this page reloads by itself when it is back (about 20 seconds).', 'ask');
+  // The imported settings may rename the clock - and with it its Wi-Fi.
+  showDataBox('<b>Importing…</b> The clock restarts; this page reloads by itself when it is back (about 20 seconds). ' +
+    htmlEsc(wifiBackText((config && config.projectName) || clockApSsid, connectedSsid)), 'ask');
   if (what === 'both') {   // events first: if that fails, nothing has restarted yet
     await uploadImportPictures(incoming, pics || {});
     const { res, error } = await postExcelImport(incoming);
@@ -3582,7 +3650,8 @@ async function restoreFromBackup(file) {
   const reply = await apiPost('/api/restore', { config: st.config });
   if (!reply.startsWith('Backup restored')) { say('Settings not restored: ' + reply); return; }
   say('Restored: ' + res.count + ' events, settings, pictures.' + (picProblems.length ? '\nNot restored: ' + picProblems.join('; ') : '') +
-      '\nThe clock restarts and joins its Wi-Fi.');
+      '\nThe clock restarts and joins its Wi-Fi.' +
+      (st.config.projectName ? '\n' + wifiBackText(st.config.projectName, '') : ''));
 }
 
 const RESTORE_MODE = location.pathname === '/restore';

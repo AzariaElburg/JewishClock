@@ -14,3 +14,4 @@ SIM_BUILD = LOCAL / "sim" / "build"          # jcsim.exe
 SIM_EXE = SIM_BUILD / "jcsim.exe"
 SIM_WORK = LOCAL / "sim" / "work"            # simulator file system, downloads, results
 DIST = LOCAL / "dist"                        # update packages (make_update_package.py)
+FS_STAGE = LOCAL / "fs"                      # Data/ as uploadfs puts it on the clock (web_files.py)

@@ -123,9 +123,7 @@ public:
     // Scroll speed in pixels per frame (called every ~16 ms).
     // Default: SCROLL_SPEED_DEFAULT from Config.h.
     static void setScrollSpeed(int pixelsPerFrame);
-    static int  getScrollSpeed();
 
-    static int getWindowWidth();
     static int measureString(const char* utf8text);
 
     static void update(const AppConfig& cfg);
@@ -136,13 +134,11 @@ public:
     // pattern of the whole panel with numbered edges (true) - both with the
     // window frame on top. Any task.
     static void setCalibrationPattern(bool on);
-    static void showSetupScreen(const char* ssid, const char* ip);
 
     static void clearWindow();
     static void clearFull();
 
     static void resetScroll(const AppConfig& cfg);
-    static bool scrollComplete();
 
     // Alternating-mode long-item scroll status, queried by MessageAggregator
     // to decide when to advance to the next item (see ALT_SCROLL below).
@@ -267,7 +263,6 @@ private:
     static void keepTeOn();
     static void drawCalibBorder();
     static void updateCalibration();
-    static void drawSetupUI();
 
     static Arduino_ESP32SPI* _bus;   // concrete type: Arduino_DataBus has no virtual destructor, so deleting through it is undefined
     static Arduino_GFX*      _gfx;

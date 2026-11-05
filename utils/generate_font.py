@@ -11,8 +11,8 @@ pixel. The font: chosen by the user from a side-by-side comparison
 
 Font files in assets/fonts/, licences in THIRD_PARTY_LICENSES/. Only free
 (OFL) fonts may be built in - Windows' own fonts are not licensed for that.
-Same characters, same order, same Hebrew letter height (40 px) and the same
-total width as the old pixel font, so layout stays.
+Same characters, same order and the same total width as the old pixel font,
+so lines keep their length; Hebrew letters as tall as the digits (HEBREW_H).
 Needs Microsoft Edge (installed with Windows).
 """
 import functools
@@ -36,9 +36,13 @@ FONT_CREDIT = ("Noto Sans Hebrew Bold (weight {weight}) by the Noto Project Auth
                "//   https://github.com/notofonts/hebrew | SIL Open Font License 1.1\n"
                "//   (THIRD_PARTY_LICENSES/NotoSansHebrew-OFL.txt).")
 WEIGHT = 700          # Bold
-LETTER_H = 40         # Hebrew letter height, px (as the old pixel font)
-ROWS = 72             # cell height (FONT_H): room for 52 rows above the baseline ($ | ( ) and 18 below (| g)
-BASE = 54             # baseline: the row under the letters' last ink row
+LETTER_H = 40         # font size: the one where א is this tall, px (as the old pixel font); digits then 48
+# Hebrew drawn taller than that, same width: as tall as the digits (the user,
+# 2026-11-04 - digits towered over the letters). ל then reaches 60 rows above
+# the baseline, the tails of ן ק ך ף ץ 15 below.
+HEBREW_H = 48
+ROWS = 80             # cell height (FONT_H): room for ל (60 above the baseline) and | g (16 below)
+BASE = 62             # baseline: the row under the letters' last ink row
 COLON_SCALE = 0.7     # the colon drawn at 70%: full-size dots looked too big (user, 2026-10-20)
 # Horizontal squeeze: the font drawn this narrow makes the Hebrew letters as
 # wide in total as the old pixel font's, so lines keep their length. None =
@@ -78,7 +82,8 @@ def render(cps, old_ink):
             pass
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 8794), functools.partial(Quiet, directory=str(ROOT)))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    q = {"font": FONT_FILE, "weight": WEIGHT, "letterH": LETTER_H, "base": BASE, "rows": ROWS, "colonScale": COLON_SCALE,
+    q = {"font": FONT_FILE, "weight": WEIGHT, "letterH": LETTER_H, "hebrewH": HEBREW_H, "base": BASE, "rows": ROWS,
+         "colonScale": COLON_SCALE,
          "cps": ",".join(map(str, cps)), "oldInk": json.dumps(old_ink)}
     if SQUEEZE is not None:
         q["sx"] = SQUEEZE
@@ -98,9 +103,10 @@ HEADER = """// =================================================================
 // Font.h  —  JewishClock antialiased font, {fw}×{rows}, 16 grey levels
 //
 // Source: {credit}
-//   Every character drawn by utils/generate_font.py: Hebrew letters {letter_h} px
-//   tall (baseline under row {last_row}), narrowed to {squeeze:.4f} of their width
-//   (as wide as the earlier pixel font's), the colon at {colon:.0%} and centred
+//   Every character drawn by utils/generate_font.py at the size where א is
+//   {letter_h} px tall (digits {digit_h}), baseline under row {last_row}, narrowed to
+//   {squeeze:.4f} of its width (as wide as the earlier pixel font's); Hebrew then
+//   stretched to {hebrew_h} px tall, same width; the colon at {colon:.0%} and centred
 //   on the digits. Chosen by the project owner; regenerate with that script,
 //   don't edit the data by hand.
 //
@@ -150,12 +156,17 @@ def main():
 
     bpg = row_bytes * ROWS
     header = HEADER.format(credit=FONT_CREDIT.format(weight=res["weight"]), fw=fw, rows=ROWS, weight=res["weight"],
-                           letter_h=LETTER_H, last_row=BASE - 1, squeeze=squeeze,
+                           letter_h=LETTER_H, hebrew_h=HEBREW_H, digit_h=res["digitH"], last_row=BASE - 1, squeeze=squeeze,
                            colon=res["colonScale"], bpg=bpg, row_bytes=row_bytes, count=len(glyphs),
                            kb=len(glyphs) * bpg / 1024)
     src = header + src[src.index("#pragma once"):]
     src = re.sub(r"#define FONT_W\s+\d+[^\n]*", "#define FONT_W  %d   // pixels wide (the widest glyph)" % fw, src)
     src = re.sub(r"#define FONT_H\s+\d+[^\n]*", "#define FONT_H  %d   // pixels tall" % ROWS, src)
+    src = re.sub(r"#define FONT_BASELINE\s+\d+[^\n]*",
+                 "#define FONT_BASELINE  %d   // row under the letters' and digits' last ink row" % BASE, src)
+    src = re.sub(r"#define FONT_LETTER_H\s+\d+[^\n]*",
+                 "#define FONT_LETTER_H  %d   // Hebrew letters and digits: ink rows above the baseline (ל: more)"
+                 % max(HEBREW_H, res["digitH"]), src)
     src = re.sub(r"#define FONT_BYTES_PER_GLYPH\s+\d+[^\n]*",
                  "#define FONT_BYTES_PER_GLYPH  %d  // %d bytes/row (4 bits per pixel) x %d rows" % (bpg, row_bytes, ROWS), src)
     src = re.sub(r"// Raw (?:bitmap|glyph) data[^\n]*\n// DO NOT read directly[^\n]*\n// Layout:[^\n]*\n",

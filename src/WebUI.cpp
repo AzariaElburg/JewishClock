@@ -31,6 +31,7 @@
 #include "Updater.h"
 #include "ImageLibrary.h"
 #include <esp_heap_caps.h>
+#include <map>
 
 #include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
@@ -250,11 +251,62 @@ static void refreshMdnsServices() {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+// A page file as stored: plain, or gzipped (utils/web_files.py - the
+// library's send() serves "<path>.gz" when "<path>" is missing). "" = neither.
+static String webFilePath(const char* path)
+{
+    if (LittleFS.exists(path)) return path;
+    String gz = String(path) + ".gz";
+    return LittleFS.exists(gz) ? gz : String();
+}
+
+// Sends a page file. Gzipped: with an ETag (the gzip's CRC, as the library
+// makes it), and an unchanged file answered 304 without a body. Not the
+// library's send(LittleFS, path) for that: its 304 queued the headers
+// without sending them - they left only at the network's next flush, 40-580
+// ms later, slower than sending the whole file (measured 2026-11-04). The
+// ETag is read once per file and kept: web files change only by uploadfs or
+// an update, both of which restart the clock.
+static void sendWebFile(AsyncWebServerRequest* req, const char* path, const char* contentType)
+{
+    struct Known { String gz, etag; };
+    static std::map<String, Known> known;   // handlers all run on the one web task
+    auto it = known.find(path);
+    if (it == known.end()) {
+        Known k;
+        String gz = String(path) + ".gz";
+        if (!LittleFS.exists(path) && LittleFS.exists(gz)) {
+            File f = LittleFS.open(gz, "r");
+            uint32_t crc = 0;
+            if (f && f.size() > 8 && f.seek(f.size() - 8) && f.read((uint8_t*)&crc, 4) == 4) {
+                char etag[12];
+                snprintf(etag, sizeof(etag), "\"%08X\"", (unsigned)crc);
+                k.gz = gz; k.etag = etag;
+            }
+            if (f) f.close();
+        }
+        it = known.emplace(path, k).first;
+    }
+    const Known& k = it->second;
+    if (!k.gz.length()) { req->send(LittleFS, path, contentType); return; }   // plain (or missing: 404)
+    AsyncWebServerResponse* r;
+    if (req->hasHeader("If-None-Match") && req->getHeader("If-None-Match")->value() == k.etag) {
+        r = req->beginResponse(304, contentType, (const uint8_t*)"", 0);   // sent at once, unlike send(304)
+    } else {
+        r = req->beginResponse(LittleFS, k.gz, contentType);
+        r->addHeader("Content-Encoding", "gzip");
+    }
+    r->addHeader("ETag", k.etag);
+    r->addHeader("Cache-Control", "no-cache");
+    req->send(r);
+}
+
 static void refreshFeBuildTime()
 {
-    if (LittleFS.exists("/index.html"))
+    String page = webFilePath("/index.html");
+    if (page.length())
     {
-        File f = LittleFS.open("/index.html", "r");
+        File f = LittleFS.open(page, "r");
         if (f) {
             time_t t = f.getLastWrite();
             f.close();
@@ -596,28 +648,35 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         // beBuild, feBuild), which it already polls. Lets index.html serve as
         // a genuinely static file again - no more %%-escaping CSS/JS percent
         // signs to survive the scanner (see CLAUDE.md, now removed there too).
-        req->send(LittleFS, "/index.html", "text/html");
+        sendWebFile(req, "/index.html", "text/html");
     }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
 
     g_server->on("/update.html", HTTP_GET, [](AsyncWebServerRequest *req)
                  {
-                     if (LittleFS.exists("/update.html")) req->send(LittleFS, "/update.html", "text/html");
+                     if (webFilePath("/update.html").length()) sendWebFile(req, "/update.html", "text/html");
                      else req->send(200, "text/html", Updater::EMERGENCY_UPDATE_PAGE);
                  }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
 
     g_server->on("/sortable.min.js", HTTP_GET, [](AsyncWebServerRequest *req)
-                 { req->send(LittleFS, "/sortable.min.js", "application/javascript"); }).setFilter(ON_ANY_INCL_SETUP_FILTER);
+                 { sendWebFile(req, "/sortable.min.js", "application/javascript"); }).setFilter(ON_ANY_INCL_SETUP_FILTER);
 
     // Third-party licenses (utils/make_licenses.py) - streamed from the file, ~100 KB.
     g_server->on("/licenses.txt", HTTP_GET, [](AsyncWebServerRequest *req)
-                 { req->send(LittleFS, "/licenses.txt", "text/plain; charset=utf-8"); }).setFilter(ON_ANY_INCL_SETUP_FILTER);
+                 { sendWebFile(req, "/licenses.txt", "text/plain; charset=utf-8"); }).setFilter(ON_ANY_INCL_SETUP_FILTER);
+
+    // The start guide (English + Hebrew, printable) and the full manual - in
+    // every update package, so they match the version (2026-11-04).
+    g_server->on("/start.html", HTTP_GET, [](AsyncWebServerRequest *req)
+                 { sendWebFile(req, "/start.html", "text/html"); }).setFilter(ON_ANY_INCL_SETUP_FILTER);
+    g_server->on("/manual.html", HTTP_GET, [](AsyncWebServerRequest *req)
+                 { sendWebFile(req, "/manual.html", "text/html"); }).setFilter(ON_ANY_INCL_SETUP_FILTER);
 
     // The page in restore-only view (it checks its own address): "Restore
     // from backup" on the setup page links here - a factory-new clock, put
     // back in one step from an Excel backup (settings incl. Wi-Fi, events,
     // pictures). Reachable in setup mode.
     g_server->on("/restore", HTTP_GET, [](AsyncWebServerRequest *req)
-                 { req->send(LittleFS, "/index.html", "text/html"); }).setFilter(ON_ANY_INCL_SETUP_FILTER);
+                 { sendWebFile(req, "/index.html", "text/html"); }).setFilter(ON_ANY_INCL_SETUP_FILTER);
 
     // ── /api/factory-reset (POST) ─────────────────────────────────────────────
     // Everything of the clock's own goes (Storage::factoryReset()), then it
@@ -647,6 +706,9 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         // the page's title/header within a second instead of needing a
         // manual reload.
         doc["projectNameText"] = StringTools::formatProjectName(g_cfg->projectName);
+        // The clock's own Wi-Fi's name (WiFiManager: the AP is named projectName)
+        // - the pages tell the user to choose it again after a restart.
+        doc["apSsid"] = g_cfg->projectName;
 
         // Today's Hebrew date as the CLOCK sees it (sunset/tzeit rollover
         // applied) - the page's Hebrew-view "today" highlight uses this
@@ -820,7 +882,6 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
 
         doc["language"] = g_cfg->language;
 
-        doc["devMode"]         = g_cfg->devMode;
         doc["debugTimeOffset"] = g_cfg->debugTimeOffset;
         doc["rotationMode"]    = static_cast<int>(g_cfg->rotationMode);
         doc["messageDwellSec"] = g_cfg->messageDwellSec;
@@ -855,7 +916,6 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         doc["prayerSwitchDays"]   = g_cfg->switchoverWindowDays;
         doc["nusach"]             = static_cast<int>(g_cfg->nusach);
         doc["eventDayChange"]     = static_cast<int>(g_cfg->eventDayChange);
-        doc["showAll"]            = g_cfg->showAllMessages;
 
         JsonArray orderArr = doc["contentOrder"].to<JsonArray>();
         for (int i = 0; i < (int)ContentType::COUNT; i++) orderArr.add(CONTENT_TYPE_KEYS[g_cfg->contentOrder[i]]);
@@ -914,7 +974,6 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         }
 
         if (doc["language"])              strlcpy(g_cfg->language, doc["language"] | "en", 4);
-        if (doc["devMode"].is<bool>())    g_cfg->devMode = doc["devMode"];
         if (doc["debugTimeOffset"].is<int64_t>()) {
             g_cfg->debugTimeOffset = doc["debugTimeOffset"];
             // Apply the offset immediately without a full re-init.
@@ -956,7 +1015,6 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         if (doc["prayerSwitchDays"].is<int>())     g_cfg->switchoverWindowDays  = constrain(doc["prayerSwitchDays"].as<int>(), 0, 2);
         if (doc["nusach"].is<int>())               g_cfg->nusach                = doc["nusach"].as<int>() == 1 ? Nusach::Sefard : Nusach::Ashkenaz;
         if (doc["eventDayChange"].is<int>())       g_cfg->eventDayChange        = doc["eventDayChange"].as<int>() == 1 ? EventDayChange::Midnight : EventDayChange::WithHebrewDay;
-        if (doc["showAll"].is<bool>())             g_cfg->showAllMessages       = doc["showAll"];
 
         if (doc["contentOrder"].is<JsonArray>()) {
             JsonArray orderArr = doc["contentOrder"];
@@ -1891,6 +1949,29 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         if (slot < 0 || slot >= WIFI_NETWORKS || !wifiSsidAt(*g_cfg, slot)[0]) { req->send(400, "text/plain", "No such network"); return; }
         WiFiManager::requestConnect(slot);
         req->send(200, "text/plain", String("Connecting to \"") + wifiSsidAt(*g_cfg, slot) + "\"..."); }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
+
+    // ── /api/wifi/networks (GET, ?rescan=1) ──────────────────────────────────
+    // Networks heard on the air, for "Add/Change network": {"status":
+    // "scanning"} until a list is ready (ask again), then {"status":"done",
+    // "networks":[{ssid,rssi,secure}...]}, strongest first. See
+    // WiFiManager::heardNetworks().
+
+    g_server->on("/api/wifi/networks", HTTP_GET, [](AsyncWebServerRequest *req) {
+        std::vector<WiFiManager::HeardNetwork> heard;
+        JsonDocument doc;
+        if (!WiFiManager::heardNetworks(heard, req->hasParam("rescan"))) {
+            doc["status"] = "scanning";
+        } else {
+            doc["status"] = "done";
+            JsonArray arr = doc["networks"].to<JsonArray>();
+            for (const auto& h : heard) {
+                JsonObject o = arr.add<JsonObject>();
+                o["ssid"] = h.ssid;
+                o["rssi"] = h.rssi;
+                o["secure"] = h.secure;
+            }
+        }
+        sendJson(req, doc); }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
 
     // ── /api/wifi/forget (POST) ───────────────────────────────────────────────
 

@@ -22,15 +22,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import local_dirs  # noqa: E402
 
 # === TUNABLES ===
-FRAME_H = 85            # rows, tip to tip = the calibrated window's height (--h)
+# Rows, tip to tip (--h). Sized to the TEXT, not the window (the user,
+# 2026-11-04): letters and digits are 48 rows, brackets 59 - a star looks
+# smaller than its outline, so a bit taller than the letters. (2026-11-01..04
+# it filled the window: 85 rows; before that 34 looked too small.)
+FRAME_H = 54
 SIDE_PX = 3             # black at each side: room between star and text
 SS = 6                  # supersampling per axis
 PREVIEW_SCALE = 4
 
 BLUE = (70, 120, 240)   # as the flag (lighter: dark blue vanishes on black)
 CANDIDATES = {
-    # stroke = line width in px at FRAME_H 85 (scaled with --h). Chosen
-    # 2026-11-01 on the clock from 3.5 / 5 / 6.5 / 8 shown side by side.
+    # stroke = line width in px, whatever the height: 6.5 chosen 2026-11-01
+    # on the clock from 3.5 / 5 / 6.5 / 8; the font's strokes are 7-8 px.
     "I": dict(color=BLUE, stroke=6.5),
 }
 
@@ -42,7 +46,7 @@ def seg_dist(px, py, ax, ay, bx, by):
 
 
 def render(cfg):
-    star_h, stroke = FRAME_H, cfg["stroke"] * FRAME_H / 85
+    star_h, stroke = FRAME_H, cfg["stroke"]
     r = star_h / 2 - stroke / 2                    # triangles' corner radius (stroke centre)
     w = int(math.ceil(math.sqrt(3) * r + stroke)) + 2 * SIDE_PX
     h = star_h

@@ -3,19 +3,23 @@ Rain/dew prayer slide, checked in the simulator: both switches (משיב הרו�
 מוריד הטל, and the request ותן טל ומטר / ותן ברכה), every day from 3 days
 before to 3 days after each switch day at noon, with the "days before/after"
 setting at 0, 1 and 2; plus the evening before each switch day (after צאת),
-nusach Sefard and abroad. About 70 runs, a minute or two.
+nusach Sefard and abroad. About 80 runs, a few minutes.
 
     python sim/test_prayer.py
 
-Expected (decided 2026-11-01):
-- משיב הרוח (22 Tishrei): N days before to N after; on the day "ממוסף", from
-  צאת the evening before "ממוסף מחר", other days "מ-מחר", "מ-אתמול", ...
-- Pesach (15 Nisan): nothing before; both switch at Musaf, one line:
-  "מוריד הטל, ותן ברכה ממוסף". Ashkenazim abroad say nothing in summer: only
-  "ותן ברכה ...". Sefard: "ברכנו".
-- The request (Maariv opening 7 Cheshvan in Israel, early December abroad):
-  before it "מ-מחרתיים בערב", "מ-מחר בערב", "מהערב" (the evening itself is
-  always shown, also at 0), from it "מהיום", "מ-אתמול", ...
+Expected (decided 2026-11-02), all in civil days (midnight to midnight):
+- משיב הרוח (22 Tishrei): 2 days before "ממחרתיים", the day before "ממחר",
+  on the day (from midnight) "ממוסף", after it the phrase alone.
+- מוריד הטל (15 Nisan): the same, but nothing before its eve.
+- The request switches at the first weekday Maariv: the evening of 6
+  Cheshvan in Israel, of 4/5 December abroad; at Pesach the evening after
+  Yom Tov (Israel 15 Nisan, abroad 16) - never shown before that day. Before
+  it "ממחרתיים בערב", "ממחר בערב", on its day "מהערב" (also at setting
+  0), after it the phrase alone. An evening starting Shabbat moves to
+  Motzei Shabbat.
+- One line per switch; one for both when they say the same ("מוריד הטל,
+  ותן ברכה" after Pesach). Ashkenazim abroad say nothing in summer: no
+  מוריד הטל. Sefard: "ברך עלינו" / "ברכנו".
 Exit code 1 on any wrong text.
 """
 import json
@@ -31,34 +35,49 @@ from local_dirs import SIM_WORK, SIM_EXE  # noqa: E402 - outside the OneDrive fo
 WORK = SIM_WORK
 EXE = SIM_EXE
 
-WHEN = ["מ-מחרתיים", "מ-מחר", "מהיום", "מ-אתמול", "מ-שלשום"]   # lang.cpp, Hebrew
-EVE = ["מהערב", "מ-מחר בערב", "מ-מחרתיים בערב"]
-MUSAF, MUSAF_TOMORROW = "ממוסף", "ממוסף מחר"
+FROM = ["ממוסף", "ממחר", "ממחרתיים"]          # lang.cpp, Hebrew
+EVE = ["מהערב", "ממחר בערב", "ממחרתיים בערב"]
 PRAYER = re.compile("הרוח|הטל|ומטר|ברכה|ברכנו|עלינו")
 
 ATZERET = date(2027, 10, 23)    # 22 Tishrei 5788
-PESACH = date(2027, 4, 22)      # 15 Nisan 5787
-REQUEST_IL = date(2027, 11, 7)  # 7 Cheshvan 5788 - its Maariv is on the evening of 6 Nov
-REQUEST_ABROAD = date(2027, 12, 6)   # Maariv of 5 Dec 2027 (2028 is a leap year)
+PESACH = date(2027, 4, 22)      # 15 Nisan 5787, a Thursday: abroad 16 Nisan is Friday
+REQUEST_IL = date(2027, 11, 6)  # its evening opens 7 Cheshvan 5788
+REQUEST_ABROAD = date(2027, 12, 5)   # Maariv of 5 Dec 2027 (2028 is a leap year)
+REQUEST_ABROAD_FRIDAY = date(2026, 12, 4)   # Friday: moves to Motzei Shabbat, 5 Dec
+
+
+def musaf_part(d, w, phrase, before):   # d = civil day - the switch day
+    if d < -before or d > w:
+        return None
+    return phrase, (FROM[-d] if d <= 0 else "")
+
+
+def evening_part(d, w, phrase, before):   # d = civil day - the day whose evening switches
+    if d < -before or d > w:
+        return None
+    return phrase, (EVE[-d] if d <= 0 else "")
+
+
+def lines(p, r):   # as MessageAggregator.cpp's prayerTexts()
+    out = []
+    if p and r and p[1] == r[1]:
+        return [" ".join(x for x in (p[0] + ", " + r[0], p[1]) if x)]
+    for part in (p, r):
+        if part:
+            out.append(" ".join(x for x in part if x))
+    return out
 
 
 def mention(d, w):
-    if abs(d) > w:
-        return None
-    return "משיב הרוח " + (MUSAF if d == 0 else WHEN[d + 2])
+    return lines(musaf_part(d, w, "משיב הרוח", w), None)
 
 
-def pesach(d, w, dew="מוריד הטל, ", ask="ותן ברכה"):
-    if d < 0 or d > w:
-        return None
-    return dew + ask + " " + (MUSAF if d == 0 else WHEN[d + 2])
+def pesach(d, w, dew="מוריד הטל", ask="ותן ברכה", r_day=0):   # r_day: its request day, from 15 Nisan
+    return lines(musaf_part(d, w, dew, min(w, 1)) if dew else None, evening_part(d - r_day, w, ask, 0))
 
 
-def request(d, w, ask="ותן טל ומטר"):   # d = civil day - the Hebrew day the request starts
-    if d < 0:
-        evenings = -1 - d
-        return ask + " " + EVE[evenings] if evenings <= w else None
-    return ask + " " + WHEN[d + 2] if d <= w else None
+def request(d, w, ask="ותן טל ומטר"):
+    return lines(None, evening_part(d, w, ask, w))
 
 
 def cases():
@@ -68,19 +87,23 @@ def cases():
             yield ("pesach", w, {}, PESACH + timedelta(days=d), "12:00", pesach(d, w))
             yield ("request IL", w, {}, REQUEST_IL + timedelta(days=d), "12:00", request(d, w))
     for w in (0, 2):
-        # after צאת on the evening before: the clock shows the switch day already
-        yield ("atzeret eve", w, {}, ATZERET - timedelta(days=1), "20:00", "משיב הרוח " + MUSAF_TOMORROW)
-        yield ("pesach eve", w, {}, PESACH - timedelta(days=1), "20:30", "מוריד הטל, ותן ברכה " + MUSAF_TOMORROW)
-        yield ("request IL eve", w, {}, REQUEST_IL - timedelta(days=1), "19:30", "ותן טל ומטר " + WHEN[2])
+        # after צאת: the clock shows the next Hebrew day already - no change
+        yield ("atzeret eve", w, {}, ATZERET - timedelta(days=1), "20:00", mention(-1, w))
+        yield ("pesach eve", w, {}, PESACH - timedelta(days=1), "20:30", pesach(-1, w))
+        yield ("pesach evening", w, {}, PESACH, "20:30", pesach(0, w))
+        yield ("request IL evening", w, {}, REQUEST_IL, "19:30", request(0, w))
     sefard = {"nusach": 1}
     abroad = {"inIsrael": False}
-    yield ("sefard request", 2, sefard, REQUEST_IL - timedelta(days=1), "12:00", "ברך עלינו " + EVE[0])
+    yield ("sefard request", 2, sefard, REQUEST_IL, "12:00", request(0, 2, ask="ברך עלינו"))
     yield ("sefard pesach", 2, sefard, PESACH, "12:00", pesach(0, 2, ask="ברכנו"))
     for d in (-2, -1, 0, 1):
         yield ("abroad request", 2, abroad, REQUEST_ABROAD + timedelta(days=d), "12:00", request(d, 2))
-    yield ("abroad ashkenaz pesach", 2, abroad, PESACH, "12:00", pesach(0, 2, dew=""))
-    yield ("abroad ashkenaz pesach", 2, abroad, PESACH + timedelta(days=1), "12:00", pesach(1, 2, dew=""))
-    yield ("abroad sefard pesach", 2, {**abroad, **sefard}, PESACH, "12:00", pesach(0, 2, ask="ברכנו"))
+    for d in (0, 1, 2):   # Friday 4 Dec 2026: from Motzei Shabbat
+        yield ("abroad request friday", 2, abroad, REQUEST_ABROAD_FRIDAY + timedelta(days=d), "12:00", request(d - 1, 2))
+    for d in range(-1, 5):   # 16 Nisan is Friday: ותן ברכה from Motzei Shabbat (17 Nisan)
+        yield ("abroad ashkenaz pesach", 2, abroad, PESACH + timedelta(days=d), "12:00", pesach(d, 2, dew="", r_day=2))
+        yield ("abroad sefard pesach", 2, {**abroad, **sefard}, PESACH + timedelta(days=d), "12:00",
+               pesach(d, 2, ask="ברכנו", r_day=2))
 
 
 def run(fs, when, out):
@@ -110,10 +133,10 @@ def main():
         (fs / "config.json").write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
         texts = run(fs, "%s %s" % (day.isoformat(), hhmm), root / ("out%03d" % i))
         shown = sorted({p.strip() for t in texts for p in t.split(" | ") if PRAYER.search(p)})
-        ok = shown == ([want] if want else [])
+        ok = shown == sorted(want)
         fails += not ok
         print("%-5s %-22s setting %d  %s %s  %s" % ("ok" if ok else "WRONG", label, w, day, hhmm,
-                                                    shown[0] if len(shown) == 1 else shown))
+                                                    " | ".join(shown)))
         if not ok:
             print("      expected %r" % want)
     print("rain/dew prayer test:", "ALL CORRECT" if not fails else "%d WRONG" % fails)

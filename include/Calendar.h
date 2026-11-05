@@ -101,25 +101,23 @@ struct FastNotice {
 
 // Rain/dew prayer switch: משיב הרוח from Musaf of Shemini Atzeret (22 Tishrei), מוריד
 // הטל from Musaf of the first day of Pesach (15 Nisan) - fixed Hebrew dates.
-// On the switch day itself it's "ממוסף" - "ממוסף מחר" from צאת the evening
-// before, when the clock already shows that Hebrew day (the user, 2026-11-01).
+// Counted in civil days (midnight to midnight, the user 2026-11-02): -2
+// "ממחרתיים", -1 "ממחר", 0 "ממוסף" (Musaf only on the day itself), after it
+// the phrase alone.
 struct PrayerSwitchNotice {
     const char* phrase = nullptr;   // nullptr = nothing to show today
     int daysFromSwitch = 0;         // -2..2: negative = the switch is still ahead
-    bool musafTomorrow = false;     // daysFromSwitch 0 and still its evening before
 };
 
-// The rain request in ברכת השנים (a separate switch from the one above):
-// winter wording from Maariv of 7 Cheshvan in Israel, of 4 December abroad
-// (5 December before a leap year; a day later from 2100), summer wording
-// from Pesach, together with מוריד הטל. Calendar::getRainRequest().
+// The rain request in ברכת השנים (a separate switch from the one above),
+// from the first weekday Maariv: winter wording from Maariv of 7 Cheshvan in
+// Israel, of 4 December abroad (5 December before a leap year; a day later
+// from 2100); summer wording from Maariv after Yom Tov of Pesach - on Yom
+// Tov there is no ברכת השנים. Calendar::getRainRequest().
 struct RainRequestNotice {
     const char* phrase = nullptr;   // nullptr = nothing to show today
-    bool evening = false;           // true: starts at Maariv, eveningsAhead evenings from now
-    int eveningsAhead = 0;          // 0..2 (evening = true)
-    int daysFromSwitch = 0;         // 0..2 days since (evening = false)
-    bool atMusaf = false;           // Pesach's switch day: from Musaf, like מוריד הטל
-    bool musafTomorrow = false;     // ... and still its evening before
+    int daysFromSwitch = 0;         // civil days from the day whose evening switches:
+                                    // -2/-1 "ממחרתיים/ממחר בערב", 0 "מהערב", after it the phrase alone
 };
 
 // ─── Calendar API ─────────────────────────────────────────────────────────────
@@ -156,11 +154,9 @@ public:
     static const char*     getTodaySummary();
     static FastNotice getFastNotice();
     // windowDays (0-2): how many days before/after the switch day to show it.
-    // civilTodayAbs: today's civil date (absolute day), for "ממוסף מחר".
+    // civilTodayAbs: today's civil date (absolute day) - both count civil days.
     // Ashkenazim abroad say nothing in summer: no מוריד הטל for them.
     static PrayerSwitchNotice getPrayerSwitch(int windowDays, Nusach nusach, bool inIsrael, long civilTodayAbs);
-    // civilTodayAbs: today's civil date (absolute day) - the switch is at the
-    // evening's Maariv, so "this evening" is counted on the civil calendar.
     static RainRequestNotice getRainRequest(int windowDays, Nusach nusach, bool inIsrael, long civilTodayAbs);
 
     // Side Effects

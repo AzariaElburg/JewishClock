@@ -13,31 +13,37 @@ G = second blessing (גבורות), B = ninth blessing (ברכת השנים, wee
 |---|---|---|---|---|
 | Musaf, 22 Tishrei | משיב הרוח ומוריד הגשם | משיב הרוח ומוריד הגשם | - | - |
 | Maariv of 4 Dec (5 Dec before a Gregorian leap year) | - | - | ותן טל ומטר לברכה | ברך עלינו |
-| Musaf, 15 Nisan | **nothing** (stop משיב הרוח) | מוריד הטל | ותן ברכה | ברכנו |
+| Musaf, 15 Nisan | **nothing** (stop משיב הרוח) | מוריד הטל | - | - |
+| Maariv after the 2nd day of Yom Tov (16 Nisan; on a Friday: Motzei Shabbat) | - | - | ותן ברכה | ברכנו |
 
-In Israel everyone says מוריד הטל in summer, and B switches at Maariv of 7 Cheshvan.
+In Israel everyone says מוריד הטל in summer, B switches at Maariv of 7 Cheshvan
+and at Maariv after the (one) first day of Pesach. B is never said on Shabbat
+or Yom Tov, so an evening that starts Shabbat moves to Motzei Shabbat
+(abroad, 4/5 December can be a Friday).
 
 ## What the clock shows abroad
 
 Everything that *is* said, with its when ("ממוסף", "מהערב", ...), the same as in
 Israel. **The gap:** for Ashkenaz abroad at Pesach, G changes to saying nothing,
-and the slide shows nothing about it - only "ותן ברכה ממוסף". The one change
-that's easy to forget there (stop saying משיב הרוח) gets no reminder.
+and the slide shows nothing about it - only "ותן ברכה מהערב" after Yom Tov.
+The one change that's easy to forget there (stop saying משיב הרוח) gets no
+reminder.
 
 ## To improve abroad support
 
 Decisions:
-- What the slide says for that gap, e.g. "בלי משיב הרוח, ותן ברכה ממוסף", or
-  leave it as it is.
+- What the slide says for that gap, e.g. "בלי משיב הרוח ממוסף", or leave it
+  as it is.
 - Whether abroad needs more nusach choices than Ashkenaz / Sefard.
 
 Points to check:
 - B's start abroad: `Calendar::getRainRequest()` computes it (Julian 21/22
   November, the gap grows a day in 2100, 2200, 2300). Checked in the simulator
   for 2026 and 2027 only; never on a clock outside Israel.
-- Second day of Yom Tov abroad: the slide counts days from 15 Nisan /
-  22 Tishrei, as in Israel; B is first said at the next weekday Amidah
-  (Chol Hamoed abroad) - the slide doesn't name that day.
+- Second day of Yom Tov abroad: G counts days from 15 Nisan / 22 Tishrei,
+  as in Israel; B from the evening after 16 Nisan (Motzei Shabbat when that
+  is a Friday) - both cases in `sim/test_prayer.py`, never seen on a clock
+  outside Israel.
 - Code: `Calendar::getPrayerSwitch()` (G, incl. the Ashkenaz-abroad case),
   `Calendar::getRainRequest()` (B), the slide in `MessageAggregator.cpp`
   (`ContentType::PrayerSwitch`). Tests: `sim/test_prayer.py` (abroad cases).

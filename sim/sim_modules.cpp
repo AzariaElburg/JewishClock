@@ -17,6 +17,15 @@
 #include "DebugTime.h"
 #include "sim_platform.h"
 
+// The ESP32's memory and restart (stubs/Arduino.h): fixed numbers here; the
+// full simulator (sim_clock_main.cpp) has the clock's own.
+uint32_t EspClass::getFreeHeap() { return 250000; }
+uint32_t EspClass::getMaxAllocHeap() { return 150000; }
+uint32_t EspClass::getMinFreeHeap() { return 200000; }
+uint32_t EspClass::getPsramSize() { return 8u * 1024u * 1024u; }
+uint32_t EspClass::getFreePsram() { return 7u * 1024u * 1024u; }
+void EspClass::restart() { std::exit(0); }
+
 // Version.h (on the clock: src/Version.cpp, written by scripts/gen_version.py).
 #include "Version.h"
 const char FIRMWARE_VERSION[] = "sim";

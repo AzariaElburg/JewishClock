@@ -44,7 +44,7 @@ static uint32_t g_messageId       = 1; // Start at 1, so 0 can be an "invalid" I
 // membership exactly once per batch removes both failure modes structurally,
 // not just in the cases already observed.
 // A slot is one slide: a content type, and which of its parts (a type can
-// have several - one per holiday of the day; see partsOf()).
+// have several - one per holiday of the day, two rain/dew lines; see partsOf()).
 struct BatchSlot { ContentType type; size_t part; };
 static std::vector<BatchSlot> s_currentBatch;
 static size_t    s_batchIndex   = 0;
@@ -535,7 +535,29 @@ static String formatGregorianDate(int y, int m, int d, const AppConfig& cfg, con
     return gBuf;
 }
 
+// The rain/dew slide: one line per switch, or one for both when they say
+// the same - "מוריד הטל, ותן ברכה" after Pesach. On Pesach's first day:
+// "מוריד הטל ממוסף", then "ותן ברכה מהערב" (examples: Calendar.h).
+static std::vector<String> prayerTexts(const AppConfig& cfg, const DisplayStrings& strings) {
+    const long civilAbs = getTodayAbsolute();
+    PrayerSwitchNotice p = Calendar::getPrayerSwitch(cfg.switchoverWindowDays, cfg.nusach, cfg.inIsrael, civilAbs);
+    RainRequestNotice r = Calendar::getRainRequest(cfg.switchoverWindowDays, cfg.nusach, cfg.inIsrael, civilAbs);
+    auto line = [](const char* phrase, const char* when) { return *when ? String(phrase) + " " + when : String(phrase); };
+    const int pd = p.daysFromSwitch, rd = r.daysFromSwitch;
+    const char* pWhen = pd > 0 ? "" : strings.prayerSwitchFrom[-pd];
+    const char* rWhen = rd <= 0 ? strings.prayerSwitchEvening[-rd] : "";
+    std::vector<String> texts;
+    if (p.phrase && r.phrase && strcmp(pWhen, rWhen) == 0) {
+        texts.push_back(line((String(p.phrase) + ", " + r.phrase).c_str(), pWhen));
+    } else {
+        if (p.phrase) texts.push_back(line(p.phrase, pWhen));
+        if (r.phrase) texts.push_back(line(r.phrase, rWhen));
+    }
+    return texts;
+}
+
 static size_t partsOf(ContentType type, const DayInfo& today) {
+    if (type == ContentType::PrayerSwitch) return 2;   // at most; an empty part shows nothing
     return type == ContentType::Holiday ? holidayTexts(today).size() : 1;
 }
 
@@ -544,7 +566,7 @@ static std::vector<OnScreenElement> buildContentType(ContentType type, size_t pa
                                                        uint32_t roundCounter) {
     uint8_t freq = cfg.contentFrequency[(int)type];
     if (freq == 0 || (roundCounter % freq) != 0) return {};
-    if (part > 0 && type != ContentType::Holiday) return {};
+    if (part > 0 && type != ContentType::Holiday && type != ContentType::PrayerSwitch) return {};
 
     std::vector<OnScreenElement> out;
     switch (type) {
@@ -645,27 +667,10 @@ static std::vector<OnScreenElement> buildContentType(ContentType type, size_t pa
     out.push_back(textElement(formatFast(f, strings)));   // examples: see formatFast()
     break; }
     case ContentType::PrayerSwitch: {
-    // "משיב הרוח מ-מחר", "משיב הרוח ממוסף מחר" (from צאת the evening before),
-    // "משיב הרוח ממוסף", "משיב הרוח מ-אתמול". The rain request: "ותן טל ומטר
-    // מהערב" (it starts at Maariv). At Pesach both switch at Musaf of the
-    // same day: "מוריד הטל, ותן ברכה ממוסף".
-    const long civilAbs = getTodayAbsolute();
-    PrayerSwitchNotice p = Calendar::getPrayerSwitch(cfg.switchoverWindowDays, cfg.nusach, cfg.inIsrael, civilAbs);
-    RainRequestNotice r = Calendar::getRainRequest(cfg.switchoverWindowDays, cfg.nusach, cfg.inIsrael, civilAbs);
-    String pWhen = !p.phrase ? String() : p.daysFromSwitch == 0 ? String(strings.prayerSwitchMusaf[p.musafTomorrow ? 1 : 0])
-                                                                : String(strings.prayerSwitchWhen[p.daysFromSwitch + 2]);
-    String rWhen = !r.phrase ? String() : r.evening ? String(strings.prayerSwitchEvening[r.eveningsAhead])
-                                        : r.atMusaf ? String(strings.prayerSwitchMusaf[r.musafTomorrow ? 1 : 0])
-                                                    : String(strings.prayerSwitchWhen[r.daysFromSwitch + 2]);
-    String msg;
-    if (p.phrase && r.phrase && pWhen == rWhen) {
-        msg = String(p.phrase) + ", " + r.phrase + " " + rWhen;
-    } else {
-        if (p.phrase) msg = String(p.phrase) + " " + pWhen;
-        if (r.phrase) msg += String(msg.length() ? ", " : "") + r.phrase + " " + rWhen;
-    }
-    if (!msg.length()) break;
-    out.emplace_back(OnScreenElementType::TEXT, msg, _measureString(msg.c_str()));
+    // "משיב הרוח ממחרתיים", "... ממחר", "... ממוסף", then "משיב הרוח";
+    // "ותן טל ומטר ממחר בערב", "... מהערב", then "ותן טל ומטר" - see prayerTexts().
+    std::vector<String> texts = prayerTexts(cfg, strings);
+    if (part < texts.size()) out.emplace_back(OnScreenElementType::TEXT, texts[part], _measureString(texts[part].c_str()));
     break; }
     case ContentType::GregorianDate: {
     // Read straight from NTP rather than DayInfo: DayInfo's gregorianDate is
@@ -785,10 +790,11 @@ static std::vector<std::vector<OnScreenElement>> buildDemoSlides(const AppConfig
     text(formatOmer(23, omerFull, OmerMode::FullText, strings));
 
     // Rain / dew prayer.
-    text(String("משיב הרוח ") + strings.prayerSwitchMusaf[1]);
+    text(String("משיב הרוח ") + strings.prayerSwitchFrom[1]);
     text(String(cfg.nusach == Nusach::Sefard ? "ברך עלינו " : "ותן טל ומטר ") + strings.prayerSwitchEvening[0]);
     const bool noDew = cfg.nusach == Nusach::Ashkenaz && !cfg.inIsrael;   // see Calendar::getPrayerSwitch()
-    text(String(noDew ? "" : "מוריד הטל, ") + (cfg.nusach == Nusach::Sefard ? "ברכנו " : "ותן ברכה ") + strings.prayerSwitchMusaf[0]);
+    if (!noDew) text(String("מוריד הטל ") + strings.prayerSwitchFrom[0]);
+    text(String(cfg.nusach == Nusach::Sefard ? "ברכנו " : "ותן ברכה ") + strings.prayerSwitchEvening[0]);
 
     // Daily learning.
     text(String(strings.dafYomi) + ": נדה מ׳");

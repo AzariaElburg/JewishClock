@@ -1,8 +1,9 @@
 # Points for the user manual and the one-page start guide
 
-Collected since 2026-10-31; style, format and language are decided closer to
-release (v2.1.0). Add a point whenever a feature, behavior or pitfall comes
-up that a user would need to know. Not the manual itself - raw material.
+**Written 2026-11-04:** `Data/start.html` (start guide, English + Hebrew) and
+`Data/manual.html` (manual, English) - edit those now. This file was their
+raw material (collected since 2026-10-31); it stays only as background.
+(Outdated below: the settings-page password - no longer in the page.)
 
 Requirements (2026-10-31): both documents are served by the clock's own
 settings page and travel in every update package, and each later release
@@ -30,11 +31,12 @@ settings page and travel in every update package, and each later release
 - Display modes: alternating (one item at a time) vs single scroll; speed.
 - Calendar content: which items show, their order, how often (frequency).
 - The day changes at צאת הכוכבים (as printed calendars do) - Chanukah too.
-- Rain/dew in prayer, two separate switches, one slide: משיב הרוח (from Musaf
-  of 22 Tishrei and 15 Nisan - "ממוסף", the evening before "ממוסף מחר") and
-  the request ותן טל ומטר (from Maariv of 7 Cheshvan in Israel, 4/5 December
-  abroad - shown as "from tonight"). Nusach Ashkenaz or Sefard (ברך עלינו /
-  ברכנו); days shown before and after; nothing before Pesach. Israel or abroad
+- Rain/dew in prayer, two separate switches: משיב הרוח / מוריד הטל (from Musaf
+  of 22 Tishrei and 15 Nisan - "ממוסף" on the day, before it "ממחר") and the
+  request ותן טל ומטר / ותן ברכה (from the first weekday Maariv: 7 Cheshvan in
+  Israel, 4/5 December abroad; after Yom Tov of Pesach - shown as "מהערב").
+  After a switch only the words themselves. Nusach Ashkenaz or Sefard (ברך
+  עלינו / ברכנו); days shown before and after; before Pesach only its eve. Israel or abroad
   follows the place; Ashkenazim abroad get no מוריד הטל (they say nothing) -
   and no reminder to stop משיב הרוח (known gap, docs/rain_dew_abroad.md).
 - Brightness: fixed or automatic (light sensor); night/day levels; learning the room.

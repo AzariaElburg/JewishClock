@@ -11,7 +11,8 @@ const face = document.createElement('style');
 face.textContent = '@font-face { font-family: "ClockFont"; src: url("/' + P.get('font') + '"); font-weight: 100 900; }';
 document.head.append(face);
 const WEIGHT = +(P.get('weight') || 800);
-const LETTER_H = +(P.get('letterH') || 40);     // Hebrew letter height (א), px - as the old font
+const LETTER_H = +(P.get('letterH') || 40);     // font size: א this tall, px - as the old font
+const HEBREW_H = +(P.get('hebrewH') || LETTER_H); // Hebrew then stretched to this height, same width
 const BASE = +(P.get('base') || 52);            // baseline: the row below the last ink row of א
 const COLON_SCALE = +(P.get('colonScale') || 0.7);
 const OLD_INK = JSON.parse(P.get('oldInk') || '{}');   // old font's ink widths, to match its width
@@ -20,11 +21,13 @@ const ROWS = +(P.get('rows') || 64), PAD = 40;
 
 function fontAt(size) { return WEIGHT + ' ' + size + 'px "ClockFont"'; }
 // Coverage (0..1) of one character, drawn with its baseline at BASE.
+// Hebrew (U+05BE..U+05F4) stretched up to HEBREW_H, standing on the baseline.
 function draw(ch, size, sx, scale = 1, dy = 0) {
   const c = document.createElement('canvas'); c.width = 200; c.height = ROWS;
   const g = c.getContext('2d');
   g.font = fontAt(size); g.fillStyle = '#fff'; g.textBaseline = 'alphabetic';
-  g.setTransform(sx * scale, 0, 0, scale, PAD, BASE + dy);
+  const cp = ch.codePointAt(0), sy = (cp >= 0x5BE && cp <= 0x5F4) ? HEBREW_H / LETTER_H : 1;
+  g.setTransform(sx * scale, 0, 0, scale * sy, PAD, BASE + dy);
   g.fillText(ch, 0, 0);
   const d = g.getImageData(0, 0, c.width, ROWS).data;
   const a = new Float32Array(c.width * ROWS);
@@ -67,6 +70,12 @@ async function main() {
       const want = (zero.y0 + zero.y1) / 2, have = (e0.y0 + e0.y1) / 2;
       r = draw(ch, size, sx, COLON_SCALE, Math.round(want - have));
     }
+    // Geresh / gershayim: half above the letters' top line, so they can't be
+    // taken for a yod (the user, 2026-11-04; the font puts them on that line).
+    if (cp === 0x5F3 || cp === 0x5F4) {
+      const g = ink(r), top = BASE - HEBREW_H;
+      r = draw(ch, size, sx, 1, (top - Math.round((g.y1 - g.y0 + 1) / 2)) - g.y0);
+    }
     const e = ink(r);
     if (!e) { glyphs[cp] = { w: 0, rows: [] }; continue; }
     if (e.y0 === 0 || e.y1 === ROWS - 1) warn.push(ch + ' touches the cell top/bottom');
@@ -78,7 +87,8 @@ async function main() {
     }
     glyphs[cp] = { w: e.x1 - e.x0 + 1, top: e.y0, bottom: e.y1, rows };
   }
-  document.getElementById('out').textContent = JSON.stringify({ size, sx, weight: WEIGHT, colonScale: COLON_SCALE, warn, glyphs });
+  document.getElementById('out').textContent = JSON.stringify({ size, sx, weight: WEIGHT, colonScale: COLON_SCALE,
+    digitH: BASE - zero.y0, warn, glyphs });
 }
 main();
 </script></body></html>

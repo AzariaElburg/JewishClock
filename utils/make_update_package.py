@@ -22,6 +22,7 @@ import zlib
 from pathlib import Path
 
 from local_dirs import FIRMWARE_BUILD, DIST  # outside the OneDrive folder
+from web_files import clock_files
 ROOT = Path(__file__).resolve().parent.parent
 FIRMWARE = FIRMWARE_BUILD / "esp32s3" / "firmware.bin"
 DATA = ROOT / "Data"
@@ -55,11 +56,10 @@ def main():
                  f"probably failed. Run `pio run -c pioarduino.ini` again and check it says [SUCCESS].")
 
     entries = []
-    for f in sorted(DATA.rglob("*")):
-        if not f.is_file() or f.name in EXCLUDE or f.relative_to(DATA).parts[0] in EXCLUDE_DIRS:
+    for rel, data, f in clock_files(DATA):   # the page files gzipped, as uploadfs puts them
+        if f.name in EXCLUDE or f.relative_to(DATA).parts[0] in EXCLUDE_DIRS:
             continue
-        rel = "/" + f.relative_to(DATA).as_posix()
-        entries.append((1, rel, f.read_bytes()))
+        entries.append((1, "/" + rel, data))
     entries.append((2, "firmware.bin", fw))
 
     out = bytearray(b"JCUPD1")

@@ -87,6 +87,19 @@ re-telling the story.
   3. `pio run -c pioarduino.ini -t uploadfs`
   4. Wait for the device to reboot and reconnect
   5. `POST /api/debug/diagnostic-log/note` body `msg=Data flash complete`
+- **The page files go to the clock gzipped** (2026-11-04, `utils/web_files.py`):
+  Data/ keeps them plain; uploadfs builds from `C:\pio3\jc_clean\fs` (staged by
+  `scripts/stage_fs.py`), update packages take the same files. Page ready
+  1.1 s -> 0.57 s, repeat visits 0.25 s (304). A new browser-only file:
+  add it to `web_files.GZIP` and serve it with `sendWebFile()` (WebUI.cpp) -
+  **not** the library's `send(LittleFS, path)`: its 304 queues the headers
+  without sending them, they leave 40-580 ms later at lwIP's next flush.
+- **Fastest route here is USB** (measured 2026-11-04): firmware writes in
+  ~18 s (921600), uploadfs ~35 s in all. Wi-Fi (weak signal at the desk, -86 dBm)
+  adds the 60 s trial and can't send data without firmware. `upload_speed`
+  921600 (CP2102 on COM5; default 460800) halves the firmware write;
+  uploadfs gains nothing - erasing/writing its 4 MB of flash takes ~18 s at
+  any speed (only ~220 KB cross the cable, compressed).
 - **Over Wi-Fi - how the parents' clock gets updates (emailed to them):**
   `pio run -c pioarduino.ini` (check [SUCCESS]), then `python utils/make_update_package.py` ->
   `C:\pio3\jc_clean\dist\JewishClock-update-<version>.jcupdate`: firmware + all `Data/` web
@@ -106,6 +119,32 @@ re-telling the story.
   deliberately and test it on the clock, never via a `^` range. After adding,
   removing or upgrading a library (or the framework, font, an online service):
   `python utils/make_licenses.py` (2026-10-31; see THIRD_PARTY_LICENSES/README.md).
+- **Every release:** `python utils/make_source_bundle.py --kit` (2026-11-04) ->
+  `C:\pio3\jc_clean\dist\sources\<version>\`: the exact source of every library and
+  the Arduino core (`sources-*.zip`, ~60 MB - what the LGPL parts require) and
+  a build kit (compiler, ESP-IDF libs for the S3, platform, Python wheels;
+  ~635 MB in parts under GitHub's 2 GB per file) - attach them to the GitHub
+  release, so the source can be handed over even if its authors drop it.
+  Kit tested 2026-11-05 (empty folders, downloads blocked by a dead proxy,
+  Python 3.12): builds. What it took: the platform fills its own Python
+  environment (`penv`) online on every build and installs packages it
+  doesn't even use (installer, gdb, PIO Home) - the kit carries all of
+  `C:\pio3\packages`, pinned wheels of both environments, `kit_setup.py`,
+  and builds with `PLATFORMIO_OFFLINE=1`. Steps: BUILD-KIT-<version>.txt.
+- **The manuals ship with the firmware** (2026-11-04): `Data/start.html`
+  (one A4 page English + one Hebrew, Hebrew in Hebrew but the UI's English
+  names) and `Data/manual.html` (English), linked in Settings > Clock
+  software, in every update package. **Change a user-visible behavior or
+  label -> update them in the same commit.** Each ends with "For clock
+  software version ...", fixed in the file (2026-11-05, the user: the paper
+  describes one firmware state, never changes by how it's viewed): after
+  editing them, build, then `python utils/stamp_docs.py` (that build's
+  version) and commit; for a release `stamp_docs.py 2.1.0` before the tag. The printed start guide gets the
+  clock's Wi-Fi password only at print time (`start.html?ap=..&pw=..`, a
+  local PDF) - never in the file, which goes to GitHub.
+- **Before handing over a version:** `utils/ap_tests.py` (over the clock's own
+  Wi-Fi: page, settings import, update install, then factory reset + restore
+  from the exported Excel file on the setup page, compared with the start).
 - **Firmware 2.x builds with a separate PlatformIO** (2026-10-18). 2.0 moved
   to Arduino-ESP32 3.x (ESP-IDF 5.5, 64-bit time - see the gotcha below),
   which only the community **pioarduino** platform supports. Its platform
@@ -151,6 +190,18 @@ re-telling the story.
 - `pio device monitor` refuses to run without an interactive terminal; from a
   script use pyserial (`C:\pio3\jc_clean\venv\Scripts\python`), with a fixed read duration so
   it closes the port itself.
+
+### Full simulator (`sim/`, jcclock.exe, 2026-11-05)
+The clock left for the parents on 2026-11-06 - from then on every fix and
+feature is tested on the full simulator: the clock's whole program (all of
+`src/`, unchanged) on PC stand-ins for the hardware only, real NTP, real
+downloads, web on 127.0.0.1:8080 (home) / 8081 (its own Wi-Fi), updates
+across versions with trial and rollback. `utils/ap_tests.py --sim` = the four
+trips. See `sim/README.md`. **A stand-in must behave like the hardware/library
+it replaces, never like a shortcut** (the user, 2026-11-05: no PC time, no
+"replacing" project code). Real clock's answers and screenshots:
+`reference/` (out of git, OneDrive-backed - an exception to "generated files
+outside the project": they can't be made again without the clock).
 
 ### PC simulator (`sim/`, 2026-10-17)
 The clock's calendar/slide/drawing code compiled for the PC unchanged
@@ -390,7 +441,7 @@ display's memory (`DisplayManager::imagesIn()` / `imageFile()` - the same
 bytes as the files); uploads still hitch (flash writes, unavoidable).
 
 ### The web server runs on core 0, alongside the main loop (2026-10-22)
-`CONFIG_ASYNC_TCP_RUNNING_CORE=0` (platformio.ini): on core 1, at priority 10
+`CONFIG_ASYNC_TCP_RUNNING_CORE=0` (pioarduino.ini): on core 1, at priority 10
 over `loop()`'s 1, every slow request froze the screen for its whole length.
 Now handlers run truly in parallel with the main loop. A handler may read
 main-loop data, but must change it only under its lock (EventsLock,
@@ -411,7 +462,8 @@ caught half-sent. **Settled setup (2026-10-26):**
   whole panel 35.8 at 40 / 23.4 at 80).
 - Each frame starts **12 ms** after the panel's TE pulse (waitForTe()). The
   two tear lines then stand still in the empty bands above and below the
-  letters (text cell FONT_H 72 of the 85-row window). Tuned by eye,
+  letters (text cell FONT_H 72 of the 85-row window; since 2026-11-04 the
+  cell is 80 rows, letters 48 tall, window 97). Tuned by eye,
   12 +-0.5 ms. Changing window position/height, speed or font can move them
   back into the text - retune with Calibration's **"Tear lines"** slider
   (saved: config `calibTearUs`, default Config.h DEFAULT_CALIB_TEAR_US;
@@ -451,6 +503,15 @@ only restarts the CPU via EN — the regulator keeps running, so the
 peripheral never loses power, and a stuck I2C bus state won't clear.
 **Fully unplugging the ESP32's power does fix this** (it cuts the
 regulator itself), since the peripheral has nowhere else to draw from.
+
+### Backlight: a flicker can be a half-on MOSFET module (2026-11-04)
+The backlight flickered about once a second, worse over time, better after
+tapping the case. Not loose wires: the LR7843 module switched only half on
+(at 100%: 1.2 V from LED-K to GND instead of ~0, 45 mA instead of ~140), so
+small wobbles of the 5 V/3.3 V came through. Proof: a jumper from its Load to
+GND -> brighter, steady. Replaced by a "15A 400W" dual-MOSFET trigger module
+(VIN+/VIN-/OUT+/OUT-, TRIG/PWM/GND): steady. Wiring: Config.h (backlight) and
+the wiring document. Check: LED-K (FPC 34) to GND at 100% below 0.05 V.
 
 ### Arduino confirms new firmware by itself unless told not to
 ESP-IDF's rollback only protects you if the app confirms itself *late*. The

@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JewishClock - Quick start guide</title>
+<!-- One page per language (English, then Hebrew), each fits an A4 sheet when
+     printed. The clock's own Wi-Fi name comes from the clock (/api/status
+     apSsid) or ?ap=; its password only from ?pw= - it is printed for the
+     family, never stored in this file (it would end up on GitHub).
+     Served by the clock (/start.html) and carried by every update package.
+     "For clock software version": written in by utils/stamp_docs.py whenever
+     this file changes - the version it describes, fixed in the file. -->
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#F3F2F1;color:#201F1E;font:15px/1.5 'Segoe UI',-apple-system,Roboto,Arial,sans-serif}
+.page{background:#fff;max-width:760px;margin:16px auto;padding:28px 36px;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.12)}
+h1{font-size:24px;margin:0 0 4px}
+.sub{color:#605E5C;margin:0 0 14px}
+h2{font-size:16px;margin:16px 0 4px;color:#0078D4}
+ol,ul{margin:4px 0 0;padding-inline-start:22px}
+li{margin:2px 0}
+.ui{font-weight:600;white-space:nowrap}
+.ui::before{content:"\2039";color:#8A8886;margin-inline-end:1px}
+.ui::after{content:"\203A";color:#8A8886;margin-inline-start:1px}
+.box{border:1px solid #E1DFDD;border-radius:6px;padding:8px 12px;background:#FAF9F8;margin:6px 0}
+.wifi{font-weight:700}
+.note{color:#605E5C;font-size:13.5px}
+.back{display:inline-block;margin:12px auto 0;color:#0078D4;text-decoration:none}
+.ver{margin:14px 0 0;color:#8A8886;font-size:11px}
+[dir=rtl]{font-family:'Segoe UI',Arial,sans-serif}
+@media print{
+  body{background:#fff;font-size:12.5px}
+  .page{box-shadow:none;margin:0;max-width:none;padding:10mm 12mm;border-radius:0;page-break-after:always}
+  .page:last-child{page-break-after:auto}
+  .noprint{display:none}
+  h2{margin-top:10px}
+}
+</style>
+</head>
+<body>
+<div class="noprint" style="text-align:center"><a class="back" href="/" onclick="return backToClock()">&larr; Back to the clock's page</a></div>
+
+<div class="page">
+  <h1>JewishClock</h1>
+  <p class="sub">Quick start guide</p>
+  <p>The clock shows the Hebrew and the Gregorian date, Shabbat and holidays, the weekly parasha, candle lighting and
+    Havdalah times, the Omer, the changes in the rain/dew prayer, and the family's birthdays and yahrzeits. It takes
+    its dates and times from the internet by itself and sets its brightness to the room's light.</p>
+
+  <h2>1. Switching it on</h2>
+  <p>Plug it in. After about a minute it shows the date. It uses the home Wi-Fi to fetch its calendar - that is
+    already set up. Unplugging it is always safe: nothing is lost.</p>
+
+  <h2>2. Opening the clock's page (phone or computer)</h2>
+  <ol>
+    <li>In the phone's or computer's Wi-Fi list, choose <span class="wifi" data-ap>JewishClock</span>.
+      Password: <span class="wifi" data-pw>written on your printed copy</span></li>
+    <li>Open the browser and type <b>192.168.4.1</b></li>
+    <li>When you are done, switch back to your home Wi-Fi.</li>
+  </ol>
+  <p class="note">If the page stops answering, the phone or computer has probably switched back to the home Wi-Fi -
+    choose <span class="wifi" data-ap>JewishClock</span> again.</p>
+
+  <h2>3. Adding a birthday, anniversary or yahrzeit</h2>
+  <p><span class="ui">Calendar</span> &rarr; <span class="ui">＋</span> &rarr; name, type (<span class="ui">Birthday</span>,
+    <span class="ui">Wedding</span>, <span class="ui">Yahrzeit</span>, <span class="ui">Other</span>), the date -
+    <span class="ui">Gregorian</span> and/or <span class="ui">Hebrew</span> (tick <span class="ui">After sunset</span>
+    if it was after sunset) &rarr; keep the icon, choose another, or tap the picture square for your own photo or
+    video &rarr; <span class="ui">Save</span>. The clock shows it on the day, with the age or years if the year was
+    entered. To change an event later, tap it in the calendar.</p>
+  <p><b>The picture:</b> the slider under the picture zooms in and out, and dragging the picture chooses the part
+    that shows. From a video the clock takes one frame - move the video's slider to the moment you want. <span class="ui">✎</span> replaces the picture, <span class="ui">✕</span>
+    removes it (the icon is back), <span class="ui">Library</span> uses a picture already on the clock.</p>
+
+  <h2>4. Keeping a backup</h2>
+  <p><span class="ui">Settings</span> &rarr; <span class="ui">Export &amp; import</span> &rarr; <span class="ui">Both</span>
+    &rarr; <span class="ui">Export</span>. Keep the Excel file it saves (for example, email it to yourself): it holds
+    all events, pictures and settings, and puts everything back if ever needed.</p>
+
+  <h2>5. Installing an update</h2>
+  <p>Updates come by email as a file ending in <b>.jcupdate</b>. Save it, then: <span class="ui">Settings</span> &rarr;
+    <span class="ui">Clock software</span> &rarr; <span class="ui">Update the clock</span> &rarr; choose the file &rarr;
+    <span class="ui">Update</span>. The clock restarts (about 2 minutes): when the page asks, choose the Wi-Fi
+    <span class="wifi" data-ap>JewishClock</span> again, and wait until it says <b>Done</b>. Settings and events stay.</p>
+
+  <h2>6. If something is wrong</h2>
+  <ul>
+    <li>Unplug the clock and plug it in again - usually that's all it takes.</li>
+    <li>Otherwise: <span class="ui">Settings</span> &rarr; <span class="ui">Clock software</span> &rarr;
+      <span class="ui">Problem report</span> &rarr; <span class="ui">Get log</span>, and email the file it saves.</li>
+  </ul>
+
+  <h2>7. The full manual</h2>
+  <p>Everything else - what each slide means, all settings, pictures, brightness, places, backups - is in the full
+    manual (English): on the clock's page, <span class="ui">Settings</span> &rarr; <span class="ui">Clock software</span>
+    &rarr; <span class="ui">Manual</span>.</p>
+  <p class="ver">For clock software version <span class="fwver">2.1.0</span></p>
+</div>
+
+<div class="page" dir="rtl" lang="he">
+  <h1>השעון היהודי</h1>
+  <p class="sub">מדריך להתחלה מהירה</p>
+  <p>השעון מציג את התאריך העברי והלועזי, שבתות וחגים, פרשת השבוע, זמני הדלקת נרות והבדלה, ספירת העומר,
+    החלפת "משיב הרוח" ו"טל ומטר" בתפילה, וימי הולדת ואזכרות של המשפחה. את התאריכים והזמנים הוא מקבל
+    מהאינטרנט בעצמו, ואת הבהירות הוא מתאים לתאורה שבחדר.</p>
+
+  <h2>1. הדלקה</h2>
+  <p>מחברים לחשמל. אחרי כדקה מופיע התאריך. השעון משתמש ב-Wi-Fi של הבית כדי להוריד את לוח השנה - זה כבר
+    מוגדר. מותר לנתק אותו מהחשמל בכל רגע: שום דבר לא הולך לאיבוד.</p>
+
+  <h2>2. כניסה לדף של השעון (מהטלפון או מהמחשב)</h2>
+  <ol>
+    <li>ברשימת ה-Wi-Fi של הטלפון או המחשב בוחרים <bdi class="wifi" data-ap>JewishClock</bdi>.
+      סיסמה: <bdi class="wifi" data-pw-he>רשומה בעותק המודפס</bdi></li>
+    <li>פותחים את הדפדפן ומקלידים <bdi><b>192.168.4.1</b></bdi></li>
+    <li>בסיום חוזרים ל-Wi-Fi של הבית.</li>
+  </ol>
+  <p class="note">אם הדף מפסיק להגיב, כנראה הטלפון או המחשב חזרו בעצמם ל-Wi-Fi של הבית - בוחרים שוב
+    <bdi class="wifi" data-ap>JewishClock</bdi>.</p>
+
+  <h2>3. הוספת יום הולדת, יום נישואין או אזכרה</h2>
+  <p>לוחצים <bdi class="ui">Calendar</bdi> ואז <bdi class="ui">＋</bdi>, ממלאים שם, סוג
+    (<bdi class="ui">Birthday</bdi>, <bdi class="ui">Wedding</bdi>, <bdi class="ui">Yahrzeit</bdi>,
+    <bdi class="ui">Other</bdi>) ותאריך - לועזי (<bdi class="ui">Gregorian</bdi>) ו/או עברי
+    (<bdi class="ui">Hebrew</bdi>; מסמנים <bdi class="ui">After sunset</bdi> אם זה היה אחרי השקיעה). משאירים את הסמל,
+    בוחרים סמל אחר, או לוחצים על ריבוע התמונה כדי להוסיף תמונה או סרטון משלכם - ולוחצים <bdi class="ui">Save</bdi>.
+    השעון יציג את זה ביום עצמו, עם הגיל או מספר השנים אם הוזנה שנה. כדי לשנות אירוע בהמשך לוחצים עליו בלוח.</p>
+  <p><b>התמונה:</b> הפס שמתחת לתמונה מגדיל ומקטין אותה, ובגרירת התמונה בוחרים איזה חלק ממנה יוצג. מסרטון השעון
+    לוקח תמונה אחת - מזיזים את הפס של הסרטון לרגע הרצוי. <bdi class="ui">✎</bdi> מחליף את התמונה, <bdi class="ui">✕</bdi> מסיר אותה (וחוזר הסמל),
+    <bdi class="ui">Library</bdi> בוחר תמונה שכבר נמצאת בשעון.</p>
+
+  <h2>4. גיבוי</h2>
+  <p><bdi class="ui">Settings</bdi>, ואז <bdi class="ui">Export &amp; import</bdi>, בוחרים
+    <bdi class="ui">Both</bdi> ולוחצים <bdi class="ui">Export</bdi>. שומרים את קובץ האקסל שנוצר (למשל שולחים אותו
+    לעצמכם במייל): יש בו את כל האירועים, התמונות וההגדרות, ואיתו אפשר להחזיר הכול אם יהיה צורך.</p>
+
+  <h2>5. התקנת עדכון</h2>
+  <p>עדכונים מגיעים במייל, כקובץ שהשם שלו נגמר ב-<bdi><b>.jcupdate</b></bdi>. שומרים אותו, ואז:
+    <bdi class="ui">Settings</bdi>, <bdi class="ui">Clock software</bdi>, <bdi class="ui">Update the clock</bdi>,
+    בוחרים את הקובץ ולוחצים <bdi class="ui">Update</bdi>. השעון מופעל מחדש (כשתי דקות): כשהדף מבקש, בוחרים שוב
+    את ה-Wi-Fi <bdi class="wifi" data-ap>JewishClock</bdi>, ומחכים עד שכתוב <bdi><b>Done</b></bdi>. ההגדרות
+    והאירועים נשארים.</p>
+
+  <h2>6. אם משהו לא תקין</h2>
+  <ul>
+    <li>מנתקים את השעון מהחשמל ומחברים שוב - בדרך כלל זה מספיק.</li>
+    <li>אחרת: <bdi class="ui">Settings</bdi>, <bdi class="ui">Clock software</bdi>, ב-<bdi class="ui">Problem
+      report</bdi> לוחצים <bdi class="ui">Get log</bdi>, ושולחים במייל את הקובץ שנשמר.</li>
+  </ul>
+
+  <h2>7. המדריך המלא</h2>
+  <p>כל השאר - מה פירוש כל הודעה על המסך, כל ההגדרות, תמונות, בהירות, מקומות, גיבויים - נמצא במדריך המלא (באנגלית):
+    בדף של השעון, <bdi class="ui">Settings</bdi>, <bdi class="ui">Clock software</bdi>, <bdi class="ui">Manual</bdi>.</p>
+  <p class="ver">לגרסת תוכנת השעון <bdi class="fwver">2.1.0</bdi></p>
+</div>
+
+<script>
+// The clock's own Wi-Fi: ?ap= (printing), else from the clock; the password
+// only from ?pw= (printing) - see the comment at the top.
+// Opened in a tab of its own from the clock's page (Settings > Clock
+// software): close it - the clock's page is still open in its tab. Going to
+// "/" here instead made a new clock tab every time (the user, 2026-11-05).
+// If the browser won't close it (opened some other way): the clock's page here.
+function backToClock() { window.close(); setTimeout(() => { location.href = '/'; }, 300); return false; }
+const q = new URLSearchParams(location.search);
+function setAll(sel, text) { document.querySelectorAll(sel).forEach(e => { e.textContent = text; }); }
+if (q.get('ap')) setAll('[data-ap]', q.get('ap'));
+else fetch('/api/status').then(r => r.json()).then(s => { if (s.apSsid) setAll('[data-ap]', s.apSsid); }).catch(() => {});
+if (q.get('pw')) { setAll('[data-pw]', q.get('pw')); setAll('[data-pw-he]', q.get('pw')); }
+</script>
+</body>
+</html>

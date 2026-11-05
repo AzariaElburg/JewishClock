@@ -23,3 +23,6 @@ sim/work/
 
 # Claude Code's local permission list (per machine, not shared)
 .claude/settings.local.json
+
+# The real clock's recorded answers and screenshots - backed up by OneDrive, not git (CLAUDE.md)
+reference/

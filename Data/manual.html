@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JewishClock - Manual</title>
+<!-- The full user manual. Served by the clock (/manual.html) and carried by
+     every update package, so it always matches the version on the clock -
+     keep it current with every change a user would notice
+     (docs/user_manual_points.md collects the points). "For clock software
+     version": written in by utils/stamp_docs.py whenever this file changes. -->
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#F3F2F1;color:#201F1E;font:15px/1.55 'Segoe UI',-apple-system,Roboto,Arial,sans-serif}
+main{background:#fff;max-width:820px;margin:16px auto;padding:28px 36px;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.12)}
+h1{font-size:26px;margin:0 0 4px}
+h2{font-size:19px;margin:26px 0 6px;padding-top:8px;border-top:1px solid #E1DFDD;color:#0078D4}
+h3{font-size:15.5px;margin:16px 0 4px}
+p{margin:6px 0}
+ul,ol{margin:4px 0;padding-left:22px}
+li{margin:3px 0}
+.ui{font-weight:600;white-space:nowrap}
+.ui::before{content:"\2039";color:#8A8886;margin-right:1px}
+.ui::after{content:"\203A";color:#8A8886;margin-left:1px}
+.he{direction:rtl;unicode-bidi:isolate}
+.note{color:#605E5C;font-size:14px}
+.toc{columns:2;font-size:14px}
+.toc a{color:#0078D4;text-decoration:none}
+.back{display:block;text-align:center;margin:12px 0 0;color:#0078D4;text-decoration:none}
+table{border-collapse:collapse;margin:6px 0;font-size:14px}
+td,th{border:1px solid #E1DFDD;padding:4px 8px;text-align:left;vertical-align:top}
+.ver{margin:22px 0 0;color:#8A8886;font-size:11px}
+@media print{body{background:#fff}main{box-shadow:none;margin:0;max-width:none;padding:0}.back{display:none}h2{page-break-after:avoid}}
+@media (max-width:600px){main{padding:18px 16px;margin:0;border-radius:0}.toc{columns:1}}
+</style>
+</head>
+<body>
+<a class="back" href="/" onclick="return backToClock()">&larr; Back to the clock's page</a>
+<main>
+<h1>JewishClock - Manual</h1>
+<p class="note">For the version installed on this clock. Names in <span class="ui">brackets</span> are what the clock's
+  page shows. A short guide: <a href="/start.html">Quick start guide</a>.</p>
+
+<div class="toc">
+<ol>
+  <li><a href="#screen">What the clock shows</a></li>
+  <li><a href="#reach">Reaching the clock's page</a></li>
+  <li><a href="#calendar">The Calendar and your events</a></li>
+  <li><a href="#pictures">Icons and pictures</a></li>
+  <li><a href="#display">Display and brightness</a></li>
+  <li><a href="#content">Calendar Content</a></li>
+  <li><a href="#wifi">Wi-Fi, place and name</a></li>
+  <li><a href="#backup">Backup, import and restore</a></li>
+  <li><a href="#update">Updates</a></li>
+  <li><a href="#problems">When something is wrong</a></li>
+  <li><a href="#advanced">Advanced</a></li>
+  <li><a href="#about">Data sources and licenses</a></li>
+</ol>
+</div>
+
+<h2 id="screen">1. What the clock shows</h2>
+<p>A sequence of short messages in the window, over and over:</p>
+<ul>
+  <li>The Hebrew and the Gregorian date.</li>
+  <li>Shabbat: candle lighting on Friday, Havdalah on Saturday night, the weekly parasha, Shabbat Mevarchim and the
+    special Shabbatot.</li>
+  <li>Holidays, Rosh Chodesh, fasts with their start and end times, the Omer count.</li>
+  <li>Daf Yomi and Mishna Yomit.</li>
+  <li>The rain/dew changes in prayer (see below).</li>
+  <li>The family's events - birthdays, anniversaries, yahrzeits - with the age or number of years.</li>
+</ul>
+<p><b>When the day changes.</b> As in printed Jewish calendars, the Hebrew date - and everything that follows it,
+  Chanukah candles included - changes at <span class="he">צאת הכוכבים</span>, not at midnight or at sunset. Gregorian dates
+  change at midnight.</p>
+<p><b>Rain and dew in prayer.</b> Two separate reminders:</p>
+<ul>
+  <li><span class="he">משיב הרוח</span> / <span class="he">מוריד הטל</span> - from Musaf of 22 Tishrei and of 15 Nisan.
+    On the day it says "<span class="he">ממוסף</span>", the days before "<span class="he">ממחר</span>".</li>
+  <li>The request <span class="he">ותן טל ומטר</span> / <span class="he">ותן ברכה</span> - from the first weekday Maariv:
+    7 Cheshvan in Israel, 4 or 5 December abroad; after Pesach from Maariv when Yom Tov ends ("<span class="he">מהערב</span>").</li>
+</ul>
+<p>After a switch the clock shows only the words themselves. Nusach Ashkenaz or Sefard and how many days around the switch
+  are shown: <a href="#content">Calendar Content</a>. Israel or abroad follows the clock's place.</p>
+<p><b>Events on a Hebrew date</b> show from the evening before (when the Hebrew date begins), or from midnight if you
+  choose so (<a href="#content">Calendar Content</a>, Birthdays &amp; Events). An event with both a Hebrew and a
+  Gregorian date shows on each of them; a small blue Star of David after the age means it is the Hebrew date's turn
+  (no star: the Gregorian date's). The age is counted in that calendar.</p>
+
+<h2 id="reach">2. Reaching the clock's page</h2>
+<p>Everything is set from a phone or computer, in its web browser - nothing to install.</p>
+<h3>Through the clock's own Wi-Fi (always works)</h3>
+<ol>
+  <li>In the Wi-Fi list choose the clock's own network - it has the clock's name, e.g. <b>JewishClock</b>
+    (password: on the printed start guide).</li>
+  <li>In the browser open <b>192.168.4.1</b>.</li>
+  <li>When done, switch back to your usual Wi-Fi.</li>
+</ol>
+<p class="note">Phones and computers sometimes leave a Wi-Fi without internet and go back to the home Wi-Fi by
+  themselves - if the page stops answering, choose the clock's Wi-Fi again. After the clock restarts (an update, an
+  import) its Wi-Fi is gone for a minute; the page tells you to choose it again.</p>
+<h3>Through the home network</h3>
+<p>On many home networks the page is also at <b>jewishclock.local</b> (the clock's name, without spaces) or at the
+  clock's address on that network. Some routers don't let devices reach each other - then use the clock's own Wi-Fi.</p>
+<h3>First start, or after a factory reset</h3>
+<p>The screen scrolls the setup Wi-Fi's name and password. Join it, open <b>192.168.4.1</b>, pick the home Wi-Fi from the
+  list, type its password, <span class="ui">Connect</span>. To put back a backup instead, choose
+  <span class="ui">Restore from backup</span> there (see <a href="#backup">Backup</a>).</p>
+
+<h2 id="calendar">3. The Calendar and your events</h2>
+<p><span class="ui">Calendar</span> shows a month: <span class="ui">‹</span> <span class="ui">›</span> move between months,
+  <span class="ui">Current Month</span> jumps back, <span class="ui">Greg</span> / <span class="ui">Heb</span> choose
+  Gregorian or Hebrew months. The search box finds events by name. The list beside it shows the month's events.</p>
+<h3>Adding or changing an event</h3>
+<ol>
+  <li><span class="ui">＋</span> (new) - or click an existing event to change it.</li>
+  <li>Name, and the type: <span class="ui">Birthday</span>, <span class="ui">Wedding</span>, <span class="ui">Yahrzeit</span>,
+    <span class="ui">Other</span>.</li>
+  <li>The date: <span class="ui">Gregorian</span>, <span class="ui">Hebrew</span>, or both. For a Hebrew date tick
+    <span class="ui">After sunset</span> if it happened after sunset - the Hebrew date is then the next day's.
+    <span class="ui">Adar II</span> for a leap year's second Adar.</li>
+  <li><span class="ui">Remind ... days before</span>: also show it that many days ahead ("in 2 days").</li>
+  <li>An icon or a picture (next section).</li>
+  <li><span class="ui">Save</span>. <span class="ui">Delete</span> removes it.</li>
+</ol>
+<p class="note">Many events at once: edit them in Excel - see <a href="#backup">Export &amp; import</a>.</p>
+
+<h2 id="pictures">4. Icons and pictures</h2>
+<p>Each event can carry an icon (cake, candle, rings, ...) or a picture of your own: a photo, or one frame of a video
+  (move the video's slider to the moment). The slider under the picture zooms in and out, and dragging the picture
+  chooses the part that shows; the picture is shrunk to the clock's window. <span class="ui">✎</span> replaces it, <span class="ui">✕</span> removes it (the icon is
+  back). Pictures are kept in one library on the clock (<span class="ui">Library</span>) - one picture can serve several events.</p>
+<p><b>The clock's own pictures</b> - candles, Havdalah, Torah, Mishna, the event icons - can be replaced with your own:
+  <span class="ui">Settings</span> &rarr; <span class="ui">Pictures</span>. Here a short part of a video becomes a small
+  animation (<span class="ui">Start here</span> / <span class="ui">End here</span>). Each one can be put back to the original.
+  <span class="ui">Room for replaced pictures</span> shows how much space is left.</p>
+
+<h2 id="display">5. Display and brightness</h2>
+<p><span class="ui">Settings</span> &rarr; <span class="ui">Display</span>:</p>
+<ul>
+  <li><span class="ui">Adjust to room light</span> on: the clock follows the room - dim in the dark, bright in daylight.
+    <span class="ui">Brightness</span> sets the faintest (dark room; <i>Off</i> = no light) and the brightest (light room)
+    level; <span class="ui">Room light</span> sets how much light counts as a dark and as a light room. With
+    <span class="ui">Learn room light</span> on, the clock learns those two by itself over the days. The thin
+    "Now" marks show the current values. The clock shows the level while you move a handle.</li>
+  <li><span class="ui">Adjust to room light</span> off: one fixed <span class="ui">Brightness</span>.</li>
+  <li><span class="ui">Message mode</span>: <span class="ui">Alternating</span> shows one message at a time
+    (<span class="ui">Dwell time</span>: seconds each); a message longer than the window scrolls through once.
+    <span class="ui">Single Scroll</span>: all messages run by in one line.</li>
+  <li><span class="ui">Scroll speed</span>: how fast long messages move.</li>
+</ul>
+
+<h2 id="content">6. Calendar Content</h2>
+<p><span class="ui">Settings</span> &rarr; <span class="ui">Calendar Content</span> lists every kind of message. For each:
+  whether and how often it shows; drag <b>⠿</b> to change the order (higher = earlier). Some have their own choices:</p>
+<table>
+  <tr><td>Birthdays &amp; Events</td><td>A Hebrew-date event starts the evening before, or at midnight.</td></tr>
+  <tr><td>Omer</td><td>Short, medium or the full wording of the count.</td></tr>
+  <tr><td><span class="he">משיב הרוח · טל ומטר</span></td><td>Nusach (<span class="he">אשכנז / ספרד</span>) and the days shown
+    before and after a switch day.</td></tr>
+</table>
+<p><span class="ui">Show year</span> adds the year to the date messages.</p>
+
+<h2 id="wifi">7. Wi-Fi, place and name</h2>
+<p><span class="ui">Settings</span> &rarr; <span class="ui">Wi-Fi</span>:</p>
+<ul>
+  <li><span class="ui">Clock name</span> - also the name of its own Wi-Fi and of <i>name</i>.local.</li>
+  <li>Up to three Wi-Fi networks (home, family, a spare). The clock joins the one it was on last, otherwise the
+    strongest it hears, and moves to a clearly stronger one when the signal stays weak. The green dot marks the one it
+    is on.</li>
+  <li>The <span class="ui">⋯</span> menu of a network: <span class="ui">Connect</span> (move to it now),
+    <span class="ui">Change network</span> (pick from the networks the clock hears, or <span class="ui">Other…</span> to type
+    a name; <span class="ui">Show</span> shows the typed password), <span class="ui">Change place</span>,
+    <span class="ui">Remove</span>. Then <span class="ui">Save Wi-Fi</span>.</li>
+  <li><b>Place:</b> each network has its own place (city) - for candle lighting, Havdalah, fasts, time zone, Israel or
+    abroad. A new network's place is looked up from the internet and marked <i>detected</i>; check it with
+    <span class="ui">Change place</span>. When the clock joins a network, that network's place becomes active.</li>
+  <li><span class="ui">24-hour clock</span>: times as 18:30 or 6:30.</li>
+  <li><span class="ui">Reset Wi-Fi</span>: forgets all networks - the clock opens its setup Wi-Fi.</li>
+</ul>
+
+<h2 id="backup">8. Backup, import and restore</h2>
+<p><span class="ui">Settings</span> &rarr; <span class="ui">Export &amp; import</span>, one Excel file:</p>
+<ul>
+  <li><span class="ui">Events</span> or <span class="ui">Both</span> (events and settings, Wi-Fi and pictures included),
+    then <span class="ui">Export</span> - keep that file: it is the backup.</li>
+  <li><span class="ui">Import</span> a file exported before (it may be edited in Excel). The page shows what is in it and
+    asks what to import. Events: replaces the event list, with Undo. Settings: replaces all settings (Wi-Fi too) and
+    restarts the clock.</li>
+  <li><b>Restore a new or reset clock:</b> on its setup page (first start, see section 2) choose
+    <span class="ui">Restore from backup</span> and pick the file - events, pictures, settings and Wi-Fi come back.</li>
+  <li><span class="ui">Factory reset...</span> (Advanced) erases everything - offering a backup first.</li>
+</ul>
+
+<h2 id="update">9. Updates</h2>
+<p>An update is one file ending in <b>.jcupdate</b>, sent by email. <span class="ui">Settings</span> &rarr;
+  <span class="ui">Clock software</span> &rarr; <span class="ui">Update the clock</span> &rarr; choose the file &rarr;
+  <span class="ui">Update</span>.</p>
+<ul>
+  <li>The clock restarts once or twice (about 2 minutes). Choose the clock's Wi-Fi again when the page asks, and wait for
+    <b>Done</b>.</li>
+  <li>The new version starts on trial: if it doesn't get on the Wi-Fi within 5 minutes, or stops working, the clock goes
+    back to the version it had, by itself. Settings and events are never touched.</li>
+  <li>The manual and this page come with each update, so they always match the version.</li>
+  <li>If the clock's page ever doesn't work: <b>192.168.4.1/update-safe</b> (built into the clock) installs an update too.</li>
+</ul>
+
+<h2 id="problems">10. When something is wrong</h2>
+<ul>
+  <li>Unplug and plug in again - safe at any time, nothing is lost.</li>
+  <li>Wrong times or holidays: check the place (section 7). Empty or old calendar: the clock may have no internet
+    - it keeps showing what it downloaded last.</li>
+  <li><span class="ui">Clock software</span> &rarr; <span class="ui">Problem report</span> &rarr; <span class="ui">Get log</span>
+    saves a text file with the clock's log and settings (no passwords) - email it.</li>
+</ul>
+
+<h2 id="advanced">11. Advanced</h2>
+<p><span class="ui">Settings</span> &rarr; <span class="ui">Advanced</span> - not needed in daily use:</p>
+<ul>
+  <li><b>Window calibration</b> (<span class="ui">Offset X</span>, <span class="ui">Offset Y</span>, <span class="ui">Width</span>,
+    <span class="ui">Height</span>, <span class="ui">Calibrate</span>): where the visible window is on the screen - only
+    after a change to the box. <span class="ui">Tear lines</span> moves two thin lines that can appear in scrolling text
+    above and below the letters.</li>
+  <li><span class="ui">Demo</span>: everything the clock can show, once.</li>
+  <li><b>Debug time</b>: test the clock at another date (<span class="ui">Shift by</span>, <span class="ui">Set to (Gregorian)</span>,
+    <span class="ui">Set to (Hebrew)</span>, <span class="ui">Apply</span>). Always finish with
+    <span class="ui">Back to real time</span>.</li>
+  <li><span class="ui">Holiday &amp; times data (from Hebcal)</span>: <span class="ui">Refresh now</span> downloads it again,
+    <span class="ui">Clear cache</span> drops the stored copy. Your own events are not affected.</li>
+  <li><span class="ui">NTP server</span>: where the clock gets its time. <span class="ui">Log level</span>: how much the log
+    records.</li>
+</ul>
+
+<h2 id="about">12. Data sources and licenses</h2>
+<ul>
+  <li>Holidays, Shabbat and prayer times: <b>Hebcal.com</b> (CC BY 4.0). Place search and time zones: <b>Open-Meteo</b>
+    (CC BY 4.0, GeoNames). Time: NTP.</li>
+  <li>The software parts made by others and their licenses: <span class="ui">Settings</span> &rarr;
+    <span class="ui">Clock software</span> &rarr; <span class="ui">Licenses</span>.</li>
+</ul>
+<p class="ver">For clock software version <span class="fwver">2.1.0</span></p>
+</main>
+<a class="back" href="/" onclick="return backToClock()">&larr; Back to the clock's page</a>
+<script>
+// As in start.html: close this tab (the clock's page is open in its own), else go there.
+function backToClock() { window.close(); setTimeout(() => { location.href = '/'; }, 300); return false; }
+</script>
+</body>
+</html>

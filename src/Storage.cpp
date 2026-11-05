@@ -159,7 +159,6 @@ void Storage::applyDefaults(AppConfig& cfg) {
     strncpy(cfg.language, LANG_DEFAULT, sizeof(cfg.language));
 
     cfg.debugTimeOffset = 0;
-    cfg.devMode         = false;
     cfg.rotationMode    = ROTATION_MODE_DEFAULT;
     cfg.messageDwellSec = MESSAGE_DWELL_SEC_DEFAULT;
     strncpy(cfg.messageSeparator, MESSAGE_SEPARATOR_DEFAULT, sizeof(cfg.messageSeparator));
@@ -194,7 +193,6 @@ void Storage::applyDefaults(AppConfig& cfg) {
     cfg.switchoverWindowDays  = SWITCHOVER_DISPLAY_DAYS;
     cfg.nusach                = NUSACH_DEFAULT;
     cfg.eventDayChange        = EVENT_DAY_CHANGE_DEFAULT;
-    cfg.showAllMessages       = true;
 
     // Default order matches the historical hardcoded build order in
     // MessageAggregator; default frequencies match the old individual
@@ -313,7 +311,6 @@ bool Storage::loadConfig(AppConfig& cfg) {
     cfg.use24Hour = doc["use24Hour"] | true;
 
     cfg.debugTimeOffset = doc["debugTimeOffset"] | (int64_t)0;
-    cfg.devMode         = doc["devMode"]         | false;
     NTPManager::setDebugOffset(cfg.debugTimeOffset);
 
     JsonArray ntpArr = doc["ntpServers"];
@@ -358,7 +355,6 @@ bool Storage::loadConfig(AppConfig& cfg) {
     cfg.nusach                = doc["nusach"].as<int>() == 1 ? Nusach::Sefard : Nusach::Ashkenaz;
     cfg.eventDayChange        = doc["eventDayChange"].as<int>() == 1 ? EventDayChange::Midnight : EventDayChange::WithHebrewDay;
     cfg.switchoverWindowDays  = doc["prayerSwitchDays"]   | SWITCHOVER_DISPLAY_DAYS;   // new key (2026-10-17): the old "switchoverDays" was an unused setting whose saved 0 meant something else
-    cfg.showAllMessages       = doc["showAll"]            | true;
 
     // Order is a list of type keys, frequency a key->int map. Either one
     // missing (or a type the saved lists don't mention) keeps the
@@ -489,7 +485,6 @@ bool Storage::saveConfig(const AppConfig& cfg) {
     doc["language"] = cfg.language;
 
     doc["debugTimeOffset"] = cfg.debugTimeOffset;
-    doc["devMode"]         = cfg.devMode;
     doc["rotationMode"]    = static_cast<int>(cfg.rotationMode);
     doc["messageDwellSec"] = cfg.messageDwellSec;
     doc["separator"]       = cfg.messageSeparator;
@@ -523,7 +518,6 @@ bool Storage::saveConfig(const AppConfig& cfg) {
     doc["prayerSwitchDays"]   = cfg.switchoverWindowDays;
     doc["nusach"]             = static_cast<int>(cfg.nusach);
     doc["eventDayChange"]     = static_cast<int>(cfg.eventDayChange);
-    doc["showAll"]            = cfg.showAllMessages;
 
     JsonArray orderArr = doc["contentOrder"].to<JsonArray>();
     for (int i = 0; i < (int)ContentType::COUNT; i++) orderArr.add(CONTENT_TYPE_KEYS[cfg.contentOrder[i]]);

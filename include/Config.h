@@ -129,10 +129,13 @@ extern const char* const CONTENT_TYPE_KEYS[(int)ContentType::COUNT];
 //   Pins 5, 16, 37     → GND
 //
 // Backlight - NOT driven from a GPIO directly (12 LEDs, up to 180 mA):
-//   5V → 12 Ω 1 W resistor → Pin 33 (LED-A); Pins 34-36 (LED-K) → MOSFET
-//   module (LR7843) "Load" terminal; GPIO 13 (TFT_BL) → MOSFET PWM input.
+//   5V → MOSFET module VIN+ and → 12 Ω 1 W resistor → Pin 33 (LED-A);
+//   Pins 34-36 (LED-K) → module OUT-; board GND → module VIN- and GND;
+//   GPIO 13 (TFT_BL) → module TRIG/PWM; OUT+ empty. Module: "15A 400W
+//   MOSFET trigger switch driver" (dual MOSFET), since 2026-11-04.
 //   The MOSFET switches the LED return to GND (low-side), so PWM duty =
-//   brightness.
+//   brightness. The LR7843 module before it was only half on at 4.4 V
+//   (1.2 V lost, 45 mA instead of ~140, flicker) - see CLAUDE.md, "Backlight".
 // Full wiring table (connector by connector, incl. the FPC breakout's
 // header pin numbers): docs/hardware/ESP32_S3_Clock_Master_Wiring_Matrix_Pinout.docx
 
@@ -143,7 +146,7 @@ static constexpr uint8_t TFT_DC   = 11;
 static constexpr uint8_t TFT_RST  = 14;
 static constexpr uint8_t TFT_BL   = 13;
 // FPC pin 8 (TE, tearing effect) -> GPIO 12 (header pin 33), wired
-// 2026-10-25, unused by the firmware: see CLAUDE.md, "Scroll tearing".
+// 2026-10-25; times each frame since 2026-10-26: see CLAUDE.md, "Scroll tearing".
 static constexpr uint8_t TFT_TE   = 12;
 
 // Physical panel resolution
@@ -204,15 +207,17 @@ static constexpr uint8_t BH1750_ADDR = 0x23;
 //   DisplayManager reads calibration from AppConfig (loaded by Storage).
 //   There is NO separate calib.json — calibration is part of config.json.
 
-static constexpr int DEFAULT_CALIB_X = 16;
-static constexpr int DEFAULT_CALIB_Y = 11;
-static constexpr int DEFAULT_CALIB_W = 449;
-static constexpr int DEFAULT_CALIB_H = 106;
+// The final, closed box (2026-11-04): the window calibrated by the user on it.
+static constexpr int DEFAULT_CALIB_X = 0;
+static constexpr int DEFAULT_CALIB_Y = 31;
+static constexpr int DEFAULT_CALIB_W = 475;
+static constexpr int DEFAULT_CALIB_H = 97;
 // "Tear lines" in calibration: each frame starts this long after the panel's
 // TE pulse (Display.cpp waitForTe()), which places the two still tear lines.
-// 12 ms put them just above and below the letters (by eye, 2026-10-26: 80 MHz,
-// window y30 h85); a different window moves them - retune with the slider.
-static constexpr int DEFAULT_CALIB_TEAR_US = 12000;
+// 10.8 ms: set by the user on the final box (2026-11-04, window y31 h97, 80
+// MHz); the letters are clear, the tails of ן ך and pictures' edges may tear
+// (accepted). A different window moves them - retune with the slider.
+static constexpr int DEFAULT_CALIB_TEAR_US = 10800;
 
 // Font is pre-baked at 32×64 px per glyph — no runtime scaling.  See Font.h.
 
@@ -467,7 +472,6 @@ struct AppConfig {
     int      fontWidthScalePct;      // Proportional font: glyph width, as % of its natural ink width
 
     // -- Brightness --
-    bool     devMode;                // Persisted Developer Mode
     // Perceived % (0 = off) - see BrightnessManager.h. (The time-based night
     // mode and the old raw 0-255 values are gone since 2026-10-29.)
     int      brightPct;              // manual
@@ -494,7 +498,6 @@ struct AppConfig {
     int      switchoverWindowDays;   // Rain/dew prayer slide: days before/after the switch day, 0-2 (see SWITCHOVER_DISPLAY_DAYS)
     Nusach   nusach;                 // rain request wording (NUSACH_DEFAULT)
     EventDayChange eventDayChange;   // Hebrew-date events: with the Hebrew day or at midnight
-    bool     showAllMessages;        // Master on/off
 
     // -- Message content order + frequency (see ContentType in Config.h) --
     uint8_t  contentOrder[(int)ContentType::COUNT];     // Display order, as ContentType values

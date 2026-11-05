@@ -99,11 +99,15 @@ public:
 };
 extern HardwareSerial Serial;
 
+// Defined by each simulator: sim_modules.cpp (screens, jcsim), sim_clock_main.cpp
+// (the full one, jcclock - memory as measured on the clock, restart = restart).
 class EspClass {
 public:
-    uint32_t getFreeHeap() { return 250000; }
-    uint32_t getMaxAllocHeap() { return 150000; }
-    uint32_t getMinFreeHeap() { return 200000; }
-    void restart() { std::exit(0); }
+    uint32_t getFreeHeap();
+    uint32_t getMaxAllocHeap();
+    uint32_t getMinFreeHeap();
+    uint32_t getPsramSize();
+    uint32_t getFreePsram();
+    [[noreturn]] void restart();
 };
 extern EspClass ESP;

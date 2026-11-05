@@ -37,6 +37,7 @@ public:
     bool isDirectory() const { return isDir_; }
     const char* name() const;
     const char* path() const { return clockPath_.c_str(); }
+    time_t getLastWrite();   // the PC file's modification time
     File openNextFile(const char* mode = FILE_READ);
     void flush() override;
 
