@@ -9,6 +9,8 @@
 // =============================================================================
 
 #include "WebUI.h"
+#include <algorithm>
+#include <vector>
 #include "Config.h"
 #include "Version.h"
 #include "Storage.h"
@@ -55,6 +57,10 @@ static const unsigned long MDNS_WATCHDOG_CHECK_MS = 60UL * 1000UL;         // Ti
 static const uint8_t       MDNS_FORCE_RETRY_ATTEMPTS = 3;                  // see g_mdnsInitAttempts
 static const unsigned long MDNS_RESTART_PAUSE_MS  = 250;                   // MDNS.end() -> begin(), see performMdnsInit()
 
+// The recycle bin keeps the last this many deleted events (oldest dropped).
+static const int MAX_DELETED_EVENTS = 200;
+static_assert(MAX_DELETED_EVENTS <= MAX_EVENTS, "the recycle bin may not hold more than the event list");
+
 // Diagnostic heartbeat line in the DiagnosticLog.
 static const unsigned long HEARTBEAT_LOG_MS = 30UL * 60UL * 1000UL;
 
@@ -86,12 +92,15 @@ static const float EVENTS_PSRAM_WARN_PCT   = 20.0f;  // new events still accepte
 static const float EVENTS_PSRAM_REFUSE_PCT = 10.0f;  // new events rejected outright
 
 // Largest picture file accepted at all - a sanity limit only; what really
-// decides is the free space (ImageLibrary::hasRoomFor()). The form makes
-// 72x96 (~14 KB); one still picture, no animations.
-static const size_t IMAGE_MAX_BYTES = 64 * 1024;
+// decides is the free space (ImageLibrary::hasRoomFor()). The page makes a
+// still picture as tall as the window, 3:4 (73x97 now, ~14 KB) - at most
+// the screen's height (the assert: a taller screen must not start refusing them).
+static constexpr size_t IMAGE_MAX_BYTES = 64 * 1024;
+static_assert(IMAGE_MAX_BYTES >= (size_t)(TFT_HEIGHT * 3 / 4) * TFT_HEIGHT * 2 + 66, "IMAGE_MAX_BYTES below the largest event picture");
 // All replacements for the clock's own pictures together (they may be short
-// animations - 2-4 of them; the user, 2026-10-21).
-static const size_t CUSTOM_IMAGES_MAX_BYTES = 800 * 1024;
+// animations - 2-4 of them; the user, 2026-10-21) - at least one full-screen still.
+static constexpr size_t CUSTOM_IMAGES_MAX_BYTES = 800 * 1024;
+static_assert(CUSTOM_IMAGES_MAX_BYTES >= (size_t)TFT_WIDTH * TFT_HEIGHT * 2 + 66, "CUSTOM_IMAGES_MAX_BYTES below one full-screen icon");
 
 
 // ─── Static State ─────────────────────────────────────────────────────────────
@@ -364,26 +373,27 @@ uint32_t WebUI::getJsonResponsesSent() { return g_jsonResponsesSent; }
 // as blank every time that event is opened to edit again). Anything
 // unrecognized becomes "", which every reader of this field already
 // defaults to "birthday" for - same behavior as a type that was never set.
+// The event types and each one's default icon - here only: the page gets
+// them from /api/limits ("eventTypes"; 2026-11-07, it kept a copy). The
+// last one is what an unknown type shows. The icon matters server-side too:
+// an Excel import never carries one (deliberately no icon column there:
+// Excel can't preview the icons, so asking for one blind pushes a decision
+// nobody is equipped to make). It can be changed in the event's dialog.
+static const struct { const char* type; const char* icon; } EVENT_TYPES[] = {
+    { "birthday", "🎂" }, { "wedding", "💍" }, { "yahrzeit", "🕯️" }, { "other", "🗓️" },
+};
+
 static String normalizeEventType(const String& raw) {
     String t = raw;
     t.trim();
     t.toLowerCase();
-    if (t == "birthday" || t == "wedding" || t == "yahrzeit" || t == "other") return t;
+    for (const auto& et : EVENT_TYPES) if (t == et.type) return t;
     return "";
 }
 
-// Mirrors the Settings UI's own type->icon mapping (getIconForEventType()
-// in index.html) - needed server-side too, since an Excel import never
-// carries an icon at all (deliberately no icon column there: Excel can't
-// preview the UI's actual icon set, so asking the user to choose one
-// blind just pushes a decision they're not equipped to make - see
-// CLAUDE.md). Whatever default lands here is still visible and changeable
-// afterward in the UI, same as any manually-created event.
 static const char* defaultIconForType(const char* type) {
-    if (!strcmp(type, "birthday")) return "🎂";
-    if (!strcmp(type, "wedding"))  return "💍";
-    if (!strcmp(type, "yahrzeit")) return "🕯️";
-    return "🗓️";
+    for (const auto& et : EVENT_TYPES) if (!strcmp(type, et.type)) return et.icon;
+    return EVENT_TYPES[sizeof(EVENT_TYPES) / sizeof(EVENT_TYPES[0]) - 1].icon;
 }
 
 // True for "" or whitespace-only - an event with no real name shows up on
@@ -422,7 +432,7 @@ static PersonalEvent parseEventFields(JsonObject in)
     if (!ev.icon[0]) strncpy(ev.icon, defaultIconForType(ev.type), sizeof(ev.icon) - 1);
     const char* image = in["image"] | "";   // a picture from the library (POST /api/images), or none
     if (ImageLibrary::isValidId(image)) strlcpy(ev.image, image, sizeof(ev.image));
-    ev.warningDays = in["warn"] | 0;
+    ev.warningDays = clampTo(EVENT_WARN_DAYS_RANGE, in["warn"] | 0);   // Config.h LIMITS
     return ev;
 }
 
@@ -466,12 +476,56 @@ static void autoFillMissingCalendarSide(PersonalEvent& ev)
     }
 }
 
+// An event's year outside its LIMITS (Config.h): what to say, "" = fine.
+static String eventYearProblem(const PersonalEvent& ev)
+{
+    if (ev.hasGregorian && ev.gYear > 0 && !inRange(EVENT_GREG_YEAR_RANGE, ev.gYear))
+        return "Gregorian year " + String(ev.gYear) + " - a year from " + EVENT_GREG_YEAR_RANGE.lo + " to " + EVENT_GREG_YEAR_RANGE.hi + ", please";
+    if (ev.hasJewish && ev.jYear > 0 && !inRange(EVENT_HEB_YEAR_RANGE, ev.jYear))
+        return "Hebrew year " + String(ev.jYear) + " - a year from " + EVENT_HEB_YEAR_RANGE.lo + " to " + EVENT_HEB_YEAR_RANGE.hi + ", please";
+    return "";
+}
+
 static bool validateHebrewGregorianCombination(PersonalEvent &ev, String &err)
 {
     if (!ev.hasGregorian || !ev.hasJewish) return true;
 
     GregorianDate g = { ev.gYear, ev.gMonth, ev.gDay, ev.afterSunset };
     HebrewDate h    = { ev.jYear, ev.jMonth, ev.jDay };
+    // The messages name both dates as typed and what the other one really is,
+    // so a flagged Excel row can be fixed (the user, 2026-11-07).
+    const String gTyped = String(ev.gDay) + "/" + String(ev.gMonth) + (ev.gYear > 0 ? "/" + String(ev.gYear) : String(""));
+    const String hTyped = JewishDateEngine::formatHebrewDate(h, ev.jYear > 0);
+    auto matched = [&](bool as) {
+        if (as != ev.afterSunset) {
+            ev.afterSunset = as;
+            CLOCK_LOG("WebUI", "Event '%s': after sunset set to %s (the dates match that way)", ev.name, as ? "true" : "false");
+        }
+        return true;
+    };
+
+    // One year only: that side fixes the day exactly (as the event dialog checks).
+    if (ev.gYear > 0 && ev.jYear <= 0) {
+        for (bool as : { ev.afterSunset, !ev.afterSunset }) {
+            HebrewDate x = JewishDateEngine::calculateHebrew({ ev.gYear, ev.gMonth, ev.gDay, as });
+            if (x.month == ev.jMonth && x.day == ev.jDay) return matched(as);
+        }
+        HebrewDate x = JewishDateEngine::calculateHebrew(g);
+        err = "Date mismatch: " + gTyped + (ev.afterSunset ? " after sunset" : "") + " is " +
+              JewishDateEngine::formatHebrewDate(x, true) + ", but the Hebrew date says " + hTyped + ".";
+        return false;
+    }
+    if (ev.jYear > 0 && ev.gYear <= 0) {
+        GregorianDate x = JewishDateEngine::calculateGregorian(h);
+        for (bool as : { ev.afterSunset, !ev.afterSunset })
+            for (int y = x.year - 1; y <= x.year + 1; y++) {
+                HebrewDate back = JewishDateEngine::calculateHebrew({ y, ev.gMonth, ev.gDay, as });
+                if (back.year == ev.jYear && back.month == ev.jMonth && back.day == ev.jDay) return matched(as);
+            }
+        err = "Date mismatch: " + hTyped + " is " + String(x.day) + "/" + String(x.month) + "/" + String(x.year) +
+              " (after sunset: the evening before), but the Gregorian date says " + gTyped + ".";
+        return false;
+    }
 
     if (!JewishDateEngine::isValidCombination(g, h, err)) {
         // Legacy Recovery: Check if toggling 'afterSunset' fixes the mismatch.
@@ -485,16 +539,15 @@ static bool validateHebrewGregorianCombination(PersonalEvent &ev, String &err)
             return true;
         }
 
+        if (ev.gYear <= 0 && ev.jYear <= 0) {
+            // No year: the 19-year check found no year where the two meet
+            // (e.g. January and Nisan).
+            err = "Date mismatch: " + gTyped + " and " + hTyped + " never fall on the same day, in any year.";
+            return false;
+        }
         HebrewDate expected = JewishDateEngine::calculateHebrew(g);
-        char hExpectedBuf[64], hProvidedBuf[64];
-        JewishDateEngine::formatHebrewDate(expected, hExpectedBuf, sizeof(hExpectedBuf));
-        JewishDateEngine::formatHebrewDate(h, hProvidedBuf, sizeof(hProvidedBuf));
-
-        String gStr = String(ev.gYear) + "-" + String(ev.gMonth) + "-" + String(ev.gDay);
-        if (ev.afterSunset) gStr += " (after sunset)";
-
-        err = "Date mismatch. Gregorian [" + gStr + "] converts to Hebrew [" +
-              String(hExpectedBuf) + "], but record provided [" + String(hProvidedBuf) + "]";
+        err = "Date mismatch: " + gTyped + (ev.afterSunset ? " after sunset" : "") + " is " +
+              JewishDateEngine::formatHebrewDate(expected, true) + ", but the Hebrew date says " + hTyped + ".";
         return false;
     }
     return true;
@@ -530,7 +583,7 @@ static bool readImageInfo(const char* path, ImageInfo& info) {
     memcpy(&xPels, h + 38, 4); memcpy(&yPels, h + 42, 4);
     int frames = bmpFrameCount(w, ht, xPels);
     info.width = w / frames; info.height = ht; info.frames = frames;
-    info.frameMs = (frames > 1 && yPels >= 20 && yPels <= 2000) ? yPels : 0;
+    info.frameMs = (frames > 1 && inRange(PICTURE_FRAME_MS_RANGE, yPels)) ? yPels : 0;
     return bpp == 16 && w > 0 && info.width <= TFT_WIDTH && ht > 0 && ht <= TFT_HEIGHT &&
            info.bytes >= (size_t)w * ht * 2;
 }
@@ -752,6 +805,12 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         doc["mdnsTier2FromWatchdog"] = g_diagMdnsTier2FromWatchdog;
         doc["wifiMode"] = (int)WiFi.getMode(); // 0=NULL 1=STA 2=AP 3=AP_STA
         doc["logLevel"] = Logging::levelName(Logging::getLevel());
+        // How long it holds: "restart" (not saved), "always", or "until" logLevelUntil.
+        // (Info with no end is the normal state: shown as "until restart".)
+        const bool savedIsLive = !strcmp(g_cfg->logLevel, Logging::levelName(Logging::getLevel()));
+        const bool plainInfo = !strcmp(g_cfg->logLevel, "info") && g_cfg->logLevelUntil == 0;
+        doc["logLevelKeep"] = !savedIsLive || plainInfo ? "restart" : g_cfg->logLevelUntil > 0 ? "until" : "always";
+        doc["logLevelUntil"] = g_cfg->logLevelUntil;
 
         // Light sensor and backlight now - shown next to the brightness settings.
         doc["lightSensorAvailable"] = AmbientLight::isSensorAvailable();
@@ -922,6 +981,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         doc["prayerSwitchDays"]   = g_cfg->switchoverWindowDays;
         doc["nusach"]             = static_cast<int>(g_cfg->nusach);
         doc["eventDayChange"]     = static_cast<int>(g_cfg->eventDayChange);
+        Storage::writeShowWindows(doc.as<JsonObject>(), *g_cfg);
 
         JsonArray orderArr = doc["contentOrder"].to<JsonArray>();
         for (int i = 0; i < (int)ContentType::COUNT; i++) orderArr.add(CONTENT_TYPE_KEYS[g_cfg->contentOrder[i]]);
@@ -993,22 +1053,22 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         if (doc["fontWordGapPx"].is<int>()) g_cfg->fontWordGapPx = doc["fontWordGapPx"];
         if (doc["fontWidthScalePct"].is<int>()) g_cfg->fontWidthScalePct = doc["fontWidthScalePct"];
 
-        if (doc["brightPct"].is<int>()) g_cfg->brightPct = constrain((int)doc["brightPct"], 0, 100);
+        if (doc["brightPct"].is<int>()) g_cfg->brightPct = doc["brightPct"];
         if (doc["useLightSensor"].is<bool>()) g_cfg->useLightSensor = doc["useLightSensor"];
         // Night/Day: the clock shows the new level for a few seconds, so it
         // can be set by eye in the room itself.
-        if (doc["nightPct"].is<float>()) { g_cfg->nightPct = constrain((float)doc["nightPct"], 0.0f, 100.0f); BrightnessManager::preview(g_cfg->nightPct); }
-        if (doc["dayPct"].is<float>())   { g_cfg->dayPct   = constrain((float)doc["dayPct"],   0.0f, 100.0f); BrightnessManager::preview(g_cfg->dayPct); }
+        if (doc["nightPct"].is<float>()) { g_cfg->nightPct = doc["nightPct"]; Storage::clampConfig(*g_cfg); BrightnessManager::preview(g_cfg->nightPct); }
+        if (doc["dayPct"].is<float>())   { g_cfg->dayPct   = doc["dayPct"];   Storage::clampConfig(*g_cfg); BrightnessManager::preview(g_cfg->dayPct); }
         // The room's edges: set by the user; learning goes on from there.
-        if (doc["roomDarkPct"].is<float>())  { g_cfg->roomDarkPct  = constrain((float)doc["roomDarkPct"],  0.0f, 100.0f); BrightnessManager::edgesChangedByUser(); }
-        if (doc["roomLightPct"].is<float>()) { g_cfg->roomLightPct = constrain((float)doc["roomLightPct"], 0.0f, 100.0f); BrightnessManager::edgesChangedByUser(); }
+        if (doc["roomDarkPct"].is<float>())  { g_cfg->roomDarkPct  = doc["roomDarkPct"];  BrightnessManager::edgesChangedByUser(); }
+        if (doc["roomLightPct"].is<float>()) { g_cfg->roomLightPct = doc["roomLightPct"]; BrightnessManager::edgesChangedByUser(); }
         if (doc["learnRoomLight"].is<bool>()) { g_cfg->learnRoomLight = doc["learnRoomLight"]; BrightnessManager::edgesChangedByUser(); }
 
         if (doc["calibX"].is<int>()) g_cfg->calibX = doc["calibX"];
         if (doc["calibY"].is<int>()) g_cfg->calibY = doc["calibY"];
         if (doc["calibW"].is<int>()) g_cfg->calibW = doc["calibW"];
         if (doc["calibH"].is<int>()) g_cfg->calibH = doc["calibH"];
-        if (doc["calibTearUs"].is<int>()) g_cfg->calibTearUs = constrain((int)doc["calibTearUs"], 0, 20000);
+        if (doc["calibTearUs"].is<int>()) g_cfg->calibTearUs = doc["calibTearUs"];
 
         if (doc["showHebrewYear"].is<bool>())      g_cfg->showHebrewYear        = doc["showHebrewYear"];
         if (doc["showShabbatShalom"].is<bool>())  g_cfg->showShabbatShalom     = doc["showShabbatShalom"];
@@ -1018,9 +1078,10 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         if (doc["showSpecialShabbat"].is<bool>())  g_cfg->showSpecialShabbat    = doc["showSpecialShabbat"];
         if (doc["showLiturgical"].is<bool>())      g_cfg->showLiturgical        = doc["showLiturgical"];
         if (doc["showSwitchover"].is<bool>())      g_cfg->showSwitchoverPhrases = doc["showSwitchover"];
-        if (doc["prayerSwitchDays"].is<int>())     g_cfg->switchoverWindowDays  = constrain(doc["prayerSwitchDays"].as<int>(), 0, 2);
+        if (doc["prayerSwitchDays"].is<int>())     g_cfg->switchoverWindowDays  = doc["prayerSwitchDays"].as<int>();
         if (doc["nusach"].is<int>())               g_cfg->nusach                = doc["nusach"].as<int>() == 1 ? Nusach::Sefard : Nusach::Ashkenaz;
         if (doc["eventDayChange"].is<int>())       g_cfg->eventDayChange        = doc["eventDayChange"].as<int>() == 1 ? EventDayChange::Midnight : EventDayChange::WithHebrewDay;
+        Storage::readShowWindows(doc.as<JsonVariantConst>(), *g_cfg);
 
         if (doc["contentOrder"].is<JsonArray>()) {
             JsonArray orderArr = doc["contentOrder"];
@@ -1042,6 +1103,8 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         }
 
         if (doc["pwdEnabled"].is<bool>()) g_cfg->webPasswordEnabled = doc["pwdEnabled"];
+        // Whatever was sent: the clock runs only on values inside its LIMITS (Config.h)
+        if (Storage::clampConfig(*g_cfg)) DiagnosticLog::record("Config", "a value outside its limits was corrected");
 
         // Clear the last message cache in main.cpp to force a display refresh
         // with the new settings (e.g., switching rotation mode).
@@ -1087,6 +1150,14 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
             offset = doc["timestamp"].as<int64_t>() - realNow;
         } else {
             req->send(400, "text/plain", "Expected offset, local or timestamp");
+            return;
+        }
+        // Only dates the clock was checked at (DEBUG_TIME_YEAR_RANGE): a year
+        // typed "פז" read as 5087 jumped it to 1970 (2026-11-07).
+        constexpr int64_t DEBUG_TIME_MIN = daysFromCivil(DEBUG_TIME_YEAR_RANGE.lo, 1, 1) * 86400;
+        constexpr int64_t DEBUG_TIME_MAX = daysFromCivil(DEBUG_TIME_YEAR_RANGE.hi + 1, 1, 1) * 86400;
+        if (realNow + offset < DEBUG_TIME_MIN || realNow + offset >= DEBUG_TIME_MAX) {
+            req->send(400, "text/plain", String("Choose a date between the years ") + DEBUG_TIME_YEAR_RANGE.lo + " and " + DEBUG_TIME_YEAR_RANGE.hi);
             return;
         }
         g_cfg->debugTimeOffset = offset;
@@ -1164,7 +1235,8 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
     // ── /api/debug/diagnostic-log (GET / POST .../note) ──────────────────────
 
     g_server->on("/api/debug/diagnostic-log", HTTP_GET, [](AsyncWebServerRequest *req) {
-        DiagnosticLog::sendTo(req);
+        // ?part=old: the previous file (the page joins both)
+        DiagnosticLog::sendTo(req, req->hasParam("part") && req->getParam("part")->value() == "old");
     }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
 
     // Every flash operation since boot, counted and timed (FlashStats.h).
@@ -1353,6 +1425,48 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         req->send(200, "text/plain", on ? "Demo started" : "Demo stopped");
     }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
 
+    // ── /api/limits (GET) ─────────────────────────────────────────────────────
+    // What the clock allows (Config.h LIMITS and the limits beside the code
+    // that enforces them), for the page's sliders, boxes and checks and for
+    // the tests - so neither keeps copies (2026-11-07). Reachable in setup
+    // mode too (the restore page). "ranges": {key: [lo, hi]}, keys as in
+    // /api/config. pictureMaxH follows the window (calibH) - fetched again
+    // when that changes.
+    g_server->on("/api/limits", HTTP_GET, [](AsyncWebServerRequest *req) {
+        JsonDocument doc;
+        doc["screenW"] = TFT_WIDTH;
+        doc["screenH"] = TFT_HEIGHT;
+        doc["pictureMaxH"] = DisplayManager::pictureMaxH();
+        doc["pictureMaxFrames"] = PICTURE_MAX_FRAMES;
+        doc["eventPictureMaxBytes"] = IMAGE_MAX_BYTES;
+        doc["iconsMaxBytes"] = CUSTOM_IMAGES_MAX_BYTES;
+        doc["logFileMaxBytes"] = DiagnosticLog::MAX_FILE_BYTES;
+        doc["maxEvents"] = MAX_EVENTS;
+        doc["maxDeletedEvents"] = MAX_DELETED_EVENTS;
+        doc["wifiNetworks"] = WIFI_NETWORKS;
+        JsonObject r = doc["ranges"].to<JsonObject>();
+        auto put = [&r](const char* key, IntRange v) { JsonArray a = r[key].to<JsonArray>(); a.add(v.lo); a.add(v.hi); };
+        for (const char* k : { "brightPct", "nightPct", "dayPct", "roomDarkPct", "roomLightPct" }) put(k, PERCENT_RANGE);
+        put("messageDwellSec", MESSAGE_DWELL_SEC_RANGE);
+        put("scrollSpeed", SCROLL_SPEED_RANGE);
+        put("calibX", CALIB_X_RANGE); put("calibY", CALIB_Y_RANGE);
+        put("calibW", CALIB_W_RANGE); put("calibH", CALIB_H_RANGE);
+        put("calibTearUs", CALIB_TEAR_US_RANGE);
+        put("prayerSwitchDays", PRAYER_SWITCH_DAYS_RANGE);
+        put("fontCharGapPx", FONT_CHAR_GAP_RANGE); put("fontWordGapPx", FONT_WORD_GAP_RANGE); put("fontWidthScalePct", FONT_WIDTH_SCALE_RANGE);
+        put("warn", EVENT_WARN_DAYS_RANGE);
+        put("gYear", EVENT_GREG_YEAR_RANGE); put("hYear", EVENT_HEB_YEAR_RANGE);
+        put("debugYear", DEBUG_TIME_YEAR_RANGE);
+        put("frameMs", PICTURE_FRAME_MS_RANGE);
+        JsonArray types = doc["eventTypes"].to<JsonArray>();
+        for (const auto& et : EVENT_TYPES) { JsonObject o = types.add<JsonObject>(); o["type"] = et.type; o["icon"] = et.icon; }
+        // The Hebrew months as the clock names them (1..12, then Adar II) - the
+        // page's calendar grid keeps its own list, checked against this one (ui_tests).
+        JsonArray months = doc["hebrewMonths"].to<JsonArray>();
+        for (int m = 1; m <= 13; m++) months.add(JewishDateEngine::getMonthName(m));
+        sendJson(req, doc);
+    }).setFilter(ON_ANY_INCL_SETUP_FILTER);
+
     // ── /api/debug/log-level (POST) ───────────────────────────────────────────
     // Single enumerated verbosity dial (see LogLevel.h) rather than the
     // earlier one-off Hebcal-only toggle this replaces - deliberately not
@@ -1369,6 +1483,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         String body;
         String level;
         bool persist = false;
+        int hours = 0;   // > 0: for this long, then back to info (2026-11-07)
         if (getBody(req, body)) {
             JsonDocument doc;
             if (!deserializeJson(doc, body)) {
@@ -1377,9 +1492,16 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
                 // with == "1" compares pointer addresses, not string content,
                 // and is never true. Wrap in String first for a real compare.
                 persist = String(doc["persist"] | "0") == "1";
+                hours = String(doc["hours"] | "0").toInt();
             }
         }
+        // A timed level needs the real time: its end is a moment, kept across restarts.
+        if (hours > 0 && !NTPManager::isSynced()) {
+            req->send(409, "text/plain", "The clock doesn't know the time yet - try again in a minute.");
+            return;
+        }
         Logging::setLevel(Logging::parseLevelName(level.c_str(), Logging::getLevel()));
+        if (hours > 0) persist = true;
 
         // "persist" is opt-in: without it this only changes the live RAM
         // value, same as always - self-heals back to the saved default on
@@ -1388,10 +1510,13 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         // purpose, not by accident.
         if (persist) {
             strlcpy(g_cfg->logLevel, Logging::levelName(Logging::getLevel()), sizeof(g_cfg->logLevel));
+            g_cfg->logLevelUntil = hours > 0 ? (int64_t)time(nullptr) + (int64_t)hours * 3600 : 0;
             Storage::saveConfig(*g_cfg);
         }
-
-        req->send(200, "text/plain", String("Log level: ") + Logging::levelName(Logging::getLevel()) + (persist ? " (persisted)" : ""));
+        DiagnosticLog::record("Log", "level %s %s", Logging::levelName(Logging::getLevel()),
+                              hours > 0 ? (String("for ") + hours + " h").c_str() : persist ? "always" : "until restart");
+        req->send(200, "text/plain", String("Log level: ") + Logging::levelName(Logging::getLevel()) +
+                  (hours > 0 ? String(", for ") + hours + (hours == 1 ? " hour" : " hours") : persist ? String(", always") : String(", until the clock restarts")));
     }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
 
     // ── /api/preview (GET) ────────────────────────────────────────────────────
@@ -1523,6 +1648,17 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
             return;
         }
 
+        // Into the recycle bin first (2026-11-07: a wrong tap lost an event for
+        // good) - restorable with Undo or from the bin until it's emptied.
+        EventList bin;
+        Storage::loadEvents(bin, FS_DELETED_EVENTS_PATH);
+        bin.push_back((*g_events)[idx]);
+        if ((int)bin.size() > MAX_DELETED_EVENTS) bin.erase(bin.begin(), bin.begin() + (bin.size() - MAX_DELETED_EVENTS));
+        if (!Storage::saveEvents(bin, FS_DELETED_EVENTS_PATH)) {
+            EventsLock::give();
+            req->send(500, "text/plain", "Failed to save the recycle bin - nothing deleted");
+            return;
+        }
         g_events->erase(g_events->begin() + idx);
         bool saved = Storage::saveEvents(*g_events);
         EventsLock::give();
@@ -1532,6 +1668,77 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         }
         removeUnusedImages();
         req->send(200, "text/plain", "Deleted"); }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
+
+    // ── The recycle bin: /api/events/deleted (GET), /api/events/restore,
+    //    /api/events/empty-bin (POST) ─────────────────────────────────────────
+    // Oldest first, as deleted. Streamed from the file (it can grow).
+    g_server->on("/api/events/deleted", HTTP_GET, [](AsyncWebServerRequest *req) {
+        if (!Storage::exists(FS_DELETED_EVENTS_PATH)) { req->send(200, "application/json", "[]"); return; }
+        req->send(LittleFS, FS_DELETED_EVENTS_PATH, "application/json"); }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
+
+    // id = one event's id, or several separated by commas (Restore selected /
+    // Restore all): one save of each file for all of them.
+    g_server->on("/api/events/restore", HTTP_POST, [](AsyncWebServerRequest *req) {
+        String ids = req->hasParam("id", true) ? req->getParam("id", true)->value() : "";
+        if (ids.isEmpty()) { req->send(400, "text/plain", "Missing id"); return; }
+        EventsLock::take();
+        EventList bin;
+        Storage::loadEvents(bin, FS_DELETED_EVENTS_PATH);
+        const size_t before = g_events->size();
+        bool full = false;
+        std::vector<int> taken;   // bin indexes restored
+        for (int start = 0; start <= (int)ids.length(); ) {
+            int comma = ids.indexOf(',', start);
+            if (comma < 0) comma = ids.length();
+            String id = ids.substring(start, comma);
+            id.trim();
+            start = comma + 1;
+            if (id.isEmpty()) continue;
+            int idx = -1;
+            for (int i = (int)bin.size() - 1; i >= 0; i--)
+                if (strcmp(bin[i].id, id.c_str()) == 0 && std::find(taken.begin(), taken.end(), i) == taken.end()) { idx = i; break; }
+            if (idx < 0) continue;
+            if ((int)g_events->size() >= MAX_EVENTS) { full = true; break; }
+            PersonalEvent ev = bin[idx];
+            for (const auto& e : *g_events) if (strcmp(e.id, ev.id) == 0) {   // its id taken meanwhile (an import)
+                strlcpy(ev.id, Storage::generateEventId(*g_events).c_str(), sizeof(ev.id));
+                break;
+            }
+            g_events->push_back(ev);
+            taken.push_back(idx);
+        }
+        const int restored = (int)(g_events->size() - before);
+        if (!restored) {
+            EventsLock::give();
+            if (full) req->send(507, "text/plain", "The event list is full");
+            else req->send(404, "text/plain", "Not in the recycle bin");
+            return;
+        }
+        bool saved = Storage::saveEvents(*g_events);
+        if (saved) {
+            std::sort(taken.begin(), taken.end());
+            for (int i = (int)taken.size() - 1; i >= 0; i--) bin.erase(bin.begin() + taken[i]);
+            Storage::saveEvents(bin, FS_DELETED_EVENTS_PATH);
+        } else {
+            g_events->erase(g_events->begin() + before, g_events->end());
+        }
+        EventsLock::give();
+        if (!saved) { req->send(500, "text/plain", "Failed to save events"); return; }
+        DiagnosticLog::record("Events", "restored %d event(s) from the recycle bin", restored);
+        req->send(200, "text/plain", full ? String("Restored ") + restored + " - the event list is full"
+                                          : String("Restored") + (restored > 1 ? String(" ") + restored + " events" : String("")));
+    }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
+
+    g_server->on("/api/events/empty-bin", HTTP_POST, [](AsyncWebServerRequest *req) {
+        EventsLock::take();
+        EventList bin;
+        Storage::loadEvents(bin, FS_DELETED_EVENTS_PATH);
+        bool ok = !Storage::exists(FS_DELETED_EVENTS_PATH) || Storage::remove(FS_DELETED_EVENTS_PATH);
+        EventsLock::give();
+        if (!ok) { req->send(500, "text/plain", "Could not empty the recycle bin"); return; }
+        removeUnusedImages();   // their pictures, if no event uses them
+        DiagnosticLog::record("Events", "recycle bin emptied (%d event(s))", (int)bin.size());
+        req->send(200, "text/plain", "Emptied"); }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
 
     // ── /api/images/upload, /api/images/list, /api/images/get ────────────────
     // The picture library (ImageLibrary.h). Each under its own sub-path, none
@@ -1603,6 +1810,11 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
             o["usedBy"] = users;
         }
         sendJson(req, doc); }).setFilter(ON_ANY_INCL_SETUP_FILTER);
+
+    // room (GET): bytes of pictures that still fit (ImageLibrary::roomLeft()).
+    g_server->on("/api/images/room", HTTP_GET, [](AsyncWebServerRequest *req) {
+        req->send(200, "application/json", "{\"leftBytes\":" + String((unsigned)ImageLibrary::roomLeft()) + "}");
+    }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
 
     // get (GET ?id=): the picture file itself.
     g_server->on("/api/images/get", HTTP_GET, [](AsyncWebServerRequest *req) {
@@ -1678,7 +1890,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
             DisplayManager::isImageUsable(path.c_str());   // the new one into memory now: the lists come from there
             DiagnosticLog::record("Images", "%s replaced (%dx%d, %d frame(s), %u bytes)", name.c_str(),
                                   info.width, info.height, info.frames, (unsigned)info.bytes);
-            req->send(200, "text/plain", "Picture replaced");
+            req->send(200, "text/plain", "Icon replaced");
         },
         [](AsyncWebServerRequest *req, String filename, size_t index, uint8_t *data, size_t len, bool final) {
             if (!index) {
@@ -1689,7 +1901,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
                 size_t others = customImagesBytes(s_customName.c_str());
                 if (!isBuiltinName(s_customName)) s_customRefused = "No such picture";
                 else if (others + size > CUSTOM_IMAGES_MAX_BYTES)
-                    s_customRefused = "Too big: replaced pictures may use " + String(CUSTOM_IMAGES_MAX_BYTES / 1024) + " KB together, " +
+                    s_customRefused = "Too big: replaced icons may use " + String(CUSTOM_IMAGES_MAX_BYTES / 1024) + " KB together, " +
                                       String((CUSTOM_IMAGES_MAX_BYTES - others) / 1024) + " KB are left - a shorter animation fits";
                 else ImageLibrary::hasRoomFor(size, &s_customRefused);
                 if (!s_customRefused.length()) s_customUpload = LittleFS.open(CUSTOM_UPLOAD_TMP, "w");
@@ -1706,7 +1918,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         LittleFS.remove(path);
         DisplayManager::forgetImage(path.c_str());
         DiagnosticLog::record("Images", "%s back to the clock's own picture", name.c_str());
-        req->send(200, "text/plain", "Back to the clock's own picture"); }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
+        req->send(200, "text/plain", "Back to the clock's own icon"); }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
     // Backs the UI's "Import Events" button, kept separate from the
     // single-event upsert below because it's a different operation: that
     // button replaces the WHOLE list from a file (matching what "Export
@@ -1777,10 +1989,11 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
 
                 const char* name = ev.name[0] ? ev.name : "Unnamed event";
                 String detail;
-                if (!validateHebrewGregorianCombination(ev, detail)) {
+                if (!validateHebrewGregorianCombination(ev, detail) || (detail = eventYearProblem(ev)).length()) {
                     JsonObject w = warnings.add<JsonObject>();
                     w["name"] = name;
                     w["detail"] = detail;
+                    w["index"] = i;   // its place in the list sent: the page knows its Excel row
                 }
                 imported.push_back(ev);
             }
@@ -1867,11 +2080,18 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
             w["detail"] = "Hebrew date is missing its month - please edit and re-select it.";
         }
 
+        const String yearProblem = eventYearProblem(ev);
+        if (yearProblem.length()) { req->send(400, "text/plain", yearProblem); return; }
+
+        // Two dates that never meet are refused, not saved with a warning
+        // (2026-11-07: "Saved." plus a cryptic note left a wrong event behind).
+        // The page checks dates with a year itself; this catches the rest,
+        // e.g. 5 January + 5 Nisan without years. Excel import still saves and
+        // warns: its result lists the flagged rows, with Undo.
         String detail;
         if (!validateHebrewGregorianCombination(ev, detail)) {
-            JsonObject w = warnings.add<JsonObject>();
-            w["name"] = name;
-            w["detail"] = detail;
+            req->send(400, "text/plain", detail);
+            return;
         }
 
         // A client-provided id that no longer matches any live event (e.g.

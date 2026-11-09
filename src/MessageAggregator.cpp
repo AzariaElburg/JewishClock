@@ -18,6 +18,12 @@
 // A long status line (setup info, "Connecting to ...") starts over this long
 // after it has been scrolled to its end - see loop().
 static const uint32_t STATUS_LINE_REPEAT_AFTER_MS = 2000;
+// "Internet unreachable" (offlineNoticeDue()): shown once no known network
+// has been joined for this long - a short drop and its reconnect show nothing.
+static const uint32_t OFFLINE_NOTICE_AFTER_MS = 60UL * 1000UL;
+// ... then every Nth round (batch / scroll lap); every round during the
+// startup minutes (main.cpp BOOT_OVERLAY_MS).
+static const uint32_t OFFLINE_NOTICE_EVERY_N_ROUNDS = 4;
 
 static std::vector<OnScreenElement> g_elements;
 static uint16_t            g_currentColor = COLOR_TEXT_NORMAL;
@@ -79,6 +85,7 @@ static std::vector<std::vector<OnScreenElement>> buildDemoSlides(const AppConfig
 
 static const EventList* s_events = nullptr;
 static bool s_forceRefresh = false;
+static bool s_startupMinutes = false;   // loop()'s showOverlay: the minutes after a start
 static void _nextMessageId() {
     // Increment and wrap, ensuring the ID is always between 1 and MAX_MESSAGE_ID.
     g_messageId = (g_messageId % MAX_MESSAGE_ID) + 1;
@@ -101,6 +108,19 @@ static int _measureString(const char* utf8text) {
     int width = 0;
     while (*p) { width += fontGetAdvanceForCodepoint(decodeUTF8(&p)); }
     return width;
+}
+
+// "Internet unreachable" this round? The user, 2026-11-06: the clock goes on
+// with its saved calendar when the home Wi-Fi is gone (router down, renamed),
+// but says so - every round in the startup minutes, then every 4th, until a
+// network is back. A slot of its own in the slides (ContentType::COUNT).
+static bool offlineNoticeDue(uint32_t roundCounter) {
+    if (WiFiManager::offlineForMs() < OFFLINE_NOTICE_AFTER_MS) return false;
+    return s_startupMinutes || roundCounter % OFFLINE_NOTICE_EVERY_N_ROUNDS == 0;
+}
+static std::vector<OnScreenElement> offlineNotice(const DisplayStrings& strings) {
+    if (WiFiManager::offlineForMs() < OFFLINE_NOTICE_AFTER_MS) return {};   // back meanwhile
+    return { OnScreenElement(OnScreenElementType::TEXT, strings.internetUnreachable, _measureString(strings.internetUnreachable)) };
 }
 
 static long getTodayAbsolute() {
@@ -155,6 +175,7 @@ void MessageAggregator::loop(const AppConfig& cfg, bool showOverlay) {
     static unsigned long lastUpdate = 0;
     if (millis() - lastUpdate < 1000) return;
     lastUpdate = millis();
+    s_startupMinutes = showOverlay;
 
     // CLOCK_LOG("Aggregator", "Loop Start. RotationMode: %d", (int)cfg.rotationMode);
 
@@ -482,22 +503,29 @@ static void appendEvent(std::vector<OnScreenElement>& out, const PersonalEvent& 
 // Examples (he): "צום: מחר 05:10-19:03" (day before), "צום: 05:10-19:03"
 // (fast day), "צום: 19:29 עד מחר 19:57" / "צום: עד 19:57" (Tisha B'Av eve /
 // day), "תענית בכורות: מחר 04:49" (no end time), "סעודה מפסקת עד 18:20".
+// "מחר " / "מחרתיים " before a time that many civil days ahead, else nothing.
+static String daysAheadWord(int inDays, const DisplayStrings& strings) {
+    if (inDays == 1) return String(strings.tomorrow) + " ";
+    if (inDays == 2) return String(strings.dayAfterTomorrow) + " ";
+    return String();
+}
+
 static String formatFast(const FastNotice& f, const DisplayStrings& strings) {
     String msg;
-    if (f.kind == FastNotice::Kind::SeudaMafseket) return String(strings.seudaMafseketUntil) + " " + f.end;
+    if (f.kind == FastNotice::Kind::SeudaMafseket) return String(strings.seudaMafseketUntil) + " " + daysAheadWord(f.endInDays, strings) + f.end;
     // Without an end time the fast's own name says which fast it is.
     msg = String(!f.end[0] && f.name[0] ? f.name : strings.fastLabel) + ": ";
     if (f.begin[0]) {
-        if (f.beginTomorrow) msg += String(strings.tomorrow) + " ";
+        msg += daysAheadWord(f.beginInDays, strings);
         msg += f.begin;
     }
     if (f.end[0]) {
-        if (f.begin[0] && f.endTomorrow == f.beginTomorrow) {
+        if (f.begin[0] && f.endInDays == f.beginInDays) {
             msg += String("-") + f.end;
         } else {
             if (f.begin[0]) msg += " ";
             msg += String(strings.until) + " ";
-            if (f.endTomorrow) msg += String(strings.tomorrow) + " ";
+            msg += daysAheadWord(f.endInDays, strings);
             msg += f.end;
         }
     }
@@ -520,6 +548,25 @@ static String formatOmer(int dayNum, const char* fullText, OmerMode mode, const 
             omer += String(" ") + strings.omerOf;
         } else {
             omer = String(dayNum) + " " + strings.omerOf;
+        }
+    } else if (mode == OmerMode::Compact) {
+        // Without scrolling (the user, 2026-11-06): the first of these that
+        // fits the window - "23 = 3 שבועות + 2 ימים לעומר", without "לעומר",
+        // without the spaces ("23=3 שבועות+2 ימים", the user's own form) -
+        // else that last one, scrolling. Measured, not fixed: the window
+        // changes with calibration.
+        omer = String(dayNum) + " " + strings.omerOf;
+        if (dayNum >= 7) {
+            int w = dayNum / 7, d = dayNum % 7;
+            String weeks = String(w) + " " + (w == 1 ? strings.weekSingular : strings.weekPlural);
+            String days = d ? String(d) + " " + (d == 1 ? strings.daySingular : strings.dayPlural) : String();
+            String spaced = String(dayNum) + " = " + weeks + (d ? String(" ") + strings.plus + " " + days : String());
+            String tight = String(dayNum) + "=" + weeks + (d ? String(strings.plus) + days : String());
+            const String tries[] = { spaced + " " + strings.omerOf, spaced, tight };
+            for (const String& t : tries) {
+                omer = t;
+                if (_measureString(t.c_str()) <= DisplayManager::windowWidth()) break;
+            }
         }
     }
     // Mode Full uses Hebcal's sentence as is (e.g. "היום ארבעה עשר יום...").
@@ -589,28 +636,26 @@ static std::vector<OnScreenElement> buildContentType(ContentType type, size_t pa
     }
     break; }
     case ContentType::Candle: {
-    // Keyed to the plain civil date (not the sunset-rollover `today`), so
-    // tonight's candle time keeps showing until civil midnight instead of
-    // vanishing the instant the Hebrew day rolls over at sunset - see
-    // Calendar::getCivilToday().
-    const DayInfo& civil = Calendar::getCivilToday();
-    if (civil.candleLightStr[0]) {
-        // Icon + time glued together, no text label. 90 ms = the animation's baked-in frame cadence.
-        out = iconAndText(builtinImage("Candles"), civil.candleLightStr, 90);
+    // When it shows: cfg.candleShow (Calendar::getCandle()). By default the
+    // plain civil date (not the sunset-rollover `today`), so tonight's candle
+    // time keeps showing until civil midnight - see Calendar::getCivilToday().
+    TimedNotice t = Calendar::getCandle(cfg);
+    if (t.time[0]) {
+        // Icon + time glued together, no text label ("מחר 16:22" when shown
+        // the evening before and the user wants it). 90 ms = the animation's
+        // baked-in frame cadence.
+        String text = (cfg.candleShow.tomorrow ? daysAheadWord(t.inDays, strings) : String()) + t.time;
+        out = iconAndText(builtinImage("Candles"), text, 90);
     }
     break; }
     case ContentType::Havdalah: {
-    // Same civil-date keying as Candle above: Havdalah only starts showing
-    // at civil midnight of the day it actually occurs on, instead of the
-    // instant the Hebrew day begins at the previous sunset (up to ~24h
-    // before it's chronologically relevant).
-    const DayInfo& civil = Calendar::getCivilToday();
-    if (civil.havdalahStr[0]) {
-        // Havdalah is shown as a single glued segment: icon immediately followed
-        // by the time, with no label and no separator between the two parts.
-        // NOTE: LittleFS is case-sensitive. Ensure the path matches the file in
-        // the 'data' directory exactly (e.g., /img/ vs /IMG/).
-        out = iconAndText(builtinImage("Havdala"), civil.havdalahStr);
+    // Same as Candle above (cfg.havdalahShow): by default only from civil
+    // midnight of the day it occurs on, not from the Hebrew day's start.
+    TimedNotice t = Calendar::getHavdalah(cfg);
+    if (t.time[0]) {
+        // Icon immediately followed by the time, no label, no separator.
+        String text = (cfg.havdalahShow.tomorrow ? daysAheadWord(t.inDays, strings) : String()) + t.time;
+        out = iconAndText(builtinImage("Havdala"), text);
     }
     break; }
     case ContentType::Holiday: {
@@ -624,8 +669,9 @@ static std::vector<OnScreenElement> buildContentType(ContentType type, size_t pa
     // ever show it that one day. getUpcomingMevarchim() instead looks ahead
     // to the next Shabbat that has one, so it shows all week leading up to
     // it - and still correctly shows only on an actual Mevarchim Shabbat,
-    // since most weeks aren't one and the lookup comes back empty.
-    String msg = Calendar::getUpcomingMevarchim();
+    // since most weeks aren't one and the lookup comes back empty. Other
+    // windows (cfg.mevarchimShow, by default like the parasha's): Calendar.
+    String msg = Calendar::getMevarchim(cfg);
     if (msg.length() > 0) {
         out.emplace_back(OnScreenElementType::TEXT, msg, _measureString(msg.c_str()));
     }
@@ -634,8 +680,9 @@ static std::vector<OnScreenElement> buildContentType(ContentType type, size_t pa
     // Show the weekly portion, replacing the word "פרשת" with a custom Torah
     // scroll icon for a more graphical presentation. Same look-ahead as
     // Mevarchim above (see getUpcomingParasha()) - shows the upcoming
-    // Shabbat's portion all week, not just once "today" rolls into it.
-    String parasha = Calendar::getUpcomingParasha();
+    // Shabbat's portion all week, not just once "today" rolls into it - or
+    // only around Shabbat (cfg.parashaShow, Calendar::getParasha()).
+    String parasha = Calendar::getParasha(cfg);
     if (parasha.length() > 0) {
         out = iconAndText(builtinImage("Torah"), String(" ") + parasha);
     }
@@ -662,7 +709,7 @@ static std::vector<OnScreenElement> buildContentType(ContentType type, size_t pa
     out.emplace_back(OnScreenElementType::TEXT, hDateStr, _measureString(hDateStr.c_str()));
     break; }
     case ContentType::Fast: {
-    FastNotice f = Calendar::getFastNotice();
+    FastNotice f = Calendar::getFastNotice(cfg);   // when: cfg.fastShow
     if (f.kind == FastNotice::Kind::None) break;
     out.push_back(textElement(formatFast(f, strings)));   // examples: see formatFast()
     break; }
@@ -775,10 +822,10 @@ static std::vector<std::vector<OnScreenElement>> buildDemoSlides(const AppConfig
     FastNotice f;
     f.kind = FastNotice::Kind::Fast;
     strlcpy(f.begin, "05:18", sizeof(f.begin)); strlcpy(f.end, "16:55", sizeof(f.end));
-    f.beginTomorrow = f.endTomorrow = true;  text(formatFast(f, strings));            // the day before
-    f.beginTomorrow = f.endTomorrow = false; text(formatFast(f, strings));            // the fast day
+    f.beginInDays = f.endInDays = 1;  text(formatFast(f, strings));                   // the day before
+    f.beginInDays = f.endInDays = 0;  text(formatFast(f, strings));                   // the fast day
     strlcpy(f.begin, "19:29", sizeof(f.begin)); strlcpy(f.end, "19:56", sizeof(f.end));
-    f.endTomorrow = true; text(formatFast(f, strings));                              // Tisha B'Av, evening to evening
+    f.endInDays = 1; text(formatFast(f, strings));                                   // Tisha B'Av, evening to evening
     FastNotice s; s.kind = FastNotice::Kind::SeudaMafseket; strlcpy(s.end, "17:54", sizeof(s.end));
     text(formatFast(s, strings));                                                     // before Yom Kippur
 
@@ -787,6 +834,7 @@ static std::vector<std::vector<OnScreenElement>> buildDemoSlides(const AppConfig
     const char* omerFull = "היום שלושה ועשרים יום, שהם שלושה שבועות ושני ימים לעומר";
     text(formatOmer(23, omerFull, OmerMode::ShortText, strings));
     text(formatOmer(23, omerFull, OmerMode::Abbreviated, strings));
+    text(formatOmer(23, omerFull, OmerMode::Compact, strings));
     text(formatOmer(23, omerFull, OmerMode::FullText, strings));
 
     // Rain / dew prayer.
@@ -887,6 +935,7 @@ static void buildNewBatch(const AppConfig& cfg, const DayInfo& today, const Disp
             }
         }
     }
+    if (offlineNoticeDue(s_batchCounter)) s_currentBatch.insert(s_currentBatch.begin(), BatchSlot{ContentType::COUNT, 0});
     s_batchIndex = 0;
     CLOCK_LOG("Aggregator", "New batch #%u: %u items | freeHeap=%u maxAllocHeap=%u",
               (unsigned)s_batchCounter, (unsigned)s_currentBatch.size(), (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
@@ -924,6 +973,7 @@ void MessageAggregator::buildElements(const AppConfig& cfg) {
     if (cfg.rotationMode == RotationMode::SingleScroll) {
         // Everything due this round, concatenated in the user's configured order.
         g_elements.clear();
+        if (offlineNoticeDue(s_roundCounter)) g_elements = offlineNotice(strings);
         for (int i = 0; i < (int)ContentType::COUNT; i++) {
             ContentType type = (ContentType)cfg.contentOrder[i];
             for (size_t part = 0; part < partsOf(type, today); part++) {
@@ -949,12 +999,15 @@ void MessageAggregator::buildElements(const AppConfig& cfg) {
                 if (s_currentBatch.empty()) break; // nothing due/available at all right now
             }
             const BatchSlot& slot = s_currentBatch[s_batchIndex];
-            current = buildContentType(slot.type, slot.part, cfg, today, strings, s_batchCounter);
+            current = slot.type == ContentType::COUNT ? offlineNotice(strings)
+                                                      : buildContentType(slot.type, slot.part, cfg, today, strings, s_batchCounter);
             if (!current.empty()) break;
             s_batchIndex++;
         }
         g_elements = (!s_currentBatch.empty() && s_batchIndex < s_currentBatch.size())
             ? current : std::vector<OnScreenElement>{};
+        if (!g_elements.empty() && s_currentBatch[s_batchIndex].type == ContentType::COUNT)
+            g_currentColor = COLOR_GOLD;   // like the other status lines
     }
 
     // Fallback: If after all logic, g_elements is still empty, add the project name.

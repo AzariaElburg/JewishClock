@@ -16,6 +16,15 @@ class AsyncWebServerRequest; // fwd decl only - keeps ESPAsyncWebServer out of t
 // mandatory fetch-before/restore-after procedure).
 namespace DiagnosticLog {
 
+    // One log file's size: at this size it becomes the previous file (.old)
+    // and a new one starts - so up to twice this on flash. Here, not in the
+    // .cpp: ImageLibrary keeps room for the log to reach it (2026-11-07).
+    constexpr size_t MAX_FILE_BYTES = 128 * 1024;
+
+    // How much more flash the log may still take before it stops growing
+    // (both files at MAX_FILE_BYTES, plus a batch of waiting lines).
+    size_t growthLeft();
+
     // Call once after LittleFS is mounted (see Storage::begin()).
     void begin();
 
@@ -40,9 +49,11 @@ namespace DiagnosticLog {
     // deliberately NOT a String-returning readAll(): this log can reach tens
     // of KB, and building/copying that much into RAM for one HTTP response
     // crashed the device live (heap exhaustion) the one time it was tried.
-    // Only the current file, not the rotated .old one - same RAM-safety
-    // reason, see DiagnosticLog.cpp.
-    void sendTo(AsyncWebServerRequest* req);
+    // The current file; with old=true the previous one (rotated .old) -
+    // each streamed from flash on its own, so never both in RAM. The page
+    // asks for both and shows them as one log (2026-11-07: the .old part
+    // was never shown anywhere).
+    void sendTo(AsyncWebServerRequest* req, bool old = false);
 
     // Lines wait and are written together while the screen stands still, by
     // loop() (DiagnosticLog.cpp, s_pending); flushNow() at once. A restart or crash keeps waiting

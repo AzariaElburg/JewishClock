@@ -147,7 +147,6 @@ h1,h2,h3{font-weight:600}
 .settings-search-none{font-size:11.5px;color:var(--ink-faint)}
 /* Settings search: rows that don't match are hidden; Advanced opens while searching */
 .search-miss{display:none !important}
-.searching [data-fold-body]{display:block !important}
 .searching .content-order-hint{display:none}
 .grp{display:flex;gap:24px;padding:12px 0;border-bottom:1px solid var(--rule);align-items:flex-start}
 .grp:first-of-type{padding-top:2px}
@@ -185,13 +184,31 @@ h1,h2,h3{font-weight:600}
 .content-row .drag-handle:active{cursor:grabbing}
 .content-row .content-icon{flex-shrink:0;width:18px;text-align:center}
 .content-row .content-label{flex:1 1 auto;min-width:72px;font-size:12px;color:var(--ink)}
-.content-row .content-extra{max-width:190px;min-width:0;flex:0 1 auto}
-.content-row .content-freq,.content-row .content-extra{font-size:11px;padding:2px 6px 8px;border:1px solid var(--rule);border-radius:4px;color:var(--ink);cursor:pointer;
-  /* a small arrow under the text, in place of the browser's wide one beside it */
+.content-row .content-extra{max-width:260px;min-width:0;flex:0 1 auto}
+.content-row .content-freq,.content-row .content-extra{font-size:11px;padding:3px 15px 3px 6px;border:1px solid var(--rule);border-radius:4px;color:var(--ink);cursor:pointer;
+  /* a small arrow just right of the text, in place of the browser's wide one (2026-11-07; from
+     2026-10-30 to then it sat under the text, to keep the rows narrow on a phone) */
   -webkit-appearance:none;appearance:none;background-color:var(--surface);
   background-image:linear-gradient(45deg,transparent 50%,var(--ink-muted) 50%),linear-gradient(135deg,var(--ink-muted) 50%,transparent 50%);
-  background-position:calc(50% - 1.5px) calc(100% - 2px),calc(50% + 1.5px) calc(100% - 2px);background-size:3px 3px;background-repeat:no-repeat}
+  background-position:calc(100% - 9px) 55%,calc(100% - 6px) 55%;background-size:3px 3px;background-repeat:no-repeat}
 .content-row .content-freq:hover,.content-row .content-extra:hover{border-color:var(--ink-faint)}
+.content-row .content-check{display:inline-flex;align-items:center;gap:3px;font-size:11px;color:var(--ink);cursor:pointer;white-space:nowrap}
+.content-row .content-check input{margin:0}
+.content-row .keep-space{visibility:hidden}
+/* An open list stands out from the page under it - a frame, a shadow, the row under the
+   mouse marked (2026-11-07: at the parents' an open list looked like more of the page).
+   Browsers that can style the open list (Chrome / Edge 135+); others keep their own. */
+@supports (appearance: base-select) {
+  select, select::picker(select){appearance:base-select}
+  select::picker(select){border:2px solid var(--accent);border-radius:6px;background:var(--surface);box-shadow:0 8px 24px color-mix(in srgb,var(--black) 30%,transparent);padding:3px 0;margin-top:2px}
+  select option{padding:5px 12px;font-size:12.5px}
+  select option:hover,select option:focus-visible{background:var(--accent);color:var(--on-accent)}
+  select option:checked{font-weight:600}
+  select::picker-icon{font-size:9px;color:var(--ink-muted);margin-inline-start:auto;padding-inline-start:4px}
+  .content-row .content-freq,.content-row .content-extra{appearance:base-select;background-image:none;padding-right:6px}
+  .month-select{appearance:base-select}
+  .month-select::picker-icon{display:none}   /* it has its own (.month-select-wrap::after) */
+}
 /* Date icons: a small calendar page with a day on it (Hebrew or Gregorian) -
    drawn, not an emoji, so they look alike on every device */
 .cal-ico{display:inline-flex;flex-direction:column;width:18px;height:17px;border:1px solid var(--ink-faint);border-radius:3px;overflow:hidden;background:var(--surface);vertical-align:middle}
@@ -259,14 +276,21 @@ input.txtfield:focus,select.txtfield:focus{outline:none;border-color:var(--accen
 .autofill-flash{animation:autofill-flash 1.1s ease-out}
 .staticfield{font-family:var(--mono);font-size:11.5px;background:var(--bg);border:1px solid var(--rule);border-radius:4px;padding:3px 7px;display:inline-block}
 
-.fold-chev{display:inline-block;font-size:10px;color:var(--ink-faint);transition:transform .15s;margin-left:2px}
-.grp.advanced.open .fold-chev{transform:rotate(90deg)}
-.grp.advanced .glabel{cursor:pointer;user-select:none}
 .grp.advanced .glabel .t{color:var(--warn)}
 
 /* ── Toast ── */
-#toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--toast-bg);color:var(--on-accent);padding:9px 18px;border-radius:20px;transition:transform .25s;z-index:200;font-size:12.5px}
-#toast.show{transform:translateX(-50%) translateY(0)}
+/* Messages: a bubble next to what you were doing, pointing at it, until you
+   click it or anywhere else (2026-11-07: at the bottom, gone after a few
+   seconds, they were easy to miss altogether). No anchor: bottom centre. */
+#toast{position:fixed;z-index:1000;display:none;max-width:min(380px,calc(100vw - 16px));background:var(--toast-bg);color:var(--on-accent);
+  padding:9px 30px 9px 14px;border-radius:8px;font-size:12.5px;line-height:1.4;box-shadow:var(--shadow-pop);cursor:pointer}
+#toast.show{display:block;animation:toast-in .15s ease-out}
+@keyframes toast-in{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:none}}
+#toast::after{content:'✕';position:absolute;right:10px;top:9px;font-size:11px;opacity:.7}
+#toast::before{content:'';position:absolute;left:var(--arrow-x,50%);width:10px;height:10px;background:var(--toast-bg);transform:translateX(-50%) rotate(45deg)}
+#toast.below::before{top:-5px}
+#toast.above::before{bottom:-5px}
+#toast.free::before{display:none}
 
 /* ── Event modal ── */
 .modal{position:fixed;inset:0;background:var(--backdrop);display:none;align-items:center;justify-content:center;z-index:150;padding:20px}
@@ -279,7 +303,18 @@ input.txtfield:focus,select.txtfield:focus{outline:none;border-color:var(--accen
   width:100%;font-size:12.5px;padding:6px 9px;border:1px solid var(--rule);border-radius:5px;background:var(--surface);color:var(--ink);
 }
 .modal-content input:focus,.modal-content select:focus{outline:none;border-color:var(--accent)}
-.row3{display:grid;grid-template-columns:1fr 1.6fr 1fr;gap:6px}
+.row3{display:grid;grid-template-columns:1fr 1.4fr 1.2fr;gap:6px}
+/* Hebrew day/year: arrows like a number box's, inside the box on its right */
+.hspin{position:relative;display:inline-block}
+.row3 .hspin{display:block}
+.hspin input{padding-right:18px!important;width:100%}
+.hspin-btns{position:absolute;right:2px;top:2px;bottom:2px;width:14px;display:flex;flex-direction:column}
+.hspin-btns button{flex:1;border:none;background:transparent;color:var(--ink-muted);font-size:9px;line-height:1;padding:0;cursor:pointer;border-radius:2px}
+.hspin-btns button:hover{background:var(--surface-2);color:var(--ink)}
+/* The event dialog's number boxes show their up/down arrows all the time (not only on hover), so it's clear they're there;
+   the arrows sit close to the edge and the boxes are wide enough that they never cover the number (2026-11-07) */
+.modal-content input[type=number]{padding-right:2px}
+.modal-content input[type=number]::-webkit-inner-spin-button{opacity:1;margin-left:2px}
 .toggle-line{display:flex;align-items:center;justify-content:space-between;font-size:12.5px;font-weight:600;margin-top:12px}
 .check-line{font-weight:normal;font-size:12px;margin-top:8px;display:flex;align-items:center;gap:6px;color:var(--ink-muted)}
 .close-x{position:absolute;top:8px;right:10px;background:none;border:none;color:var(--ink-muted);font-size:18px;cursor:pointer;padding:4px}
@@ -292,19 +327,30 @@ input.txtfield:focus,select.txtfield:focus{outline:none;border-color:var(--accen
 .ev-top{display:grid;grid-template-columns:auto 1fr;gap:12px;align-items:start}
 .ev-pic{display:flex;flex-direction:column;align-items:center;gap:6px;width:90px}
 .ev-pic-tile{position:relative;width:90px;height:120px}
-.ev-pic-tile canvas{display:block;width:90px;height:120px;border-radius:6px;background:var(--media-bg);image-rendering:pixelated;cursor:grab;touch-action:none}
+.ev-pic-tile #ev-photo-canvas{position:relative;z-index:2;display:block;width:90px;height:120px;border-radius:6px;background:var(--media-bg);image-rendering:pixelated;cursor:move;touch-action:none}
+/* What the picture handling looks like (2026-11-07): a move sign on a picture
+   under the mouse; while dragging, the rest of the picture shows dimmed around
+   the frame (as phones crop photos); in the icon editor always, with grips on
+   the frame's edges. */
+.move-hint{position:absolute;left:50%;top:50%;z-index:3;width:30px;height:30px;margin:-15px 0 0 -15px;border-radius:50%;
+  background:var(--overlay-btn);color:var(--on-accent);font-size:17px;line-height:30px;text-align:center;pointer-events:none;opacity:0;transition:opacity .15s}
+.ev-pic-tile:hover .move-hint.on,.bi-frame:hover .move-hint.on{opacity:.85}
+.ev-pic-tile.dragging .move-hint,.bi-frame.dragging .move-hint{opacity:0}
+#ev-photo-ghost{position:absolute;z-index:1;left:-90px;top:-120px;width:270px;height:360px;pointer-events:none;display:none}
+.ev-pic-tile.dragging #ev-photo-ghost{display:block}
 .ev-pic-empty{width:90px;height:120px;border:1.5px dashed var(--control-off);border-radius:6px;background:var(--surface-2);color:var(--ink-faint);cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0}
 .ev-pic-empty:hover{border-color:var(--accent);color:var(--accent)}
-.ev-pic-btn{position:absolute;top:4px;width:22px;height:22px;border-radius:50%;border:none;background:var(--overlay-btn);color:var(--on-accent);font-size:11px;line-height:22px;padding:0;cursor:pointer}
+.ev-pic-btn{position:absolute;z-index:4;top:4px;width:22px;height:22px;border-radius:50%;border:none;background:var(--overlay-btn);color:var(--on-accent);font-size:11px;line-height:22px;padding:0;cursor:pointer}
 .ev-pic-btn:hover{background:var(--overlay-btn-hover)}
 .ev-pic-change{left:4px}
 .ev-pic-x{right:4px}
 .ev-zoom{width:90px;margin:0}
 .ev-fields{display:flex;flex-direction:column;gap:8px;min-width:0}
-.ev-line{display:flex;gap:10px;align-items:center}
-.ev-line select{flex:1;min-width:0}
+/* the type keeps room for its name; on a phone "Remind" goes to the next line (2026-11-07: the type had shrunk to its arrow) */
+.ev-line{display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center}
+.ev-line select{flex:1;min-width:100px}
 .ev-remind{display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--ink-muted);white-space:nowrap}
-.modal-content .ev-remind input{width:46px}
+.modal-content .ev-remind input{width:52px}
 .ev-icons{display:flex;flex-wrap:wrap;gap:3px;align-items:center}
 .ev-icons .icon-option{margin:0;padding:4px 5px;font-size:15px}
 .ev-icons .sel{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 14%,var(--surface));box-shadow:0 0 0 1px var(--accent)}
@@ -357,12 +403,37 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
 .gallery canvas{width:54px;height:72px;background:var(--media-bg);image-rendering:pixelated}
 /* Settings > Pictures: the clock's own pictures, each replaceable */
 .builtin-grid{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px}
+/* A header inside a group (Event pictures / Icons): clearly a title, not a line of the item next to it.
+   Not coloured or underlined: that reads as a link (the user, 2026-11-07) */
+.subhead{font-size:15px;font-weight:700;color:var(--ink);margin:18px 0 4px;padding-top:12px;border-top:1px solid var(--rule)}
+.builtin-item .ev-links{text-align:center;line-height:1.5}
+.subcluster:first-child .subhead{margin-top:0;padding-top:0;border-top:0}
+.subhead .subinfo{display:inline-block;margin-left:10px;font-size:11px;font-weight:400;color:var(--ink-muted)}
+.storage{margin-bottom:16px}
+.storage-head{display:flex;justify-content:space-between;font-size:12px;color:var(--ink);margin-bottom:5px}
+.storage-head span:last-child{color:var(--ink-muted)}
+.storage-bar{display:flex;height:12px;border-radius:6px;background:var(--surface-3);overflow:hidden}
+.storage-bar .seg{display:block;height:100%;min-width:0}
+.seg-ev,.sw-ev{background:var(--accent)}.seg-ic,.sw-ic{background:var(--good)}.sw-free{background:var(--surface-3);border:1px solid var(--rule)}
+.storage-legend{display:flex;flex-wrap:wrap;gap:4px 18px;margin-top:6px;font-size:11.5px;color:var(--ink-muted)}
+.storage-legend b{font-weight:600;color:var(--ink)}
+.storage-legend .sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-1px}
 .builtin-item{display:flex;flex-direction:column;align-items:center;gap:4px;width:112px;padding:6px;border:1px solid var(--rule);border-radius:6px;font-size:11px;background:var(--surface)}
 .builtin-item canvas{background:var(--media-bg);max-width:100px;max-height:100px;image-rendering:pixelated}
 .builtin-item .bi-name{font-weight:600;text-align:center}
 .builtin-item .bi-state{color:var(--ink-faint);font-size:10px}
 .builtin-item span{display:flex;gap:4px}
-#bi-canvas{background:var(--media-bg);image-rendering:pixelated;cursor:grab;touch-action:none}
+#bi-canvas{position:relative;display:block;background:var(--media-bg);image-rendering:pixelated;cursor:move;touch-action:none;
+  outline:2px solid var(--white);box-shadow:0 0 0 3px var(--accent)}
+.bi-stage{position:relative;display:flex;align-items:center;justify-content:center;background:var(--surface-3);border-radius:6px;padding:10px 16px;overflow:hidden}
+#bi-ghost{position:absolute;inset:0;pointer-events:none}
+.bi-frame{position:relative}
+/* the frame's left and right edge: drag to crop (a bar to grab, wider than it looks) */
+.bi-handle{position:absolute;top:0;bottom:0;width:16px;cursor:ew-resize;touch-action:none}
+.bi-handle[data-side="-1"]{left:-8px}.bi-handle[data-side="1"]{right:-8px}
+.bi-handle::after{content:'';position:absolute;left:3px;top:50%;height:34px;margin-top:-17px;width:10px;border-radius:5px;background:var(--white);border:2px solid var(--accent);box-sizing:border-box;box-shadow:var(--shadow-1)}
+.bi-handle:hover::after{background:var(--accent-wash)}
+.bi-ctl{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;margin-top:10px}
 /* The video player in the picture editors (createTrimmer) */
 .trim{margin-top:10px;display:flex;flex-direction:column;gap:6px}
 .trim video{width:100%;max-height:220px;background:var(--media-bg);border-radius:4px}
@@ -433,10 +504,14 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
   .gbody{max-width:none}
   .frow-pair{grid-template-columns:1fr}
   .wide-only{display:none}
-  /* rows with a second dropdown (Omer, prayer switch): the label takes only
-     what it needs, the dropdown gets the rest of the row */
-  .content-row.has-extra .content-label{flex:0 1 auto;min-width:auto}
-  .content-row.has-extra .content-extra{flex:1 1 0;max-width:none}
+  /* rows with their own choices (Omer, prayer switch, events): those go on a
+     second line under the name, the whole width - in the row they were cut
+     to a few letters (2026-11-07). The ::after is the line break. */
+  .content-row.has-extra{flex-wrap:wrap;row-gap:6px}
+  .content-row.has-extra::after{content:'';flex-basis:100%;order:1}
+  .content-row.has-extra .content-extra{order:2;flex:1 1 auto;max-width:none}
+  .content-row.has-extra .content-check{order:2;margin-left:46px}
+  .content-row.has-extra .content-extra:first-of-type{margin-left:46px}
   .cal-cols{grid-template-columns:1fr!important}
   .cal-resizer{display:none}
   .cal-col:last-child{padding-left:0;margin-top:8px;border-top:1px solid var(--rule);padding-top:8px}
@@ -511,20 +586,20 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
               <div class="frow" title="On: the clock sets its own brightness from the light in the room - dim in the dark, bright in daylight. Off: one fixed brightness"><span class="k">Adjust to room light</span><label class="tgl"><input type="checkbox" id="cfg-use-sensor" data-auto-toggle><span class="sl"></span></label></div>
               <div class="swapslot">
                 <div data-auto-block>
-                  <div class="frow has-now" title="Faintest: in a dark room - just readable, without lighting up the room (Off = no backlight at all). Brightest: in a light room. In between it adjusts gradually. The clock shows the level while you move a handle. "Now": the brightness now"><span class="k">Brightness</span><span class="sl-row"><div class="dualrange" id="dr-bright"><div class="dr-track"></div><div class="dr-fill"></div><div class="dr-now" hidden></div><input type="range" min="0" max="100" step="1"><input type="range" min="0" max="100" step="1"></div><span class="v" id="dr-bright-lbl"></span></span></div>
-                  <div class="frow has-now" title="How much light counts as a dark room (left) and as a light room (right), 0-100%. Set them by hand, or let the clock learn them. "Now": the room light now"><span class="k">Room light</span><span class="sl-row"><div class="dualrange" id="dr-room"><div class="dr-track"></div><div class="dr-fill"></div><div class="dr-now" hidden></div><input type="range" min="0" max="100" step="1"><input type="range" min="0" max="100" step="1"></div><span class="v" id="dr-room-lbl"></span></span></div>
+                  <div class="frow has-now" title="Faintest: in a dark room - just readable, without lighting up the room (Off = no backlight at all). Brightest: in a light room. In between it adjusts gradually. The clock shows the level while you move a handle. "Now": the brightness now"><span class="k">Brightness</span><span class="sl-row"><div class="dualrange" id="dr-bright"><div class="dr-track"></div><div class="dr-fill"></div><div class="dr-now" hidden></div><input type="range" step="1" data-limit="nightPct"><input type="range" step="1" data-limit="dayPct"></div><span class="v" id="dr-bright-lbl"></span></span></div>
+                  <div class="frow has-now" title="How much light counts as a dark room (left) and as a light room (right), 0-100%. Set them by hand, or let the clock learn them. "Now": the room light now"><span class="k">Room light</span><span class="sl-row"><div class="dualrange" id="dr-room"><div class="dr-track"></div><div class="dr-fill"></div><div class="dr-now" hidden></div><input type="range" step="1" data-limit="roomDarkPct"><input type="range" step="1" data-limit="roomLightPct"></div><span class="v" id="dr-room-lbl"></span></span></div>
                   <div class="frow" title="On: the clock learns how dark and how light this room gets, and keeps adjusting over the days. Off: the room light ends stay where they are"><span class="k">Learn room light</span><label class="tgl"><input type="checkbox" id="cfg-learn-room"><span class="sl"></span></label></div>
                 </div>
                 <div data-manual-block style="display:none">
-                  <div class="frow" title="The clock's brightness, always the same"><span class="k">Brightness</span><span class="sl-row"><input type="range" min="0" max="100" value="78" id="cfg-bright-s" data-manual-slider><span class="pctbadge"><input type="number" class="pctinput wide" min="0" max="100" value="78" id="cfg-bright-n" data-manual-num>%</span></span></div>
+                  <div class="frow" title="The clock's brightness, always the same"><span class="k">Brightness</span><span class="sl-row"><input type="range" value="78" id="cfg-bright-s" data-manual-slider data-limit="brightPct"><span class="pctbadge"><input type="number" class="pctinput wide" value="78" id="cfg-bright-n" data-manual-num data-limit="brightPct">%</span></span></div>
                 </div>
               </div>
             </div>
             <div class="subcluster">
               <div class="frow" title="Alternating: one message at a time. Single Scroll: all messages scroll by in a row"><span class="k">Message mode</span><div class="seg2" id="seg-rot"><button id="rot-alt" onclick="setRotMode(0); liveSave({ rotationMode: 0 })">Alternating</button><button id="rot-scroll" onclick="setRotMode(1); liveSave({ rotationMode: 1 })">Single Scroll</button></div></div>
               <div class="frow-pair">
-              <div class="frow" data-dwell-row><span class="k">Dwell time</span><span class="sl-row"><input type="range" id="cfg-dwell-s" min="2" max="60" style="width:70px"><span class="v" id="cfg-dwell-lbl"></span></span></div>
-              <div class="frow"><span class="k">Scroll speed</span><span class="sl-row"><input type="range" id="cfg-scroll-s" min="1" max="10" style="width:70px"><span class="v" id="cfg-scroll-lbl"></span></span></div>
+              <div class="frow" data-dwell-row><span class="k">Dwell time</span><span class="sl-row"><input type="range" id="cfg-dwell-s" data-limit="messageDwellSec" style="width:70px"><span class="v" id="cfg-dwell-lbl"></span></span></div>
+              <div class="frow"><span class="k">Scroll speed</span><span class="sl-row"><input type="range" id="cfg-scroll-s" data-limit="scrollSpeed" style="width:70px"><span class="v" id="cfg-scroll-lbl"></span></span></div>
               </div>
             </div>
           </div>
@@ -541,11 +616,27 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
           </div>
         </div>
 
-        <div class="grp advanced" data-fold id="grp-builtin">
-          <div class="glabel" data-fold-head><div class="t" style="color:var(--ink)">Pictures <span class="fold-chev" data-fold-chev>▸</span></div><div class="d">The clock's own pictures - candles, Havdalah, event icons... Replace any with your own</div></div>
-          <div class="gbody" data-fold-body style="display:none">
-            <div class="frow" title="Replaced pictures (they may be short animations) share this much room on the clock"><span class="k">Room for replaced pictures</span><span class="v" id="bi-room">—</span></div>
-            <div class="builtin-grid" id="builtin-grid">Loading...</div>
+        <div class="grp advanced" id="grp-builtin">
+          <div class="glabel"><div class="t" style="color:var(--ink)">Pictures and icons</div><div class="d">Your events' pictures, and the clock's icons - candles, Havdalah, Torah, birthday... Replace any icon with your own</div></div>
+          <div class="gbody">
+            <!-- The space they share on the clock, as phones show storage: one bar, a part per kind -->
+            <div class="storage" id="pic-storage">
+              <div class="storage-head"><span>Storage</span><span id="st-total">—</span></div>
+              <div class="storage-bar"><span class="seg seg-ev" id="st-bar-ev"></span><span class="seg seg-ic" id="st-bar-ic"></span></div>
+              <div class="storage-legend">
+                <span><i class="sw sw-ev"></i>Event pictures <b id="st-ev">—</b></span>
+                <span title="Icons you replaced may use up to this much together"><i class="sw sw-ic"></i>Your icons <b id="st-ic">—</b></span>
+                <span><i class="sw sw-free"></i>Available <b id="st-free">—</b></span>
+              </div>
+            </div>
+            <div class="subcluster">
+              <div class="subcap subhead" title="The pictures your events show (added in an event's dialog). One no event uses any more is removed by itself">Event pictures<span class="subinfo" id="evpic-room">—</span></div>
+              <div class="builtin-grid" id="evpic-grid">Loading...</div>
+            </div>
+            <div class="subcluster">
+              <div class="subcap subhead" title="The clock's icons: the original, or yours (a photo or a short animation). Yours share this much room on the clock">Icons<span class="subinfo" id="bi-room">—</span></div>
+              <div class="builtin-grid" id="builtin-grid">Loading...</div>
+            </div>
           </div>
         </div>
 
@@ -554,7 +645,7 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
           <div class="gbody">
             <div class="frow"><span class="k">Clock name</span><input type="text" class="txtfield" id="cfg-name"></div>
             <div class="subcluster" id="wifi-networks" title="Up to three Wi-Fi networks. The clock joins whichever of them it hears strongest - at power-up, after losing the connection, and when the signal stays weak.">
-              <div class="subcap" style="font-size:10.5px;color:var(--ink-faint);margin-bottom:4px">Wi-Fi networks - the clock joins the strongest one it hears</div>
+              <div class="subcap subhead">Wi-Fi networks<span class="subinfo">the clock joins the strongest one it hears</span></div>
               <!-- one block per network, filled in by wifiSlotsHtml() below -->
             </div>
             <div class="frow"><span class="k">24-hour clock</span><label class="tgl"><input type="checkbox" id="cfg-24h"><span class="sl"></span></label></div>
@@ -587,6 +678,14 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
           </div>
         </div>
 
+        <div class="grp advanced" id="grp-bin">
+          <div class="glabel"><div class="t" style="color:var(--ink)">Deleted events</div><div class="d">Restore, or empty the recycle bin</div></div>
+          <div class="gbody">
+            <div id="bin-list"></div>
+            <div class="frow" style="margin-top:8px"><span class="k"></span><span><button class="mbtn mbtn-ghost mbtn-sm" id="bin-restore-sel" onclick="restoreSelected()" disabled>Restore selected</button> <button class="mbtn mbtn-ghost mbtn-sm" id="bin-restore-all" onclick="restoreAll()">Restore all</button> <button class="mbtn mbtn-danger mbtn-sm" id="bin-empty" onclick="emptyBin()">Empty recycle bin</button></span></div>
+          </div>
+        </div>
+
         <div class="grp">
           <div class="glabel"><div class="t">Clock software</div><div class="d">Version, updates and problem reports</div></div>
           <div class="gbody">
@@ -605,12 +704,12 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
           </div>
         </div>
 
-        <div class="grp advanced" data-fold>
-          <div class="glabel" data-fold-head><div class="t">Advanced <span class="fold-chev" data-fold-chev>▸</span></div><div class="d">Calibration, debug tools</div></div>
-          <div class="gbody" data-fold-body style="display:none">
+        <div class="grp advanced">
+          <div class="glabel"><div class="t">Advanced</div><div class="d">Calibration, debug tools</div></div>
+          <div class="gbody">
             <div class="frow"><span class="k">NTP server</span><input type="text" class="txtfield" id="cfg-ntp0"></div>
             <div class="subcluster" style="margin-top:8px" title="Test the clock at another date and time: it shows what it would show then, and runs on from there. One at a time - a shift, or a date to start from; each Apply replaces the last.">
-              <div class="subcap" style="font-size:10.5px;color:var(--ink-faint);margin-bottom:4px">Debug time - test the clock at another date</div>
+              <div class="subcap subhead">Debug time<span class="subinfo">test the clock at another date</span></div>
               <div class="frow"><span class="k">The clock's time</span><span class="v" id="dbg-state">—</span></div>
               <div class="frow"><span class="k">Shift by</span><span class="sl-row">
                 d <input type="number" class="txtfield" style="width:56px" id="dbg-d" placeholder="0">
@@ -623,38 +722,45 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
               <div class="frow" title="The time is on the daytime of that Hebrew date (its Gregorian date)"><span class="k">Set to (Hebrew)</span><span class="sl-row">
                 <input type="text" class="txtfield" style="width:48px" id="dbg-hd" placeholder="day">
                 <select class="txtfield" style="width:80px" id="dbg-hm"></select>
-                <input type="text" class="txtfield" style="width:70px" id="dbg-hy" placeholder="תשפ״ז">
+                <input type="text" class="txtfield" style="width:70px" id="dbg-hy" placeholder="year">
                 <input type="time" class="txtfield" style="width:90px" id="dbg-ht" value="12:00">
                 <button class="mbtn mbtn-ghost mbtn-sm" onclick="debugSetHebrew()">Apply</button></span></div>
               <div class="frow"><span class="k"></span><button class="mbtn mbtn-ghost mbtn-sm" onclick="debugTime({ offset: 0 })">Back to real time</button></div>
             </div>
             <div class="subcluster" style="margin-top:8px">
-              <div class="subcap" style="font-size:10.5px;color:var(--ink-faint);margin-bottom:4px">Display window calibration</div>
+              <div class="subcap subhead">Display window calibration</div>
               <div class="frow-pair">
-              <div class="frow"><span class="k">Offset X</span><input type="number" class="txtfield" style="width:70px" id="cfg-cal-x"></div>
-              <div class="frow"><span class="k">Offset Y</span><input type="number" class="txtfield" style="width:70px" id="cfg-cal-y"></div>
+              <div class="frow"><span class="k">Offset X</span><input type="number" class="txtfield" style="width:70px" id="cfg-cal-x" data-limit="calibX"></div>
+              <div class="frow"><span class="k">Offset Y</span><input type="number" class="txtfield" style="width:70px" id="cfg-cal-y" data-limit="calibY"></div>
               </div>
               <div class="frow-pair">
-              <div class="frow"><span class="k">Width</span><input type="number" class="txtfield" style="width:70px" id="cfg-cal-w"></div>
-              <div class="frow"><span class="k">Height</span><input type="number" class="txtfield" style="width:70px" id="cfg-cal-h"></div>
+              <div class="frow"><span class="k">Width</span><input type="number" class="txtfield" style="width:70px" id="cfg-cal-w" data-limit="calibW"></div>
+              <div class="frow"><span class="k">Height</span><input type="number" class="txtfield" style="width:70px" id="cfg-cal-h" data-limit="calibH"></div>
               </div>
-              <div class="frow"><span class="k" title="Moves the two lines where scrolling text can tear - place them above and below the letters">Tear lines</span><span class="sl-row"><input type="range" id="cfg-cal-tear-s" min="0" max="155" style="width:120px"><span class="v" id="cfg-cal-tear-lbl"></span></span></div>
+              <div class="frow"><span class="k" title="Moves the two lines where scrolling text can tear - place them above and below the letters">Tear lines</span><span class="sl-row"><input type="range" id="cfg-cal-tear-s" data-limit="calibTearUs" data-limit-scale="0.01" style="width:120px"><span class="v" id="cfg-cal-tear-lbl"></span></span></div>
               <div class="frow"><span class="k" title="The clock draws a moving frame where it thinks its visible window is - on its normal content, or on a test pattern with numbered edges (read which numbers show through the slit)">Calibrate</span><div class="seg2"><button id="cal-off" class="active" onclick="setCalib('off')">Off</button><button id="cal-content" onclick="setCalib('content')">Content</button><button id="cal-pattern" onclick="setCalib('pattern')">Pattern</button></div></div>
               <img id="cal-mirror" class="cal-mirror hidden" alt="The clock's screen, live" title="The clock's screen, live (about once a second)">
             </div>
             <div class="frow" style="margin-top:8px"><span class="k" title="Shows samples of everything the clock can display - dates, Shabbat, holidays, fasts, Omer, your events - once, in the current mode and speed, then returns to normal">Demo</span><span><button class="mbtn mbtn-ghost mbtn-sm" id="demo-btn" onclick="toggleDemo()">Start demo</button></span></div>
             <div class="subcluster" style="margin-top:8px">
-              <div class="subcap" style="font-size:10.5px;color:var(--ink-faint);margin-bottom:4px">Screen connection test - not saved, back to normal after a restart</div>
+              <div class="subcap subhead">Screen connection test<span class="subinfo">not saved, back to normal after a restart</span></div>
               <div class="frow"><span class="k">Freeze screen</span><label class="tgl"><input type="checkbox" id="dl-freeze" onchange="setDisplayLink({ frozen: this.checked })"><span class="sl"></span></label></div>              <div class="frow" style="opacity:0.7"><span class="k">Sending one frame takes</span><span id="dl-blit" style="font-size:0.9em">—</span></div>
             </div>
-            <div class="frow" style="margin-top:8px"><span class="k" title="The holidays, candle-lighting times etc. the clock downloads from Hebcal and keeps - not your own events">Holiday &amp; times data (from Hebcal)</span><span><button class="mbtn mbtn-ghost mbtn-sm" onclick="refreshCalendarData()">Refresh now</button> <button class="mbtn mbtn-ghost mbtn-sm" onclick="clearCalendarCache()">Clear cache</button></span></div>
-            <div class="frow"><span class="k" title="Erases everything on the clock - settings, Wi-Fi, events, pictures, log - as if new. A backup file restores it all (the clock's setup page: Restore from backup).">Factory reset</span><button class="mbtn mbtn-danger mbtn-sm" onclick="factoryReset()">Factory reset...</button></div>
-            <div class="frow"><span class="k">Log level</span><select class="txtfield" style="width:120px" id="cfg-log-level" onchange="setLogLevel()">
-              <option value="none">None</option><option value="error">Error</option><option value="warn">Warning</option><option value="info">Info (default)</option><option value="debug">Debug</option>
-            </select></div>
-            <div class="frow"><span class="k">Keep after restart</span><label class="tgl"><input type="checkbox" id="cfg-log-level-persist"><span class="sl"></span></label></div>
             <div class="subcluster" style="margin-top:8px">
-              <div class="subcap" style="font-size:10.5px;color:var(--ink-faint);margin-bottom:4px">Diagnostic Log</div>
+              <div class="subcap subhead">Clock data</div>
+              <div class="frow"><span class="k" title="The holidays, candle-lighting times etc. the clock downloads from Hebcal and keeps - not your own events">Holiday &amp; times data (from Hebcal)</span><span><button class="mbtn mbtn-ghost mbtn-sm" onclick="refreshCalendarData()">Refresh now</button> <button class="mbtn mbtn-ghost mbtn-sm" onclick="clearCalendarCache()">Clear cache</button></span></div>
+              <div class="frow"><span class="k" title="Erases everything on the clock - settings, Wi-Fi, events, pictures, log - as if new. A backup file restores it all (the clock's setup page: Restore from backup).">Factory reset</span><button class="mbtn mbtn-danger mbtn-sm" onclick="factoryReset()">Factory reset...</button></div>
+            </div>
+            <div class="subcluster" style="margin-top:8px">
+              <div class="subcap subhead">Diagnostic log</div>
+              <div class="frow" title="How much the clock writes into its log, and for how long - then back to Info"><span class="k">Log level</span><span class="sl-row">
+                <select class="txtfield" style="width:120px" id="cfg-log-level" onchange="setLogLevel()">
+                  <option value="none">None</option><option value="error">Error</option><option value="warn">Warning</option><option value="info">Info (default)</option><option value="debug">Debug</option>
+                </select>
+                <select class="txtfield" style="width:120px" id="cfg-log-keep" onchange="setLogLevel()">
+                  <option value="0">until restart</option><option value="1">for 1 hour</option><option value="24">for 1 day</option><option value="168">for 1 week</option><option value="always">always</option>
+                </select>
+                <span class="remind-note" id="log-keep-note"></span></span></div>
               <div class="frow" style="gap:6px">
                 <span class="k"></span>
                 <span style="display:flex;gap:6px;flex:1">
@@ -691,7 +797,9 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
       <!-- The picture: a tile like a contact photo; empty = "add a picture" -->
       <div class="ev-pic">
         <div class="ev-pic-tile">
+          <canvas id="ev-photo-ghost" width="270" height="360"></canvas>
           <canvas id="ev-photo-canvas" class="hidden" width="72" height="96" title="Drag to position"></canvas>
+          <span class="move-hint" id="ev-move-hint">✥</span>
           <button type="button" id="ev-photo-empty" class="ev-pic-empty" onclick="el('ev-photo-file').click()" title="Add a picture (or a video frame) - shown instead of the icon">
             <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="15" height="13" rx="2"/><circle cx="8" cy="9.5" r="1.5"/><path d="M3 16l4-4 3 3 3-3 5 5"/><path d="M20 3v5M17.5 5.5h5"/></svg>
           </button>
@@ -710,7 +818,7 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
             <option value="yahrzeit">Yahrzeit</option>
             <option value="other">Other</option>
           </select>
-          <span class="ev-remind" title="Also remind this many days before the day itself">Remind <input type="number" id="ev-warn" min="0" value="0"> days before</span>
+          <span class="ev-remind" title="Also remind this many days before the day itself">Remind <input type="number" id="ev-warn" value="0" data-limit="warn"> days before</span>
         </div>
         <div id="icon-quick-picker" class="ev-icons" title="Icon - shown when there's no picture">
           <span class="icon-option" data-icon="🎂">🎂</span><span class="icon-option" data-icon="💍">💍</span><span class="icon-option" data-icon="🕯️">🕯️</span><span class="icon-option" data-icon="✡️">✡️</span><span class="icon-option" data-icon="🕍">🕍</span><span class="icon-option" data-icon="🎉">🎉</span><span class="icon-option" data-icon="👶">👶</span><input type="text" id="ev-icon-custom" class="icon-custom" placeholder="✎" title="Your own: any emoji or short text" oninput="el('ev-icon').value = this.value.trim(); markIcon()"><input type="hidden" id="ev-icon">
@@ -723,7 +831,7 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
       <div class="row3" id="sect-g">
         <input type="number" id="ev-g-d" placeholder="Day" min="1" max="31" oninput="handleFieldInput('g')">
         <select id="ev-g-m" onchange="handleFieldInput('g')"><option value="0">Month</option><option value="1">Jan</option><option value="2">Feb</option><option value="3">Mar</option><option value="4">Apr</option><option value="5">May</option><option value="6">Jun</option><option value="7">Jul</option><option value="8">Aug</option><option value="9">Sep</option><option value="10">Oct</option><option value="11">Nov</option><option value="12">Dec</option></select>
-        <input type="number" id="ev-g-y" placeholder="Year" oninput="handleFieldInput('g')">
+        <input type="number" id="ev-g-y" placeholder="Year" data-limit="gYear" oninput="handleFieldInput('g')">
       </div>
       <label class="ev-extra" title="Born / happened after sunset - the Hebrew date is the next day's"><input type="checkbox" id="ev-as" onchange="handleFieldInput('g')"> After sunset</label>
     </div>
@@ -752,20 +860,30 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
 
 
 <div id="modal-builtin" class="modal">
-  <div class="modal-content" style="max-width:480px">
+  <div class="modal-content" style="max-width:560px">
     <button class="close-x" onclick="closeBuiltinEditor()">✕</button>
-    <h3 id="bi-title">Replace picture</h3>
-    <div class="photo-row">
-      <canvas id="bi-canvas" width="72" height="96" title="Drag to move the picture in the frame"></canvas>
-      <div class="photo-ctl">
-        <span><button type="button" class="mbtn mbtn-ghost mbtn-sm" onclick="el('bi-file').click()">Picture or video...</button></span>
-        <label class="photo-zoom hidden" id="bi-zoom-row">Zoom <input type="range" id="bi-zoom" min="0.3" max="4" step="0.02" value="1" oninput="bi.zoom = +this.value; biDraw()"></label>
-        <label class="photo-zoom hidden" id="bi-width-row" title="The height is the clock's row; the width is free - it starts as the shape of what you chose">Width <input type="range" id="bi-width" min="16" max="480" step="1" oninput="biSetWidth(+this.value)"> <span id="bi-width-lbl"></span></label>
-        <span class="hidden" id="bi-shape-row"><button type="button" class="mbtn mbtn-ghost mbtn-sm" onclick="biSetWidth(biSourceWidth())" title="Back to the width that shows the whole picture's shape">↺ The picture's own shape</button></span>
-        <span class="remind-note" id="bi-size"></span>
+    <h3 id="bi-title">Replace icon</h3>
+    <!-- The picture in a fixed area of its own: changing its width never moves the controls -->
+    <div class="bi-stage" id="bi-stage">
+      <canvas id="bi-ghost"></canvas>
+      <div class="bi-frame">
+        <span class="move-hint" id="bi-move-hint">✥</span>
+        <canvas id="bi-canvas" width="72" height="96" title="Drag to move the picture in the frame"></canvas>
+        <div class="bi-handle hidden" data-side="-1" title="Drag to make it narrower or wider"></div>
+        <div class="bi-handle hidden" data-side="1" title="Drag to make it narrower or wider"></div>
       </div>
-      <input type="file" id="bi-file" accept="image/*,video/*" class="hidden" onchange="biLoadFile(this.files[0]); this.value = ''">
     </div>
+    <div class="bi-ctl">
+      <button type="button" class="mbtn mbtn-ghost mbtn-sm" onclick="el('bi-file').click()">Picture or video...</button>
+      <label class="photo-zoom hidden" id="bi-zoom-row">Zoom <input type="range" id="bi-zoom" min="0.3" max="4" step="0.02" value="1" oninput="bi.zoom = +this.value; biDraw()"></label>
+      <span class="remind-note" id="bi-width-lbl"></span>
+    </div>
+    <div class="bi-ctl hidden" id="bi-shape-row">
+      <button type="button" class="mbtn mbtn-ghost mbtn-sm" id="bi-shape-orig" onclick="biSetWidth(bi.origW)" title="As wide as the icon it replaces">Original icon's shape</button>
+      <button type="button" class="mbtn mbtn-ghost mbtn-sm" id="bi-shape-pic" onclick="biSetWidth(biSourceWidth())" title="As wide as shows the whole picture">Picture's own shape</button>
+      <span class="remind-note" id="bi-size"></span>
+    </div>
+    <input type="file" id="bi-file" accept="image/*,video/*" class="hidden" onchange="biLoadFile(this.files[0]); this.value = ''">
     <div class="trim-msg hidden" id="bi-msg"></div>
     <div id="bi-trim"></div>
     <div class="modal-footer">
@@ -840,12 +958,47 @@ function updateWifiGauge(rssi, connected) {
 // Stays up long enough to read (longer messages longer); a click closes it.
 let toastTimer = null;
 function toast(msg) {
-  const t = el('toast');
-  t.textContent = msg; t.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), Math.min(12000, 2500 + 60 * String(msg).length));
+  el('toast').textContent = msg;
+  showToast();
 }
-el('toast').addEventListener('click', () => { clearTimeout(toastTimer); el('toast').classList.remove('show'); });
+// What the user was doing: the last thing clicked or focused (not the message itself).
+let toastAnchor = null, toastShownAt = 0;
+document.addEventListener('pointerdown', e => {
+  if (el('toast').contains(e.target)) return;
+  // A click anywhere else puts the message away - not the click that led to it
+  if (el('toast').classList.contains('show') && Date.now() - toastShownAt > 400) hideToast();
+  toastAnchor = e.target;
+}, true);
+document.addEventListener('focusin', e => { if (!el('toast').contains(e.target)) toastAnchor = e.target; }, true);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') hideToast(); }, true);
+function hideToast() { clearTimeout(toastTimer); el('toast').classList.remove('show'); }
+// Shows the message bubble next to toastAnchor - below it, or above if there's
+// no room - with its point at it; at the bottom centre if that is gone (e.g.
+// the dialog it was in closed). Stays until clicked away.
+function showToast() {
+  const t = el('toast');
+  clearTimeout(toastTimer);
+  t.classList.remove('below', 'above', 'free');
+  t.style.left = '0px'; t.style.top = '0px';
+  t.classList.add('show');
+  toastShownAt = Date.now();
+  const a = toastAnchor && toastAnchor.isConnected && toastAnchor.closest ? toastAnchor.closest('button,input,select,label,a,.frow,.content-row,.builtin-item,.day-row') || toastAnchor : null;
+  const r = a && a.offsetParent !== null ? a.getBoundingClientRect() : null;
+  const w = t.offsetWidth, h = t.offsetHeight, vw = window.innerWidth, vh = window.innerHeight;
+  if (!r || r.bottom < 0 || r.top > vh || (r.width === 0 && r.height === 0)) {
+    t.classList.add('free');
+    t.style.left = Math.round((vw - w) / 2) + 'px'; t.style.top = Math.round(vh - h - 20) + 'px';
+    return;
+  }
+  const cx = r.left + r.width / 2;
+  const left = Math.max(8, Math.min(vw - w - 8, cx - w / 2));
+  const below = r.bottom + 10 + h <= vh - 8 || r.top - 10 - h < 8;
+  t.classList.add(below ? 'below' : 'above');
+  t.style.left = Math.round(left) + 'px';
+  t.style.top = Math.round(below ? r.bottom + 10 : r.top - 10 - h) + 'px';
+  t.style.setProperty('--arrow-x', Math.round(Math.max(12, Math.min(w - 12, cx - left))) + 'px');
+}
+el('toast').addEventListener('click', e => { if (!e.target.closest('button')) hideToast(); });
 // Every save*() in Settings just does toast(await apiPost(...)) with no
 // try/catch of its own - this is the one place that handles failure, so
 // every caller gets it for free. Always resolves to a message to show:
@@ -918,13 +1071,32 @@ const CONTENT_EXTRAS = {
   events: [{ cfg: 'eventDayChange', title: 'When an event on a Hebrew date starts and ends',
           options: [[0, 'Hebrew-date event message: evening before'], [1, 'Hebrew-date event message: midnight']] }],
   omer: [{ cfg: 'omerMode', dir: 'rtl', title: 'How the Omer count is worded on the clock (shown for day 23)',
-          options: [[1, '23 לעומר'], [3, '23 שהם 3 שבועות + 2 ימים לעומר'], [2, 'היום שלושה ועשרים יום, שהם שלושה שבועות ושני ימים לעומר']] }],
+          options: [[1, '23 לעומר'], [4, '23 = 3 שבועות + 2 ימים'], [3, '23 שהם 3 שבועות + 2 ימים לעומר'], [2, 'היום שלושה ועשרים יום, שהם שלושה שבועות ושני ימים לעומר']] }],
   prayerswitch: [{ cfg: 'nusach', dir: 'rtl', title: 'Wording of the rain request',
           options: [[0, 'אשכנז'], [1, 'ספרד']] },
         { cfg: 'prayerSwitchDays', title: 'Days shown before &amp; after the switch day (0 = only that day; Pesach: from its eve)',
           options: [[0, 'Only on the day'], [1, '1 day before &amp; after'], [2, '2 days before &amp; after']] }]
 };
-const contentExtraValues = { omerMode: 1, prayerSwitchDays: 1, nusach: 0, eventDayChange: 0 };
+// When the timed slides show (2026-11-08; the clock: Config.h ShowFrom /
+// ShowUntil, Calendar.cpp "Show windows"). "Evening" = when the Hebrew date
+// changes (Advanced setting: sunset / צאת הכוכבים / midnight). `showIf`: shown
+// only when it applies. `check`: a tick box with that label.
+const showUntil = (cfg, at, showIf) => ({ cfg, title: 'When it stops showing', options: [[0, 'Until ' + at], [1, 'Until midnight']], showIf });
+const showTomorrow = (cfg, from) => ({ cfg, check: 'Tomorrow', title: 'On the evening before, the clock says "tomorrow" before the time', showIf: v => v[from] === 1 });
+const FROM_DAY = [[0, 'From midnight'], [1, 'From evening before']];
+const FROM_SHABBAT = [[1, 'From Thu evening'], [0, 'From Fri midnight']];
+CONTENT_EXTRAS.candle = [{ cfg: 'candleFrom', title: 'When it starts showing', options: FROM_DAY },
+  showUntil('candleUntil', 'lighting'), showTomorrow('candleTomorrow', 'candleFrom')];
+CONTENT_EXTRAS.havdalah = [{ cfg: 'havdalahFrom', title: 'When it starts showing', options: FROM_DAY },
+  showUntil('havdalahUntil', 'Havdalah'), showTomorrow('havdalahTomorrow', 'havdalahFrom')];
+CONTENT_EXTRAS.fast = [{ cfg: 'fastFrom', title: 'When it starts showing', options: [[0, 'From day before'], [1, 'From evening before']] },
+  showUntil('fastUntil', 'fast end')];
+CONTENT_EXTRAS.parasha = [{ cfg: 'parashaFrom', title: 'When it shows: all week, or only around Shabbat', options: [[2, 'All week'], ...FROM_SHABBAT] },
+  showUntil('parashaUntil', 'Havdalah', v => v.parashaFrom !== 2)];
+CONTENT_EXTRAS.mevarchim = [{ cfg: 'mevarchimFrom', title: 'When it shows', options: [[3, 'Like Parasha'], [2, 'All week'], ...FROM_SHABBAT] },
+  showUntil('mevarchimUntil', 'Havdalah', v => v.mevarchimFrom < 2)];
+const SHOW_KEYS = ['candle', 'havdalah', 'fast', 'parasha', 'mevarchim'];
+const contentExtraValues = { omerMode: 1, prayerSwitchDays: 1, nusach: 0, eventDayChange: 0 };   // + the show keys, from the clock's settings
 const CONTENT_ORDER_DEFAULT = ['events','candle','havdalah','holiday','mevarchim','parasha','omer','dafyomi','mishnayomit','hebrewdate','gregoriandate','fast','prayerswitch'];
 
 function renderContentOrder(order, freq) {
@@ -942,8 +1114,9 @@ function renderContentOrder(order, freq) {
       '<span class="drag-handle">⠿</span>' +
       '<span class="content-icon">' + meta.icon + '</span>' +
       '<span class="content-label">' + meta.label + '</span>' +
-      (CONTENT_EXTRAS[key] || []).map(x =>
-        '<select class="content-extra" dir="' + (x.dir || 'ltr') + '" data-cfg="' + x.cfg + '" title="' + x.title + '">' +
+      (CONTENT_EXTRAS[key] || []).map(x => x.check
+        ? '<label class="content-check" title="' + x.title + '"><input type="checkbox" class="content-tick" data-cfg="' + x.cfg + '">' + x.check + '</label>'
+        : '<select class="content-extra" dir="' + (x.dir || 'ltr') + '" data-cfg="' + x.cfg + '" title="' + x.title + '">' +
           x.options.map(([val, label]) => '<option value="' + val + '">' + label + '</option>').join('') + '</select>').join('') +
       '<select class="content-freq">' +
         '<option value="0">Off</option>' +
@@ -955,7 +1128,10 @@ function renderContentOrder(order, freq) {
     const f = (freq && freq[key] !== undefined) ? freq[key] : 1;
     row.querySelector('.content-freq').value = [0,1,2,3,4].indexOf(f) >= 0 ? f : 1;
     row.querySelectorAll('.content-extra').forEach(s => { s.value = String(contentExtraValues[s.dataset.cfg]); });
+    row.querySelectorAll('.content-tick').forEach(c => { c.checked = !!contentExtraValues[c.dataset.cfg]; });
+    syncContentExtras(row);
     list.appendChild(row);
+    row.querySelectorAll('select').forEach(fitWidestOption);   // on the page: its font is known only there
   });
   if (el('view-settings').classList.contains('active')) filterSettings();   // a search in progress covers the new rows too
 }
@@ -976,12 +1152,34 @@ Sortable.create(el('content-order-list'), {
 });
 el('content-order-list').addEventListener('change', e => {
   if (e.target.classList.contains('content-freq')) liveSave({ contentFrequency: currentContentFrequency() });
-  if (e.target.classList.contains('content-extra')) {
-    const key = e.target.dataset.cfg, value = parseInt(e.target.value, 10);
+  if (e.target.classList.contains('content-extra') || e.target.classList.contains('content-tick')) {
+    const key = e.target.dataset.cfg, value = e.target.type === 'checkbox' ? e.target.checked : parseInt(e.target.value, 10);
     contentExtraValues[key] = value;
+    syncContentExtras(e.target.closest('.content-row'));
     liveSave({ [key]: value });
   }
 });
+// A list as wide as its longest choice, whichever is chosen: nothing beside it moves
+// when the choice changes (the user, 2026-11-08). Measured with the list's own font;
+// the arrow's room (picker icon, or the background arrow's padding) is added.
+function fitWidestOption(sel) {
+  const cs = getComputedStyle(sel);
+  const ctx = fitWidestOption.ctx || (fitWidestOption.ctx = document.createElement('canvas').getContext('2d'));
+  ctx.font = cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily;
+  const widest = Math.max(...Array.from(sel.options, o => ctx.measureText(o.textContent).width));
+  const frame = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight) + parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth);
+  const arrow = CSS.supports('appearance', 'base-select') ? 14 : 0;
+  sel.style.minWidth = Math.ceil(widest + frame + arrow + 2) + 'px';
+}
+// A row's choices that apply only with another one (showIf): invisible otherwise, their
+// space kept - the rest of the row doesn't move when one comes or goes (the user, 2026-11-08).
+function syncContentExtras(row) {
+  (CONTENT_EXTRAS[row.dataset.type] || []).forEach(x => {
+    if (!x.showIf) return;
+    const node = row.querySelector('[data-cfg="' + x.cfg + '"]');
+    (x.check ? node.parentNode : node).classList.toggle('keep-space', !x.showIf(contentExtraValues));
+  });
+}
 function currentContentOrder() {
   return Array.from(el('content-order-list').children).map(r => r.dataset.type);
 }
@@ -998,6 +1196,10 @@ document.querySelectorAll('.rail-item').forEach(btn => {
     document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
     btn.classList.add('active');
     el('view-' + btn.dataset.view).classList.add('active');
+    // No folded groups since 2026-11-07 (the parents found folded-and-hidden
+    // confusing): what the folds loaded on opening loads with the view.
+    if (btn.dataset.view === 'settings') { diagLogShown = false; loadEventPictures(); loadBuiltinGrid(); loadBin(); fillDebugToday(); }
+    else { clearInterval(builtinTimer); builtinTimer = null; }
   };
 });
 
@@ -1012,13 +1214,11 @@ function setRotMode(mode) {
   el('cfg-dwell-s').disabled = scrollMode;
 }
 
+// Event types and their default icons: the clock's (/api/limits eventTypes);
+// the last one is an unknown type's.
 function getIconForEventType(type) {
-  switch (type) {
-    case 'birthday': return '🎂';
-    case 'wedding': return '💍';
-    case 'yahrzeit': return '🕯️';
-    default: return '🗓️';
-  }
+  const t = LIMITS.eventTypes;
+  return (t.find(x => x.type === type) || t[t.length - 1]).icon;
 }
 function updateIconBasedOnType() {
   const eventType = el('ev-type').value;
@@ -1203,6 +1403,19 @@ const GEMATRIA_VALUES = {
   'ס':60,'ע':70,'פ':80,'ף':80,'צ':90,'ץ':90,
   'ק':100,'ר':200,'ש':300,'ת':400
 };
+// Letters written as a Hebrew number, its value - else null (2026-11-07:
+// any letters used to be summed, so "אט" counted as 10). Hundreds, then
+// tens, then units; טו/טז (and יה/יו, see above) for 15/16; final letters as
+// plain ones; geresh/gershayim and spaces ignored, anything else refuses.
+const HEB_NUM_RE = /^(תתק|תתר|תתש|תתת|תת|תק|תר|תש|ת|ש|ר|ק)?(טו|טז|[יכלמנסעפצ]?[אבגדהוזחט]?)$/;
+const HEB_FINALS = { 'ך': 'כ', 'ם': 'מ', 'ן': 'נ', 'ף': 'פ', 'ץ': 'צ' };
+function hebLettersValue(text) {
+  const t = text.replace(/[׳״'"\s]/g, '').replace(/[ךםןףץ]/g, c => HEB_FINALS[c]);
+  if (!t || !/^[א-ת]+$/.test(t) || !HEB_NUM_RE.test(t)) return null;
+  let sum = 0;
+  for (const ch of t) sum += GEMATRIA_VALUES[ch];
+  return sum;
+}
 function parseHebrewDay(text) {
   const trimmed = (text || '').trim();
   if (!trimmed) return null;
@@ -1210,13 +1423,23 @@ function parseHebrewDay(text) {
     const n = parseInt(trimmed, 10);
     return (n >= 1 && n <= 30) ? n : null;
   }
-  let sum = 0, sawLetter = false;
-  for (const ch of trimmed) {
-    const v = GEMATRIA_VALUES[ch];
-    if (v) { sum += v; sawLetter = true; }
-  }
-  if (!sawLetter) return null;
+  const sum = hebLettersValue(trimmed);
   return (sum >= 1 && sum <= 30) ? sum : null;
+}
+// What to say about a Hebrew day / year that isn't one ('' = fine or empty).
+function hebDayProblem(text) {
+  return (text || '').trim() && !parseHebrewDay(text) ? '"' + text.trim() + '" is not a Hebrew day - 1 to 30, e.g. 15 or ט״ו.' : '';
+}
+function hebYearProblem(text) {
+  const t = (text || '').trim();
+  const y = parseHebrewYear(t);
+  if (!t) return '';
+  if (y && LIMITS) {
+    const [lo, hi] = LIMITS.ranges.hYear;
+    if (5000 + y < lo || 5000 + y > hi) return '"' + t + '" - a Hebrew year from ' + hebNum(lo - 5000) + ' (' + lo + ') to ' + hebNum(hi - 5000) + ' (' + hi + '), please.';
+  }
+  if (y) return '';
+  return '"' + t + '" is not a Hebrew year - e.g. 5787, 787 or תשפ״ז' + (gregorianLikeYear(t) ? ' (' + t + ' looks like a Gregorian year).' : '.');
 }
 
 // Keeps the Hebrew day field's true numeric value in dataset.num (same
@@ -1230,6 +1453,7 @@ function setHebDay(n) {
   else { input.dataset.num = ''; input.value = ''; }
 }
 function handleHebrewDayInput(input) {
+  input.classList.remove('field-missing');
   const n = parseHebrewDay(input.value);
   input.dataset.num = n || '';
   handleFieldInput('h');
@@ -1241,16 +1465,46 @@ function normalizeHebrewDayDisplay(input) {
   // rewriting the field mid-keystroke never fights the user's typing.
   const n = parseInt(input.dataset.num || '', 10);
   if (n > 0) input.value = hebNum(n);
+  flagHebField(input, hebDayProblem(input.value));
+}
+// A Hebrew day / year that isn't one: the box turns red and says why (it
+// used to be dropped without a word - a year typed as 2027 saved as none).
+function flagHebField(input, problem) {
+  input.classList.toggle('field-missing', !!problem);
+  if (problem) toast(problem);
 }
 
-/* ── Draggable, remembered column split ── */
-document.querySelectorAll('[data-fold]').forEach(grp => {
-  const head = grp.querySelector('[data-fold-head]'), body = grp.querySelector('[data-fold-body]');
-  head.addEventListener('click', () => {
-    const open = grp.classList.toggle('open');
-    body.style.display = open ? '' : 'none';
+/* Up/down arrows for the Hebrew day and year boxes (they take letters, so
+   they are text boxes - no arrows of their own; 2026-11-07). Counted as a
+   number, shown in letters; the keyboard's up/down keys do the same. An empty
+   box starts from today. onChange(input) after each step. */
+function addHebSpin(id, kind, onChange) {
+  const input = el(id), wrap = document.createElement('span');
+  wrap.className = 'hspin';
+  input.parentNode.insertBefore(wrap, input);
+  wrap.append(input);
+  wrap.insertAdjacentHTML('beforeend', '<span class="hspin-btns"><button type="button" tabindex="-1" data-step="1" title="Next">▴</button>' +
+                                       '<button type="button" tabindex="-1" data-step="-1" title="Previous">▾</button></span>');
+  const step = async d => {
+    let cur = kind === 'day' ? parseHebrewDay(input.value) : parseHebrewYear(input.value);
+    if (!cur) {
+      try { const h = await todayHeb(); cur = kind === 'day' ? h.d : h.y - 5000; } catch (e) { cur = kind === 'day' ? 1 : 787; }
+      d = 0;
+    }
+    const next = Math.max(1, Math.min(kind === 'day' ? 30 : 999, cur + d));
+    input.value = hebNum(next);
+    input.classList.remove('field-missing');
+    onChange(input);
+  };
+  wrap.querySelectorAll('button').forEach(b => b.addEventListener('click', () => step(+b.dataset.step)));
+  input.addEventListener('keydown', e => {
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); step(e.key === 'ArrowUp' ? 1 : -1); }
   });
-});
+}
+addHebSpin('ev-j-d', 'day', handleHebrewDayInput);
+addHebSpin('ev-j-y', 'year', handleHebrewYearInput);
+addHebSpin('dbg-hd', 'day', () => {});
+addHebSpin('dbg-hy', 'year', () => {});
 
 /* ── Settings search: only matching settings stay visible, and stay usable ── */
 // A row matches when every typed word appears in its own text (label,
@@ -1293,6 +1547,7 @@ function filterSettings() {
 }
 el('settings-search').addEventListener('input', filterSettings);
 
+/* ── Draggable, remembered column split ── */
 const CAL_RATIO_KEY = 'clockui-cal-col-ratio';
 document.querySelectorAll('[data-cal-resizable]').forEach(container => {
   const handle = container.querySelector('[data-cal-resizer]');
@@ -1367,11 +1622,12 @@ async function loadStatus() {
       if (bn) bn.textContent = s.projectNameText;
     }
     const ll = el('cfg-log-level');
-    // Only outside an active edit - the live level is RAM-only unless
-    // "Keep after restart" was checked when it was set, so this poll is its
-    // one source of truth, but skip the instant right after the user's own
-    // change until this round-trips.
+    // Only outside an active edit - the live level is RAM-only unless it was
+    // set for a while or always, so this poll is its one source of truth,
+    // but skip the instant right after the user's own change until this
+    // round-trips.
     if (ll && s.logLevel && document.activeElement !== ll) ll.value = s.logLevel;
+    showLogKeep(s);
     updateTodayHebrew(s);
   } catch (e) {
     // Polled every second - a blank catch here is exactly what let a real
@@ -1409,13 +1665,61 @@ async function toggleDemo() {
   syncDemo({ demo: on });
 }
 
+// The level, and how long it holds: until the clock restarts, for some hours
+// (the clock goes back to Info by itself, restarts or not), or always.
 async function setLogLevel() {
-  const persist = el('cfg-log-level-persist').checked;
-  toast(await apiPost('/api/debug/log-level', { level: v('cfg-log-level'), persist: persist ? '1' : '0' }));
+  const level = v('cfg-log-level'), keep = v('cfg-log-keep');
+  if (keep === 'always' && level === 'debug' && !await askBox('Debug, always?',
+      [document.createTextNode('Debug writes many lines. The log keeps only the newest ' + logKeepKb() +
+        ' KB, so with Debug always on, older lines - the history you may need when something goes wrong - are pushed out much sooner.')],
+      [{ label: 'Debug always', value: true, cls: 'mbtn-danger' }])) { loadStatus(); return; }
+  toast(await apiPost('/api/debug/log-level', { level, persist: keep === 'always' ? '1' : '0', hours: keep === 'always' ? '0' : keep }));
+  loadStatus();
+}
+const logKeepKb = () => 2 * LIMITS.logFileMaxBytes / 1024;   // the log file and its previous one
+function showLogKeep(s) {
+  const keep = el('cfg-log-keep');
+  if (!keep || document.activeElement === keep) return;
+  if (s.logLevelKeep === 'restart') keep.value = '0';
+  else if (s.logLevelKeep === 'always') keep.value = 'always';
+  else if (s.logLevelKeep === 'until' && (keep.value === '0' || keep.value === 'always')) keep.value = '24';
+  const until = s.logLevelKeep === 'until' && s.logLevelUntil ? new Date(s.logLevelUntil * 1000) : null;
+  el('log-keep-note').textContent = until ? 'until ' + until.toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+}
+
+/* What the clock allows (GET /api/limits - Config.h LIMITS and the limits
+   next to the code that enforces them): sliders and boxes take their min/max
+   from it (data-limit="key", data-limit-scale when the box counts in other
+   units), and so do the page's own checks - the page keeps no copies of the
+   clock's numbers (2026-11-07). Fetched first; loadConfig() waits for it. */
+let LIMITS = null;
+const limitsReady = (async () => {
+  for (let i = 0; ; i++) {
+    try { LIMITS = await apiJson('/api/limits'); applyLimits(); return LIMITS; }
+    catch (e) { await new Promise(r => setTimeout(r, Math.min(5000, 500 * (i + 1)))); }
+  }
+})();
+function applyLimits() {
+  document.querySelectorAll('[data-limit]').forEach(inp => {
+    const r = LIMITS.ranges[inp.dataset.limit];
+    if (!r) { console.error('no limit for', inp.dataset.limit); return; }
+    const k = +(inp.dataset.limitScale || 1);
+    inp.min = r[0] * k; inp.max = r[1] * k;
+  });
+  const [y0, y1] = LIMITS.ranges.debugYear;
+  el('dbg-g').min = y0 + '-01-01T00:00'; el('dbg-g').max = y1 + '-12-31T23:59';
+  setPictureSize();
+}
+// The window's height changed: how tall pictures are made follows it.
+let limitsTimer = null;
+function refreshLimitsSoon() {
+  clearTimeout(limitsTimer);
+  limitsTimer = setTimeout(async () => { try { LIMITS = await apiJson('/api/limits'); applyLimits(); } catch (e) { /* the next change asks again */ } }, 1200);
 }
 
 async function loadConfig() {
   let cfg;
+  await limitsReady;   // the sliders' ranges first: a value outside a slider's range would be cut
   try {
     cfg = await apiJson('/api/config');
   } catch (e) {
@@ -1446,6 +1750,7 @@ async function loadConfig() {
   el('cfg-cal-y').value = cfg.calibY;
   el('cfg-cal-w').value = cfg.calibW;
   el('cfg-cal-h').value = cfg.calibH;
+  setPictureSize();
   el('cfg-cal-tear-s').value = Math.round(cfg.calibTearUs / 100);
   el('cfg-cal-tear-lbl').textContent = (cfg.calibTearUs / 1000).toFixed(1);
 
@@ -1457,9 +1762,10 @@ async function loadConfig() {
   el('t-heb-year').checked = cfg.showHebrewYear;
   // Shown by renderContentOrder below, in their rows.
   contentExtraValues.prayerSwitchDays = Math.max(0, Math.min(2, cfg.prayerSwitchDays));
-  contentExtraValues.omerMode = [1, 2, 3].includes(cfg.omerMode) ? cfg.omerMode : 1;
+  contentExtraValues.omerMode = [1, 2, 3, 4].includes(cfg.omerMode) ? cfg.omerMode : 1;
   contentExtraValues.nusach = cfg.nusach === 1 ? 1 : 0;
   contentExtraValues.eventDayChange = cfg.eventDayChange === 1 ? 1 : 0;
+  SHOW_KEYS.forEach(k => ['From', 'Until', 'Tomorrow'].forEach(p => { contentExtraValues[k + p] = cfg[k + p]; }));
   renderContentOrder(cfg.contentOrder, cfg.contentFrequency);
 
   syncBrightnessBlocks();
@@ -1547,7 +1853,7 @@ onLive('t-heb-year', 'change', () => ({ showHebrewYear: b('t-heb-year') }));
 onLive('cfg-24h', 'change', () => ({ use24Hour: b('cfg-24h') }));
 onLive('cfg-ntp0', 'change', () => ({ ntpServers: [v('cfg-ntp0')] }));
 [['cfg-cal-x', 'calibX'], ['cfg-cal-y', 'calibY'], ['cfg-cal-w', 'calibW'], ['cfg-cal-h', 'calibH']].forEach(([id, key]) => {
-  el(id).addEventListener('input', () => { const val = n(id); if (Number.isFinite(val)) liveSave({ [key]: val }); });
+  el(id).addEventListener('input', () => { const val = n(id); if (Number.isFinite(val)) { liveSave({ [key]: val }); if (key === 'calibH') refreshLimitsSoon(); } });
 });
 // Tear lines: 0.1 ms per step (the panel redraws every ~15.5 ms).
 el('cfg-cal-tear-s').addEventListener('input', () => {
@@ -1627,15 +1933,47 @@ async function debugSetGregorian() {
   await debugTime({ local: val.slice(0, 16) });
 }
 async function debugSetHebrew() {
-  const day = parseHebrewDay(v('dbg-hd')), yShort = parseHebrewYear(v('dbg-hy')), month = v('dbg-hm');
-  if (!day) { toast('Hebrew day: a number or letters, e.g. 15 or ט״ו.'); return; }
-  if (!yShort) { toast('Hebrew year, e.g. 5787 or תשפ״ז.'); return; }
+  const day = parseHebrewDay(v('dbg-hd')), month = v('dbg-hm');
+  let yShort = parseHebrewYear(v('dbg-hy'));
+  if (!day) { toast(hebDayProblem(v('dbg-hd')) || 'Hebrew day: a number or letters, e.g. 15 or ט״ו.'); return; }
+  if (!yShort && gregorianLikeYear(v('dbg-hy')) && await offerHebrewYear(el('dbg-hy'), month, () => {})) yShort = parseHebrewYear(v('dbg-hy'));
+  if (!yShort) { toast(hebYearProblem(v('dbg-hy')) || 'Hebrew year, e.g. 5787 or תשפ״ז.'); return; }
+  if (yShort < 100) yShort += 700;   // "פ״ז" = תשפ״ז (it went to the year 5087 = 1970 - 2026-11-07)
   const isAdarII = month === 'אדר ב׳';
-  let g;
-  try { g = await convertDate({ from: 'h', y: 5000 + yShort, month: isAdarII ? 'אדר' : month, isAdarII, d: day }); }
-  catch (e) { toast('Could not convert the date: ' + e.message); return; }
+  let g, back;
+  try {
+    g = await convertDate({ from: 'h', y: 5000 + yShort, month: isAdarII ? 'אדר' : month, isAdarII, d: day });
+    back = await convertDate({ from: 'g', y: g.y, m: g.m, d: g.d });
+  } catch (e) { toast('Could not convert the date: ' + e.message); return; }
+  // A day the month doesn't have (30 in a 29-day month, Adar II in a plain
+  // year) comes back as another date: say so instead of going there.
+  if (back.d !== day || back.month !== (isAdarII ? 'אדר' : month) || !!back.isAdarII !== isAdarII) {
+    toast('There is no ' + hebNum(day) + ' ' + month + ' in ' + hebNum(yShort) + '.'); return;
+  }
   const pad = x => String(x).padStart(2, '0');
   await debugTime({ local: g.y + '-' + pad(g.m) + '-' + pad(g.d) + 'T' + (v('dbg-ht') || '12:00') });
+}
+// Today's Hebrew date (its daytime), converted by the clock; kept for the day.
+let todayHebCache = null;
+async function todayHeb() {
+  const t = new Date(), key = t.toDateString();
+  if (!todayHebCache || todayHebCache.key !== key)
+    todayHebCache = { key, h: await convertDate({ from: 'g', y: t.getFullYear(), m: t.getMonth() + 1, d: t.getDate() }) };
+  return todayHebCache.h;
+}
+// Every date field starts at today - real values, not grey samples that look
+// filled in: left "empty" that way, Apply only showed an error and seemed to
+// do nothing (2026-11-07, at the parents'). A field the user changed stays.
+async function fillDebugToday() {
+  const t = new Date(), pad = x => String(x).padStart(2, '0');
+  if (!v('dbg-g')) el('dbg-g').value = t.getFullYear() + '-' + pad(t.getMonth() + 1) + '-' + pad(t.getDate()) + 'T' + pad(t.getHours()) + ':' + pad(t.getMinutes());
+  if (v('dbg-hd') || v('dbg-hy')) return;
+  try {
+    const h = await todayHeb();
+    el('dbg-hd').value = hebNum(h.d);
+    el('dbg-hm').value = h.isAdarII ? 'אדר ב׳' : h.month;
+    el('dbg-hy').value = hebNum(h.y - 5000);
+  } catch (e) {}
 }
 
 /* ── Known Wi-Fi networks (up to three; the clock joins the strongest) ──
@@ -1833,6 +2171,8 @@ async function loadEvents() {
   // findable only by already knowing to search for it by name.
   const broken = events.filter(isBrokenEvent);
   if (broken.length) toast(`${broken.length} event(s) have an incomplete Hebrew date - search by name to find and fix them.`);
+  // An event opened from Settings > Pictures and icons: its names there follow.
+  if (el('view-settings').offsetParent !== null) loadEventPictures();
 }
 
 /* ── Event modal ── */
@@ -1848,9 +2188,19 @@ function openAddDialog(d) {
   el('ev-warn').value = 0;
   resetPhoto('');
   el('modal-title').textContent = "New Event"; el('btn-del').classList.add('hidden');
-  if (d) {
-    if (state.mode==='g') { el('ev-has-g').checked=true; el('ev-g-d').value=d; }
-    else { el('ev-has-j').checked=true; setHebDay(d); }
+  // The date starts filled in (2026-11-07): a day clicked in the calendar, in
+  // this year; the + button: today. The other calendar follows by itself.
+  const t = new Date();
+  if (d && state.mode === 'h') {
+    el('ev-has-j').checked = true; setHebDay(d);
+    todayHeb().then(h => {
+      const y = h.y - 5000; el('ev-j-y').value = hebNum(y); el('ev-j-y').dataset.num = y; handleAutoConvert('h');
+    }).catch(() => {});
+  } else {
+    if (d) el('ev-has-g').checked = true;
+    else el('ev-g-m').value = t.getMonth() + 1;
+    el('ev-g-d').value = d || t.getDate(); el('ev-g-y').value = t.getFullYear();
+    handleAutoConvert('g');
   }
   el('row-adar2').classList.toggle('hidden', el('ev-j-m').value !== 'אדר');
   updateDayMax('g'); updateDayMax('h'); el('ev-j-y').dataset.num = '';
@@ -1918,23 +2268,59 @@ function parseHebrewYear(text) {
   }
   let rest = trimmed;
   const thousands = trimmed.match(/^([א-ט])\s*['׳]\s*(?=[א-ת])/);
-  if (thousands) rest = trimmed.slice(thousands[0].length);
-  let sum = 0, sawLetter = false;
-  for (const ch of rest) {
-    const v = GEMATRIA_VALUES[ch];
-    if (v) { sum += v; sawLetter = true; }
+  if (thousands) {
+    if (thousands[1] !== 'ה') return null;   // ה׳ = 5000: the years the clock knows
+    rest = trimmed.slice(thousands[0].length);
   }
-  if (!sawLetter) return null;
+  const sum = hebLettersValue(rest);
   return (sum >= 1 && sum < 1000) ? sum : null;
 }
 function handleHebrewYearInput(input) {
+  input.classList.remove('field-missing');
   const n = parseHebrewYear(input.value);
   input.dataset.num = n || '';
   handleFieldInput('h');
 }
 function normalizeHebrewYearDisplay(input) {
-  const n = parseInt(input.dataset.num || '', 10);
-  if (n > 0) input.value = hebNum(n);
+  const num = parseInt(input.dataset.num || '', 10);
+  if (num > 0) input.value = hebNum(num);
+  if (gregorianLikeYear(input.value)) { offerHebrewYear(input, v('ev-j-m'), handleHebrewYearInput, { d: n('ev-g-d'), m: n('ev-g-m') }); return; }
+  flagHebField(input, hebYearProblem(input.value));
+}
+// A Gregorian year typed into a Hebrew year box (2027): offer the Hebrew one
+// (2026-11-07) - Yes puts it in, Cancel leaves the box red to fix by hand.
+// One Gregorian year spans two Hebrew ones: with a Gregorian day and month
+// the clock converts that date; else the Hebrew month decides (Tishrei to
+// Kislev are that year's autumn - the next Hebrew year).
+// A Gregorian year the clock takes anywhere (events' years, debug time)
+const gregorianLikeYear = t => { const s = (t || '').trim();
+  return /^\d{4}$/.test(s) && !!LIMITS && +s >= LIMITS.ranges.gYear[0] && +s <= Math.max(LIMITS.ranges.gYear[1], LIMITS.ranges.debugYear[1]); };
+const offersOpen = new Map();   // one question per box at a time (leaving it and Save both ask)
+function offerHebrewYear(input, month, onYes, gDate) {
+  if (offersOpen.has(input)) return offersOpen.get(input);
+  const p = (async () => {
+    const g = parseInt(input.value.trim(), 10);
+    let y = g + (['תשרי', 'חשוון', 'כסלו'].includes(month) ? 3761 : 3760);
+    if (gDate && gDate.d > 0 && gDate.m > 0) {
+      try { y = (await convertDate({ from: 'g', y: g, m: gDate.m, d: gDate.d })).y; } catch (e) { /* the month rule stays */ }
+    }
+    const words = hebNum(y - 5000);
+    const yes = await askBox('Did you mean ' + words + '?',
+      [document.createTextNode(g + ' is a Gregorian year. The Hebrew year then is ' + words + ' (' + y + ').')],
+      [{ label: 'Yes - ' + words, value: true, cls: 'mbtn-primary' }]);
+    if (yes) {
+      input.value = words;
+      input.classList.remove('field-missing');
+      onYes(input);
+    } else {
+      input.classList.add('field-missing');
+      input.focus();
+    }
+    return !!yes;
+  })();
+  offersOpen.set(input, p);
+  p.finally(() => offersOpen.delete(input));
+  return p;
 }
 
 function handleFieldInput(type) {
@@ -1978,9 +2364,24 @@ async function persistEvent() {
     return;
   }
 
+  // A Hebrew day / year that isn't one is refused, not dropped (2026-11-07);
+  // a Gregorian year in the Hebrew box gets the question first
+  if (el('ev-has-j').checked && gregorianLikeYear(v('ev-j-y')) &&
+      await offerHebrewYear(el('ev-j-y'), v('ev-j-m'), handleHebrewYearInput, { d: n('ev-g-d'), m: n('ev-g-m') })) {
+    const ys = parseHebrewYear(v('ev-j-y')) || 0;
+    ev.jYNum = ys ? 5000 + ys : 0; ev.jY = ys ? hebNum(ys) : '';
+  }
+  for (const [id, problem] of [['ev-j-d', hebDayProblem], ['ev-j-y', hebYearProblem]]) {
+    const p = el('ev-has-j').checked ? problem(v(id)) : '';
+    if (p) { el(id).classList.add('field-missing'); el(id).focus(); toast('Not saved: ' + p); return; }
+  }
+  const [w0, w1] = LIMITS.ranges.warn;
+  if (ev.warn < w0 || ev.warn > w1) { el('ev-warn').focus(); toast('Not saved: remind at most ' + w1 + ' days before.'); return; }
+  // The ticks say which calendar(s) the event follows (the dates start filled
+  // in with today since 2026-11-07, so "no date" means nothing ticked).
+  if (!ev.hasG && !ev.hasJ) { toast("Tick Gregorian, Hebrew or both - the calendar the event follows."); return; }
   const gValid = ev.gD > 0 && ev.gM > 0;
   const jValid = ev.jD > 0 && ev.jMonth !== '';
-  if (!gValid && !jValid) { toast("Provide at least one Day + Month"); return; }
   // Each enabled calendar must be complete on its own - otherwise a Gregorian
   // date alone could satisfy the check above while a half-filled Hebrew date
   // (day/year typed but no month picked) silently saves as "enabled" with an
@@ -1988,31 +2389,41 @@ async function persistEvent() {
   if (ev.hasG && !gValid) { toast("Gregorian date is enabled but incomplete - provide both day and month, or turn it off."); return; }
   if (ev.hasJ && !jValid) { toast("Hebrew date is enabled but incomplete - provide both day and month, or turn it off."); return; }
 
-  if (ev.gY > 0 && ev.jYNum > 0) {
+  // Both dates given: a year on either side fixes the other side's day and
+  // month (and year), so check it - with one year the other side isn't filled
+  // in by itself, so a typing slip could stay (the user, 2026-11-07). Without
+  // any year the two dates move apart from year to year: nothing to check.
+  if (ev.hasG && ev.hasJ && (ev.gY > 0 || ev.jYNum > 0)) {
     // Both conversions are fetched up front so a failure is reported once,
     // here, with the dialog left open and nothing lost.
-    let check, checkAS;
+    const dayBefore = (y, m, d) => { const t = new Date(Date.UTC(y, m - 1, d - 1)); return { y: t.getUTCFullYear(), m: t.getUTCMonth() + 1, d: t.getUTCDate() }; };
+    const hebText = (d, month, adar2, y) => `${hebNum(d)} ${month}${adar2 ? ' ב׳' : ''}${y ? ' ' + hebNum(y % 1000) : ''}`;
+    let ok, okAS, expected;
     try {
-      check = await convertDate({from:'g',y:ev.gY,m:ev.gM,d:ev.gD,afterSunset:ev.afterSunset});
-      if (!ev.afterSunset && (check.month !== ev.jMonth || check.d !== ev.jD))
-        checkAS = await convertDate({from:'g',y:ev.gY,m:ev.gM,d:ev.gD,afterSunset:true});
+      if (ev.gY > 0) {   // the Gregorian date (with its year) gives the Hebrew one
+        const same = h => h.month === ev.jMonth && h.d === ev.jD && (h.month !== 'אדר' || !!h.isAdarII === ev.isAdarII) && (!ev.jYNum || h.y === ev.jYNum);
+        const h = await convertDate({ from: 'g', y: ev.gY, m: ev.gM, d: ev.gD, afterSunset: ev.afterSunset });
+        ok = same(h);
+        if (!ok && !ev.afterSunset) okAS = same(await convertDate({ from: 'g', y: ev.gY, m: ev.gM, d: ev.gD, afterSunset: true }));
+        expected = 'Gregorian converts to Hebrew ' + hebText(h.d, h.month, h.isAdarII, ev.jYNum ? h.y : 0) + ', but you entered ' + hebText(ev.jD, ev.jMonth, ev.isAdarII, ev.jYNum);
+      } else {           // only the Hebrew year: the Hebrew date gives the Gregorian one
+        const g = await convertDate({ from: 'h', y: ev.jYNum, month: ev.jMonth, isAdarII: ev.isAdarII, d: ev.jD });
+        const eve = dayBefore(g.y, g.m, g.d);   // after sunset = the evening before that day
+        const want = ev.afterSunset ? eve : g;
+        ok = want.m === ev.gM && want.d === ev.gD;
+        if (!ok && !ev.afterSunset) okAS = eve.m === ev.gM && eve.d === ev.gD;
+        expected = 'Hebrew converts to Gregorian ' + want.d + '/' + want.m + ', but you entered ' + ev.gD + '/' + ev.gM;
+      }
     } catch (e) {
       toast('Not saved - could not check the dates: ' + e.message);
       return;
     }
-    if (check.month !== ev.jMonth || check.d !== ev.jD) {
-      let expected = `${check.d} ${check.month}${check.isAdarII ? ' (Adar II)' : ''}`;
-      let entered = `${ev.jD} ${ev.jMonth}${ev.isAdarII ? ' (Adar II)' : ''}`;
-      const mismatchMsg = `Date mismatch: Gregorian converts to Hebrew ${expected}, but you entered ${entered}`;
-      if (!ev.afterSunset) {
-        if (checkAS.month === ev.jMonth && checkAS.d === ev.jD) {
-          if (confirm("Dates match if 'After Sunset' is enabled. Turn it on?")) { ev.afterSunset = true; el('ev-as').checked = true; }
-          else { toast(mismatchMsg); return; }
-        } else { toast(mismatchMsg); return; }
-      } else { toast(mismatchMsg); return; }
+    if (!ok) {
+      const mismatchMsg = 'Date mismatch: ' + expected;
+      if (okAS && confirm("Dates match if 'After Sunset' is enabled. Turn it on?")) { ev.afterSunset = true; el('ev-as').checked = true; }
+      else { toast(mismatchMsg); return; }
     }
   }
-  if ((gValid && !ev.hasG) || (jValid && !ev.hasJ)) { if (!confirm("Save event with reminders disabled?")) return; }
   if (state.editingId) ev.id = state.editingId;
   // The picture first (a new one goes into the clock's picture library), so
   // the event can be saved with its id.
@@ -2054,8 +2465,7 @@ async function toastWithPicture(msg, id) {
   c.style.cssText = 'width:36px;height:48px;vertical-align:middle;margin-right:10px;background:var(--media-bg);border-radius:3px';
   t.textContent = '';
   t.append(c, document.createTextNode(msg));
-  t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 6000);
+  showToast();
   try {
     const bmp = decodeBmp(await (await fetch('/api/images/get?id=' + encodeURIComponent(id))).arrayBuffer());
     c.getContext('2d').drawImage(bmp.frames[0], 0, 0);
@@ -2120,6 +2530,61 @@ async function deleteCurrentEvent() {
   if (!r.ok) { toast("Not deleted: " + ((await r.text().catch(() => '')).trim() || `the clock answered with error ${r.status}.`)); return; }
   el('modal-event').classList.remove('open');
   await loadEvents();
+  const id = state.editingId;
+  toastAction('Deleted "' + '⁨' + ev.name + '⁩' + '".', 'Undo', () => restoreEvent(id));
+  loadBin();
+}
+
+/* ── Recycle bin (2026-11-07): deleted events wait on the clock until it's
+   emptied - Undo right after a delete, or Restore from Settings. ── */
+function toastAction(msg, label, fn) {
+  const t = el('toast'), b = document.createElement('button');
+  b.className = 'mbtn mbtn-sm'; b.style.marginInlineStart = '12px'; b.textContent = label;
+  b.addEventListener('click', e => { e.stopPropagation(); hideToast(); fn(); });
+  t.textContent = msg; t.append(b);
+  showToast();
+}
+async function restoreEvent(id) {
+  let msg;
+  try {
+    const r = await fetch('/api/events/restore', { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: 'id=' + encodeURIComponent(id) });
+    msg = r.ok ? (await r.text()).trim() + '.' : 'Not restored: ' + ((await r.text()).trim() || 'error ' + r.status);
+  } catch (e) { msg = 'Could not reach the device - check your connection.'; }
+  toast(msg);
+  await loadEvents();
+  loadBin();
+}
+function binEventDate(e) {
+  const g = e.hasG ? e.gD + '.' + e.gM + (e.gY ? '.' + e.gY : '') : '';
+  const h = e.hasJ ? hebNum(e.jD) + ' ' + (e.jM === 13 ? 'אדר ב׳' : H_MONTHS[e.jM - 1]) + (e.jYNum ? ' ' + e.jY : '') : '';
+  return [g, h ? '<bdi>' + h + '</bdi>' : ''].filter(Boolean).join(' · ');
+}
+async function loadBin() {
+  let bin;
+  try { bin = await apiJson('/api/events/deleted'); } catch (e) { el('bin-list').textContent = 'Could not load: ' + e.message; return; }
+  el('bin-empty').disabled = el('bin-restore-all').disabled = !bin.length;
+  el('bin-restore-sel').disabled = true;
+  if (!bin.length) { el('bin-list').innerHTML = '<div class="help-text">Empty.</div>'; return; }
+  el('bin-list').innerHTML = bin.slice().reverse().map(e =>
+    '<div class="frow"><label class="k"><input type="checkbox" data-bin-sel="' + htmlEsc(e.id) + '"> <bdi>' + htmlEsc(e.name) + '</bdi> <span style="color:var(--ink-faint)">' + binEventDate(e) + '</span></label>' +
+    '<button class="mbtn mbtn-ghost mbtn-sm" data-restore="' + htmlEsc(e.id) + '">Restore</button></div>').join('');
+  el('bin-list').querySelectorAll('[data-restore]').forEach(b => b.addEventListener('click', () => restoreEvent(b.dataset.restore)));
+  el('bin-list').querySelectorAll('[data-bin-sel]').forEach(c => c.addEventListener('change', () => {
+    el('bin-restore-sel').disabled = !el('bin-list').querySelector('[data-bin-sel]:checked');
+  }));
+}
+function restoreSelected() {
+  const ids = [...el('bin-list').querySelectorAll('[data-bin-sel]:checked')].map(c => c.dataset.binSel);
+  if (ids.length) restoreEvent(ids.join(','));
+}
+function restoreAll() {
+  const ids = [...el('bin-list').querySelectorAll('[data-bin-sel]')].map(c => c.dataset.binSel);
+  if (ids.length) restoreEvent(ids.join(','));
+}
+async function emptyBin() {
+  if (!await askBox('Delete the events in the recycle bin for good?', null, [{ label: 'Empty recycle bin', value: true, cls: 'mbtn-danger' }])) return;
+  toast(await apiPost('/api/events/empty-bin', {}));
+  loadBin();
 }
 function closeModal() { el('modal-event').classList.remove('open'); clearInterval(photoTimer); clearPhotoVideo(); }
 
@@ -2131,7 +2596,6 @@ function closeModal() { el('modal-event').classList.remove('open'); clearInterva
    without internet - which also rules out any converter library (~30 MB,
    more than the clock has room for). */
 const VIDEO_EXT = /\.(mp4|m4v|mov|webm|mkv|3gp|avi|ogv)$/i;
-const CLOCK_MAX_FRAMES = 64;   // the most frames the clock reads from one picture (Display.cpp)
 const fmtTime = t => Math.floor(t / 60) + ':' + (t % 60).toFixed(1).padStart(4, '0');
 function parseTime(s) {   // "12.5", "0:12.5", "1:02" -> seconds; NaN if not a time
   const m = String(s).trim().match(/^(?:(\d+):)?(\d+(?:\.\d*)?)$/);
@@ -2319,14 +2783,25 @@ function createTrimmer(box, mode, opts) {
   };
 }
 /* ── Event pictures: made here, kept in the clock's picture library ──
-   The clock shows exactly the 72x96 pixels of the preview (no scaling
-   there), instead of the event's icon. One still picture - a photo, an
+   Made as tall as the clock shows a picture - its display window's height
+   (calibH, at most the screen's 128 rows; Display.cpp pictureMaxH()), 3:4
+   wide - so the clock shows exactly the pixels of the preview, instead of the
+   event's icon. Until 2026-11-07 a fixed 72x96 (from a prototype's window);
+   pictures made then stay as they are. One still picture - a photo, an
    icon or a drawing, cropped and zoomed here (animations were dropped
    2026-10-21: too big for the clock's space). On Save it goes to the
    library (POST /api/images/upload - one copy of each picture, however many
    events use it; ImageLibrary.h) and the event keeps its id; a picture the
    clock already has is not sent again. "From the clock..." reuses one. */
-const PHOTO_W = 72, PHOTO_H = 96;
+let PHOTO_W = 72, PHOTO_H = 96;   // set from the clock by setPictureSize()
+let PICTURE_H = 96;               // the height of what the clock shows: event pictures and icons
+// The clock says how tall it shows a picture (/api/limits pictureMaxH: its
+// window, at most the screen) - after the window changes it is asked again.
+function setPictureSize() {
+  if (!LIMITS) return;
+  PICTURE_H = PHOTO_H = LIMITS.pictureMaxH;
+  PHOTO_W = Math.round(PHOTO_H * 3 / 4);
+}
 const blankPhoto = () => ({ imageId: '', libFrames: null, img: null, zoom: 1, ox: 0, oy: 0, changed: false });
 let photo = blankPhoto(), photoTimer = null, photoFrame = 0;
 
@@ -2354,7 +2829,7 @@ function resetPhoto(imageId) {
   showPhotoControls(); startPhotoAnimation();
   if (imageId) useLibraryImage(imageId);
 }
-// A picture from the clock's library, as it is (already 72x96). `chosen` =
+// A picture from the clock's library, as it is (already the picture size). `chosen` =
 // picked in "From the clock..." (replaces whatever was there).
 async function useLibraryImage(id, chosen) {
   let bmp;
@@ -2406,7 +2881,7 @@ function clampPhoto(src) {
 // The clock screen's black around a picture - picture pixel data (it goes
 // into the BMP), not a page colour, so not a CSS variable.
 const PICTURE_BG = '#000000';
-// The picture as the clock will show it, onto a 72x96 context. False = none.
+// The picture as the clock will show it, onto a PHOTO_W x PHOTO_H context. False = none.
 function drawFrame(g, i) {
   g.fillStyle = PICTURE_BG; g.fillRect(0, 0, PHOTO_W, PHOTO_H);
   if (photo.libFrames) { g.drawImage(photo.libFrames[i % photo.libFrames.length], 0, 0); return true; }
@@ -2418,11 +2893,27 @@ function drawFrame(g, i) {
   g.drawImage(src, (PHOTO_W - w) / 2 + photo.ox, (PHOTO_H - h) / 2 + photo.oy, w, h);
   return true;
 }
-function drawPhoto() { drawFrame(el('ev-photo-canvas').getContext('2d'), photoFrame); }   // no picture: the canvas is hidden (the empty tile shows)
+function drawPhoto() {
+  const c = el('ev-photo-canvas');
+  if (c.width !== PHOTO_W || c.height !== PHOTO_H) { c.width = PHOTO_W; c.height = PHOTO_H; }
+  drawFrame(c.getContext('2d'), photoFrame);
+  el('ev-move-hint').classList.toggle('on', !!photo.img);
+  if (el('ev-photo-canvas').parentNode.classList.contains('dragging')) drawPhotoGhost();
+}
+// The whole picture, dimmed, around the frame - shown while dragging it.
+function drawPhotoGhost() {
+  const gc = el('ev-photo-ghost'), g = gc.getContext('2d'), src = photo.img;
+  g.clearRect(0, 0, gc.width, gc.height);
+  if (!src) return;
+  const k = 90 / PHOTO_W, s = photoScale(src), w = src.width * s, h = src.height * s;   // tile px per picture px
+  g.globalAlpha = 0.15;   // just a hint of what is outside the frame
+  g.drawImage(src, 90 + ((PHOTO_W - w) / 2 + photo.ox) * k, 120 + ((PHOTO_H - h) / 2 + photo.oy) * k, w * k, h * k);
+  g.globalAlpha = 1;
+}   // no picture: the canvas is hidden (the empty tile shows)
 (function () {   // drag to move the picture in the frame
   const c = el('ev-photo-canvas');
   let last = null;
-  c.addEventListener('pointerdown', e => { if (photo.img) { last = [e.clientX, e.clientY]; c.setPointerCapture(e.pointerId); } });
+  c.addEventListener('pointerdown', e => { if (photo.img) { last = [e.clientX, e.clientY]; c.setPointerCapture(e.pointerId); c.parentNode.classList.add('dragging'); drawPhotoGhost(); } });
   c.addEventListener('pointermove', e => {
     if (!last) return;
     const k = PHOTO_W / c.clientWidth;   // screen pixels -> picture pixels
@@ -2430,7 +2921,8 @@ function drawPhoto() { drawFrame(el('ev-photo-canvas').getContext('2d'), photoFr
     last = [e.clientX, e.clientY];
     drawPhoto();
   });
-  c.addEventListener('pointerup', () => { last = null; });
+  c.addEventListener('pointerup', () => { last = null; c.parentNode.classList.remove('dragging'); });
+  c.addEventListener('pointercancel', () => { last = null; c.parentNode.classList.remove('dragging'); });
 })();
 // Frames (pixel arrays) as one 16-bit (RGB565) BMP, side by side - the
 // format the clock's screen code reads (as its own icons,
@@ -2517,6 +3009,9 @@ async function savePicture() {
   return uploadImageOnce(photoBmp());
 }
 // "From the clock...": the pictures already on it, to reuse one.
+// A library picture onto its tile, the tile its size (pictures made before
+// 2026-11-07 are 72x96, newer ones the window's height).
+function drawWhole(c, frame) { c.width = frame.width; c.height = frame.height; c.getContext('2d').drawImage(frame, 0, 0); }
 async function openImageGallery() {
   const box = el('ev-gallery');
   if (!box.classList.contains('hidden')) { box.classList.add('hidden'); return; }
@@ -2533,7 +3028,7 @@ async function openImageGallery() {
     b.onclick = () => useLibraryImage(im.id, true);
     box.append(b);
     fetch('/api/images/get?id=' + im.id).then(r => r.arrayBuffer())
-      .then(buf => c.getContext('2d').drawImage(decodeBmp(buf).frames[0], 0, 0)).catch(() => {});
+      .then(buf => drawWhole(c, decodeBmp(buf).frames[0])).catch(() => {});
   }
 }
 
@@ -2547,14 +3042,17 @@ async function openImageGallery() {
 const BUILTIN_LABELS = {
   Candles: 'Candle lighting', Havdala: 'Havdalah', Torah: 'Parasha', Mishnah: 'Mishna Yomit',
   Cake: '🎂 Birthday', Rings: '💍 Wedding', MemorialCandle: '🕯️ Yahrzeit', Calendar: '🗓️ Other event',
-  StarOfDavid: '✡️ Star of David', Synagogue: '🕍 Synagogue', Party: '🎉 Party', Baby: '👶 Baby', GradCap: '🎓 Graduation', House: '🏠 House'
+  StarOfDavid: '✡️ Star of David', Synagogue: '🕍 Synagogue', Party: '🎉 Party', Baby: '👶 Baby', GradCap: '🎓 Graduation', House: '🏠 House', HebrewDate: 'Hebrew-date mark'
 };
 let builtinTimer = null, builtinFrames = [];   // [{ canvas, frames, frameMs }] being animated in the grid
 async function loadBuiltinGrid() {
   const grid = el('builtin-grid');
   let list;
   try { list = await apiJson('/api/builtin/list'); } catch (e) { grid.textContent = 'Could not load the pictures from the clock.'; return; }
-  el('bi-room').textContent = Math.round(list.usedBytes / 1024) + ' KB used of ' + Math.round(list.maxBytes / 1024) + ' KB';
+  const mine = list.pictures.filter(p => p.custom).length;
+  el('bi-room').textContent = mine + ' of ' + list.pictures.length + ' replaced';
+  storage.icons = list.usedBytes; storage.iconsMax = list.maxBytes;
+  renderStorage();
   builtinRoomLeft = list.maxBytes - list.usedBytes;
   grid.textContent = '';
   builtinFrames = [];
@@ -2563,13 +3061,13 @@ async function loadBuiltinGrid() {
   for (const p of list.pictures) {
     const item = document.createElement('div');
     item.className = 'builtin-item';
-    item.title = (BUILTIN_LABELS[p.name] || p.name) + ' - ' + p.w + 'x' + p.h + (p.custom ? ', replaced' : ', the clock\'s own');
+    item.title = (BUILTIN_LABELS[p.name] || p.name) + ' - ' + p.w + 'x' + p.h + (p.custom ? ', yours' : ', the original');
     const c = document.createElement('canvas'); c.width = p.w; c.height = p.h;
     const label = document.createElement('div');
     label.className = 'bi-name'; label.textContent = BUILTIN_LABELS[p.name] || p.name;
     item.append(c, label);
-    item.insertAdjacentHTML('beforeend', '<div class="bi-state">' + (p.custom ? 'replaced · ' + Math.ceil(p.customBytes / 1024) + ' KB' : 'the clock\'s own') + '</div>' +
-      '<span><button class="mbtn mbtn-ghost mbtn-sm">Replace...</button>' + (p.custom ? '<button class="mbtn mbtn-ghost mbtn-sm">Default</button>' : '') + '</span>');
+    item.insertAdjacentHTML('beforeend', '<div class="bi-state">' + (p.custom ? 'yours · ' + Math.ceil(p.customBytes / 1024) + ' KB' : 'original') + '</div>' +
+      '<span><button class="mbtn mbtn-ghost mbtn-sm">Replace...</button>' + (p.custom ? '<button class="mbtn mbtn-ghost mbtn-sm">Original</button>' : '') + '</span>');
     const [replace, reset] = item.querySelectorAll('button');
     replace.onclick = () => openBuiltinEditor(p);
     if (reset) reset.onclick = () => resetBuiltin(p.name, c);
@@ -2588,58 +3086,124 @@ async function loadBuiltinGrid() {
   }, 45);
   if (el('settings-search').value) filterSettings();
 }
-el('grp-builtin').querySelector('[data-fold-head]').addEventListener('click', () => {
-  if (el('grp-builtin').classList.contains('open')) loadBuiltinGrid();
-  else { clearInterval(builtinTimer); builtinTimer = null; }
-});
+// The space bar at the top of Settings > Pictures and icons (2026-11-07, as
+// phones show storage): event pictures, your icons and what is free, of the
+// room the clock keeps for pictures (the rest of its flash holds the page,
+// settings and log, and room for an update - ImageLibrary::roomLeft()). Each
+// list fills in its part; drawn once all are known.
+const storage = { ev: null, left: null, perPicture: 0, icons: null, iconsMax: 0 };
+const sizeText = b => b >= 1024 * 1024 ? (b / 1048576).toFixed(1) + ' MB' : Math.ceil(b / 1024) + ' KB';
+function renderStorage() {
+  const s = storage;
+  if (s.ev == null || s.left == null || s.icons == null) return;
+  const total = s.ev + s.icons + s.left, pct = b => (100 * b / total).toFixed(2) + '%';
+  el('st-bar-ev').style.width = pct(s.ev);
+  el('st-bar-ic').style.width = pct(s.icons);
+  el('st-total').textContent = sizeText(s.ev + s.icons) + ' used of ' + sizeText(total);
+  el('st-ev').textContent = sizeText(s.ev);
+  el('st-ic').textContent = sizeText(s.icons) + ' (up to ' + sizeText(s.iconsMax) + ')';
+  el('st-free').textContent = sizeText(s.left) + ' · about ' + Math.floor(s.left / s.perPicture) + ' more pictures';
+}
+
+// Settings > Pictures, top: the event pictures (the library, ImageLibrary.h),
+// each with the events that show it (2026-11-07: they were only to be seen
+// through an event's Library button). One no event uses goes by itself -
+// deleted events keep theirs while in the recycle bin - so no Delete here.
+const eventPictureBytes = () => PHOTO_W * PHOTO_H * 2 + 66;   // one picture's file: 16-bit pixels + BMP header
+async function loadEventPictures() {
+  const grid = el('evpic-grid');
+  let list, bin = [], left = null;
+  try { list = await apiJson('/api/images/list'); } catch (e) { grid.textContent = 'Could not load the pictures from the clock.'; return; }
+  try { bin = await apiJson('/api/events/deleted'); } catch (e) { /* names of deleted events just missing */ }
+  try { left = (await apiJson('/api/images/room')).leftBytes; } catch (e) { /* room just not shown */ }
+  const kb = b => Math.ceil(b / 1024) + ' KB';
+  const total = list.reduce((s, x) => s + x.bytes, 0);
+  el('evpic-room').textContent = list.length + (list.length === 1 ? ' picture' : ' pictures');
+  // Room as a number of pictures - an estimate: the size of those there, else one picture of today's size.
+  storage.ev = total; storage.left = left; storage.perPicture = list.length ? total / list.length : eventPictureBytes();
+  renderStorage();
+  grid.textContent = list.length ? '' : 'None';
+  for (const im of list) {
+    const icon = e => htmlEsc(e.icon || getIconForEventType(e.type)) + ' ';
+    const names = events.filter(e => e.image === im.id).map(e => icon(e) + '<a href="#" data-open-event="' + htmlEsc(e.id) + '" title="Open this event"><bdi>' + htmlEsc(e.name) + '</bdi></a>')
+      .concat(bin.filter(e => e.image === im.id).map(e => icon(e) + '<bdi>' + htmlEsc(e.name) + '</bdi> (deleted)'));
+    const item = document.createElement('div');
+    item.className = 'builtin-item';
+    const c = document.createElement('canvas'); c.width = PHOTO_W; c.height = PHOTO_H;
+    item.append(c);
+    item.insertAdjacentHTML('beforeend', '<div class="bi-name ev-links">' + (names.join('<br>') || 'not used') + '</div><div class="bi-state">' + kb(im.bytes) + '</div>');
+    item.querySelectorAll('[data-open-event]').forEach(a => a.addEventListener('click', ev => {
+      ev.preventDefault();
+      const i = events.findIndex(e => e.id === a.dataset.openEvent);
+      if (i >= 0) editEvent(i);
+    }));
+    grid.append(item);
+    try { drawWhole(c, decodeBmp(await (await fetch('/api/images/get?id=' + im.id)).arrayBuffer()).frames[0]); }
+    catch (e) { /* stays black */ }
+  }
+  if (el('settings-search').value) filterSettings();
+}
 async function resetBuiltin(name, shown) {
   const label = BUILTIN_LABELS[name] || name;
-  if (!await askBox('Restore the original ' + label + ' picture?', [canvasCopy(shown)],
+  if (!await askBox('Restore the original ' + label + ' icon?', [canvasCopy(shown)],
       [{ label: 'Restore', value: true, cls: 'mbtn-danger' }])) return;
   toast(await apiPost('/api/builtin/reset?name=' + name, {}));
   loadBuiltinGrid();
 }
 
-// The editor (modal-builtin): the same crop / zoom / drag as an event's
-// picture, and animations allowed. The height stays the clock picture's
-// (its row on the slide); the width is free - it starts as the shape of the
-// chosen picture or video (the slide makes room for any width).
-const BI_GIF_FPS = 10, BI_MAX_W = 480;   // the screen's width
+// The editor (modal-builtin): the same zoom / drag as an event's picture,
+// animations allowed, and the width cropped by dragging the frame's edges
+// (2026-11-07; a Width slider beside the growing preview moved under the
+// mouse). The height is what the clock shows (PICTURE_H, its window) - the
+// Hebrew-date mark keeps its own, smaller one: it stands next to the text.
+// The width is free: it starts as the icon's own shape, then the chosen
+// picture's (the slide makes room for any width).
+const BI_GIF_FPS = 10;
+const biMaxW = () => LIMITS.screenW;   // the screen's width
+const BI_OWN_HEIGHT = ['HebrewDate'];    // icons that keep their own height
 let bi = null, builtinRoomLeft = 0, biTimer = null, biFrame = 0, biReadTimer = null, biReading = '', biTrim = null;
 const biFrameBytes = () => bi.w * bi.h * 2;
 // The most frames that fit: the clock's limit, and the room left.
-const biMaxFrames = () => Math.max(1, Math.min(CLOCK_MAX_FRAMES, Math.floor((bi.room - 66) / biFrameBytes())));
+const biMaxFrames = () => Math.max(1, Math.min(LIMITS.pictureMaxFrames, Math.floor((bi.room - 66) / biFrameBytes())));
 const biMinW = () => Math.max(8, Math.round(bi.h / 4));
 // The width that shows the chosen picture's whole shape at the clock's height.
-const biSourceWidth = () => Math.max(biMinW(), Math.min(BI_MAX_W, Math.round(bi.h * (bi.aspect || bi.w / bi.h))));
+const biSourceWidth = () => Math.max(biMinW(), Math.min(biMaxW(), Math.round(bi.h * (bi.aspect || bi.w / bi.h))));
+// The scale is chosen once, when the editor opens (the widest picture fits
+// the area), so nothing jumps while the width changes.
+function biFitScale() {
+  const room = el('bi-stage').clientWidth - 32;
+  bi.k = Math.max(0.3, Math.min(2, 200 / bi.h, room / biMaxW()));
+  el('bi-stage').style.height = Math.round(bi.h * bi.k + 20) + 'px';
+}
 function biSizeCanvas() {
   const c = el('bi-canvas');
   c.width = bi.w; c.height = bi.h;
-  const k = Math.min(2, 200 / bi.h, 420 / bi.w);   // shown bigger, pixels kept sharp
-  c.style.width = Math.round(bi.w * k) + 'px'; c.style.height = Math.round(bi.h * k) + 'px';
-  el('bi-width').min = biMinW(); el('bi-width').value = bi.w;
-  el('bi-width-lbl').textContent = bi.w + ' x ' + bi.h;
+  c.style.width = Math.round(bi.w * bi.k) + 'px'; c.style.height = Math.round(bi.h * bi.k) + 'px';
+  el('bi-width-lbl').textContent = bi.w + ' × ' + bi.h;
 }
 function biSetWidth(w) {
   if (!bi) return;
-  bi.w = Math.max(biMinW(), Math.min(BI_MAX_W, Math.round(w)));
+  bi.w = Math.max(biMinW(), Math.min(biMaxW(), Math.round(w)));
   biSizeCanvas(); biShowControls(); biDraw();
   if (biTrim) biTrim.refit();   // a wider picture: fewer frames fit
 }
 function openBuiltinEditor(p) {
   if (!biTrim) biTrim = createTrimmer(el('bi-trim'), 'clip', { maxLen: fps => biMaxFrames() / fps, onChange: biPartChanged });
-  bi = { name: p.name, w: p.w, h: p.h, aspect: 0, img: null, frames: null, frameMs: 100, zoom: 1, ox: 0, oy: 0,
+  const h = BI_OWN_HEIGHT.includes(p.name) ? p.h : PICTURE_H;
+  const origW = Math.max(8, Math.round(p.w * h / p.h));   // the icon's own shape at this height
+  bi = { name: p.name, w: origW, h, origW, k: 1, aspect: 0, img: null, frames: null, frameMs: 100, zoom: 1, ox: 0, oy: 0,
          room: builtinRoomLeft + (p.customBytes || 0) };
   biTrim.clear(); biReading = ''; showEditorMsg('bi-msg', '');
   el('bi-title').textContent = 'Replace: ' + (BUILTIN_LABELS[p.name] || p.name);
-  biSizeCanvas(); biShowControls(); biStartAnimation();
-  el('modal-builtin').classList.add('open');
+  el('modal-builtin').classList.add('open');   // first: the scale needs the area's width
+  biFitScale(); biSizeCanvas(); biShowControls(); biStartAnimation();
 }
 function closeBuiltinEditor() { el('modal-builtin').classList.remove('open'); clearInterval(biTimer); if (biTrim) biTrim.clear(); bi = null; }
 const biFrameCount = () => bi.frames ? bi.frames.length : 1;
 function biShowControls() {
   const has = !!(bi.img || (bi.frames && bi.frames.length)), n = biFrameCount();
-  for (const id of ['bi-zoom-row', 'bi-width-row', 'bi-shape-row']) el(id).classList.toggle('hidden', !has && !bi.aspect);
+  for (const id of ['bi-zoom-row', 'bi-shape-row']) el(id).classList.toggle('hidden', !has && !bi.aspect);
+  document.querySelectorAll('#modal-builtin .bi-handle').forEach(x => x.classList.toggle('hidden', !has && !bi.aspect));
   el('bi-zoom').value = bi.zoom;
   const bytes = 66 + biFrameBytes() * n;
   el('bi-size').textContent = biReading ||
@@ -2706,22 +3270,47 @@ async function biReadPart() {
   biShowControls(); biStartAnimation();
 }
 function biSource(i) { return bi.frames ? bi.frames[i % bi.frames.length] : bi.img; }
+// The picture's size in the frame: its height fits the frame's, times the
+// zoom - not the width too, or narrowing / widening the frame zoomed the
+// picture (2026-11-07). A frame wider than the picture: black at its sides
+// until zoomed in.
+const biScale = src => bi.h / src.height * bi.zoom;
 function biDrawFrame(g, i) {
   g.fillStyle = PICTURE_BG; g.fillRect(0, 0, bi.w, bi.h);
   const src = biSource(i);
   if (!src) return false;
-  const s = Math.max(bi.w / src.width, bi.h / src.height) * bi.zoom;
+  const s = biScale(src);
   const mx = Math.abs(src.width * s - bi.w) / 2, my = Math.abs(src.height * s - bi.h) / 2;
   bi.ox = Math.max(-mx, Math.min(mx, bi.ox)); bi.oy = Math.max(-my, Math.min(my, bi.oy));
   g.imageSmoothingQuality = 'high';
   g.drawImage(src, (bi.w - src.width * s) / 2 + bi.ox, (bi.h - src.height * s) / 2 + bi.oy, src.width * s, src.height * s);
   return true;
 }
-function biDraw() { if (bi) biDrawFrame(el('bi-canvas').getContext('2d'), biFrame); }
+function biDraw() {
+  if (!bi) return;
+  biDrawFrame(el('bi-canvas').getContext('2d'), biFrame);
+  biDrawGhost();
+  el('bi-move-hint').classList.toggle('on', !!biSource(biFrame));
+}
+// The whole picture, dimmed, around the frame (the stage): what dragging the
+// picture or the frame's edges brings in.
+function biDrawGhost() {
+  const gc = el('bi-ghost'), st = el('bi-stage'), fr = el('bi-canvas');
+  if (gc.width !== st.clientWidth || gc.height !== st.clientHeight) { gc.width = st.clientWidth; gc.height = st.clientHeight; }
+  const g = gc.getContext('2d'), src = biSource(biFrame);
+  g.clearRect(0, 0, gc.width, gc.height);
+  if (!src) return;
+  const sr = st.getBoundingClientRect(), r = fr.getBoundingClientRect();
+  const s = biScale(src), k = bi.k;
+  g.globalAlpha = 0.15;   // just a hint of what is outside the frame
+  g.drawImage(src, r.left - sr.left + ((bi.w - src.width * s) / 2 + bi.ox) * k, r.top - sr.top + ((bi.h - src.height * s) / 2 + bi.oy) * k,
+              src.width * s * k, src.height * s * k);
+  g.globalAlpha = 1;
+}
 (function () {   // drag to move the picture in the frame
   const c = el('bi-canvas');
   let last = null;
-  c.addEventListener('pointerdown', e => { if (bi && (bi.img || bi.frames)) { last = [e.clientX, e.clientY]; c.setPointerCapture(e.pointerId); } });
+  c.addEventListener('pointerdown', e => { if (bi && (bi.img || bi.frames)) { last = [e.clientX, e.clientY]; c.setPointerCapture(e.pointerId); c.parentNode.classList.add('dragging'); } });
   c.addEventListener('pointermove', e => {
     if (!last || !bi) return;
     const k = bi.w / c.clientWidth;
@@ -2729,7 +3318,18 @@ function biDraw() { if (bi) biDrawFrame(el('bi-canvas').getContext('2d'), biFram
     last = [e.clientX, e.clientY];
     biDraw();
   });
-  c.addEventListener('pointerup', () => { last = null; });
+  c.addEventListener('pointerup', () => { last = null; c.parentNode.classList.remove('dragging'); });
+  // The frame's edges: the frame stays centred, so both edges move - the one
+  // under the finger follows it exactly.
+  document.querySelectorAll('#modal-builtin .bi-handle').forEach(hd => {
+    let start = null;
+    hd.addEventListener('pointerdown', e => { if (bi) { start = { x: e.clientX, w: bi.w }; hd.setPointerCapture(e.pointerId); e.preventDefault(); } });
+    hd.addEventListener('pointermove', e => {
+      if (!start || !bi) return;
+      biSetWidth(start.w + 2 * (e.clientX - start.x) * +hd.dataset.side / bi.k);
+    });
+    hd.addEventListener('pointerup', () => { start = null; });
+  });
 })();
 async function uploadBuiltin(name, blob) {
   const form = new FormData();
@@ -2852,18 +3452,32 @@ function handleCalendarToggle(changed) {
 }
 
 let diagLogRawLines = [];
+// The whole log: the clock's previous file, then its current one (two
+// requests - the clock streams each from flash; 2026-11-07: only the current
+// one was shown, so right after a switch to a new file it looked nearly empty).
+async function fetchWholeLog() {
+  const get = part => fetch('/api/debug/diagnostic-log' + part, { cache: 'no-store' })
+    .then(r => { if (!r.ok) throw new Error(`error ${r.status}`); return r.text(); });
+  const [old, cur] = await Promise.all([get('?part=old').catch(() => ''), get('')]);
+  return old && old !== cur ? old.replace(/\n?$/, '\n') + cur : cur;
+}
 function loadDiagLog() {
   const view = el('diag-log-view');
   view.textContent = 'Loading...';
-  fetch('/api/debug/diagnostic-log')
-    .then(r => { if (!r.ok) throw new Error(`error ${r.status}`); return r.text(); })
-    .then(t => { diagLogRawLines = t.split('\n'); filterDiagLog(); })
+  fetchWholeLog()
+    .then(t => { diagLogRawLines = t.split('\n'); filterDiagLog(); view.scrollTop = view.scrollHeight; })
     .catch(e => {
       console.error('loadDiagLog failed:', e);
       view.textContent = 'Error: could not load log.';
       toast('Could not load the diagnostic log.');
     });
 }
+// Loaded by itself the first time it comes into view after Settings opens;
+// Reload fetches it again.
+let diagLogShown = false;
+new IntersectionObserver(es => {
+  if (es.some(x => x.isIntersecting) && !diagLogShown) { diagLogShown = true; loadDiagLog(); }
+}).observe(el('diag-log-view'));
 function filterDiagLog() {
   const q = el('diag-log-filter').value.trim().toLowerCase();
   const lines = q ? diagLogRawLines.filter(l => l.toLowerCase().includes(q)) : diagLogRawLines;
@@ -2890,9 +3504,9 @@ function refreshCalendarData() {
    looked up once when first joined ("detected"), and can be confirmed or
    changed here: the clock searches by name (the browser may have no
    internet - the clock's own Wi-Fi) and keeps the choice for that network. */
-let placesCfg = [], connectedSlot = -1;
+let placesCfg = [];
 function showPlaces(cfg) {
-  placesCfg = cfg.places || []; connectedSlot = cfg.connectedSlot;
+  placesCfg = cfg.places || [];
   for (let n = 1; n <= WIFI_SLOTS; n++) {
     const p = placesCfg[n - 1] || {}, ssid = cfg[wifiKey('wifiSSID', n)] || '';
     el('place-txt-' + n).style.visibility = ssid ? '' : 'hidden';   // keeps its width: the "..." line up
@@ -2923,7 +3537,10 @@ function confirmPlace(n) { savePlace(n, placesCfg[n - 1]); }
 function editPlace(n) {
   const box = el('place-edit-' + n);
   box.classList.toggle('hidden');
-  el('place-detect-' + n).classList.toggle('hidden', connectedSlot !== n - 1);
+  // The network it's on now (the status poll) - the settings' connectedSlot is
+  // from the page's load, stale after a Connect (2026-11-07).
+  const ssid = el('cfg-wifi-remove-' + n).dataset.ssid;
+  el('place-detect-' + n).classList.toggle('hidden', !ssid || ssid !== connectedSsid);
   el('place-results-' + n).textContent = '';
   if (!box.classList.contains('hidden')) el('place-q-' + n).focus();
 }
@@ -3013,7 +3630,7 @@ async function downloadProblemReport() {
   try {
     const [status, config, log] = await Promise.all([
       apiJson('/api/status'), apiJson('/api/config'),
-      fetch('/api/debug/diagnostic-log', { cache: 'no-store' }).then(r => r.ok ? r.text() : '(log unavailable: error ' + r.status + ')')]);
+      fetchWholeLog().catch(e => '(log unavailable: ' + e.message + ')')]);
     const text = 'JewishClock problem report - ' + new Date().toString() + '\n\n' +
                  '== Status ==\n' + JSON.stringify(status, null, 2) + '\n\n' +
                  '== Settings ==\n' + JSON.stringify(config, null, 2) + '\n\n' +
@@ -3110,7 +3727,7 @@ function sheetPath(files, sheetName) {
 const G_MONTH_ABBR = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const G_MONTH_NUM = { jan:1, january:1, feb:2, february:2, mar:3, march:3, apr:4, april:4, may:5, jun:6, june:6, jul:7, july:7,
   aug:8, august:8, sep:9, sept:9, september:9, oct:10, october:10, nov:11, november:11, dec:12, december:12 };
-const EVENT_TYPES = ['birthday', 'wedding', 'yahrzeit', 'other'];
+const eventTypes = () => LIMITS.eventTypes.map(x => x.type);
 // Hebrew month as typed -> [month name as the clock uses it, Adar II yes/no/unspecified].
 function normHebMonth(text) {
   const t = String(text || '').trim().replace(/['"׳״]/g, '');
@@ -3135,7 +3752,7 @@ function checkExcelRows(rows) {
     const gFilled = !!(g.m || g.d), gComplete = !!(g.m && g.d);
     const hFilled = !!(h.m || h.d), hComplete = !!(h.m && h.d);
     const type = (cells.B || '').toLowerCase();
-    if (type && !EVENT_TYPES.includes(type)) problems.push(where + 'Event Type "' + cells.B + '" is not one of birthday, wedding, yahrzeit or other.');
+    if (type && !eventTypes().includes(type)) problems.push(where + 'Event Type "' + cells.B + '" is not one of birthday, wedding, yahrzeit or other.');
     const display = (cells.L || '').trim();
     let effective = null;
     if (display === '') {
@@ -3164,7 +3781,7 @@ function checkExcelRows(rows) {
       problems.push(where + 'Display on is "' + cells.L + '" - it must be Greg, Heb, Both, or left empty.');
     }
     if (!effective) continue;
-    const ev = { name, type: type || 'birthday', hasG: effective !== 'Heb', hasJ: effective !== 'Greg',
+    const ev = { row: num, name, type: type || 'birthday', hasG: effective !== 'Heb', hasJ: effective !== 'Greg',
                  gD: 0, gM: 0, gY: 0, afterSunset: /^yes$/i.test(cells.F || ''), jD: 0, jMonth: '', isAdarII: /^yes$/i.test(cells.J || ''), jYNum: 0,
                  warn: intOf(cells.K), image: /^[0-9a-f]{8}$/.test(cells.M || '') ? cells.M : '' };
     if (g.m) {
@@ -3172,7 +3789,8 @@ function checkExcelRows(rows) {
       if (!ev.gM) problems.push(where + 'Greg. Month "' + g.m + '" is not a month name (try e.g. Mar or March).');
     }
     if (g.d) { ev.gD = intOf(g.d); if (!(ev.gD >= 1 && ev.gD <= 31)) problems.push(where + 'Greg. Day "' + g.d + '" should be a number from 1 to 31.'); }
-    if (g.y) { ev.gY = intOf(g.y); if (!(ev.gY >= 1800 && ev.gY <= 2200)) problems.push(where + 'Greg. Year "' + g.y + '" should be a year like 1985.'); }
+    const [gy0, gy1] = LIMITS.ranges.gYear, [hy0, hy1] = LIMITS.ranges.hYear, [w0, w1] = LIMITS.ranges.warn;
+    if (g.y) { ev.gY = intOf(g.y); if (!(ev.gY >= gy0 && ev.gY <= gy1)) problems.push(where + 'Greg. Year "' + g.y + '" should be a year from ' + gy0 + ' to ' + gy1 + '.'); }
     if (h.m) {
       const [m, adar2] = normHebMonth(h.m);
       if (!m) problems.push(where + 'Heb. Month "' + h.m + '" is not a Hebrew month name (pick one from the dropdown).');
@@ -3180,8 +3798,8 @@ function checkExcelRows(rows) {
       if (adar2 !== null) ev.isAdarII = adar2;
     }
     if (h.d) { ev.jD = intOf(h.d); if (!(ev.jD >= 1 && ev.jD <= 30)) problems.push(where + 'Heb. Day "' + h.d + '" should be a number from 1 to 30.'); }
-    if (h.y) { ev.jYNum = intOf(h.y); if (!(ev.jYNum >= 5000 && ev.jYNum <= 6000)) problems.push(where + 'Heb. Year "' + h.y + '" should be a number like 5785.'); }
-    if (cells.K && !(ev.warn >= 0)) problems.push(where + '"Remind me" should be a number of days (0 or more).');
+    if (h.y) { ev.jYNum = intOf(h.y); if (!(ev.jYNum >= hy0 && ev.jYNum <= hy1)) problems.push(where + 'Heb. Year "' + h.y + '" should be a year from ' + hy0 + ' to ' + hy1 + ', like 5785.'); }
+    if (cells.K && !(ev.warn >= w0 && ev.warn <= w1)) problems.push(where + '"Remind me" should be a number of days from ' + w0 + ' to ' + w1 + '.');
     out.push(ev);
   }
   return { events: out, problems };
@@ -3456,8 +4074,8 @@ async function uploadImportPictures(incoming, pics) {
     const name = p.id.slice(BUILTIN_PREFIX.length), label = BUILTIN_LABELS[name] || name;
     try {
       const problem = await uploadBuiltin(name, await pngToBmp(p));
-      if (problem) problems.push('The replaced picture "' + label + '": ' + problem);
-    } catch (e) { problems.push('The replaced picture "' + label + '" could not be read.'); }
+      if (problem) problems.push('The replaced icon "' + label + '": ' + problem);
+    } catch (e) { problems.push('The replaced icon "' + label + '" could not be read.'); }
   }
   return problems;
 }
@@ -3517,8 +4135,10 @@ async function importEventsNow(incoming, pics) {
   if (d.changed.length) html += '<div style="margin-top:6px">Changed:</div><ul>' + nameList(d.changed) + '</ul>';
   if (d.removed.length) html += '<div style="margin-top:6px;color:var(--danger)"><b>Removed (they were not in the file):</b></div><ul style="color:var(--danger)">' + nameList(d.removed) + '</ul>';
   if (res.warnings && res.warnings.length) {
-    html += '<div style="margin-top:6px">The clock flagged these (imported anyway - worth a look):</div><ul>' +
-            res.warnings.map(w => '<li>' + htmlEsc(w.name) + ': ' + htmlEsc(w.detail) + '</li>').join('') + '</ul>';
+    // Each with its Excel row, so it can be fixed in the file or in the event's dialog.
+    const rowOf = w => (incoming[w.index] && incoming[w.index].row) ? 'Row ' + incoming[w.index].row + ' ' : '';
+    html += '<div style="margin-top:6px;color:var(--danger)"><b>Imported, but check these - fix them in the file, or open the event here:</b></div><ul>' +
+            res.warnings.map(w => '<li>' + rowOf(w) + '(<bdi>' + htmlEsc(w.name) + '</bdi>): ' + htmlEsc(w.detail) + '</li>').join('') + '</ul>';
   }
   showDataBox(html + dataBtns(dataBtn('↶ Undo this import', 'undoExcelImport()'), dataBtn('Close', 'closeDataBox()', true)), 'ok');
   loadEvents();

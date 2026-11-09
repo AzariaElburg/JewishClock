@@ -1280,7 +1280,7 @@ DisplayManager::CachedBmp DisplayManager::loadBmp(const char* path, int maxHeigh
     entry.width = width;
     entry.height = height;
     entry.frameCount = frameCount;
-    entry.frameMs = (frameCount > 1 && yPelsPerMeter >= 20 && yPelsPerMeter <= 2000) ? yPelsPerMeter : 0;
+    entry.frameMs = (frameCount > 1 && inRange(PICTURE_FRAME_MS_RANGE, yPelsPerMeter)) ? yPelsPerMeter : 0;
     entry.valid = true;
     return entry;
 }
@@ -1526,13 +1526,28 @@ int DisplayManager::drawString(int startX, int y, const char* utf8text, uint16_t
 
         // 2. Resolve direction of neutral runs based on their neighbors.
         // This is a simplified version of the Unicode Bidi algorithm.
+        // A run of digits only (a number, not a Latin word).
+        auto digitsOnly = [&](const BidiRun& r) {
+            for (int k = r.start; k < r.end; k++) if (!isDigit(codepoints[k]) && codepoints[k] != ':' && codepoints[k] != '/') return false;
+            return true;
+        };
         for (size_t j = 0; j < runs.size(); ++j) {
             if (runs[j].type == BidiRunType::NEUTRAL) {
                 BidiRunType before = (j > 0) ? runs[j - 1].type : BidiRunType::NEUTRAL;
                 BidiRunType after = (j < runs.size() - 1) ? runs[j + 1].type : BidiRunType::NEUTRAL;
 
-                // If a neutral is between two strong types of the same direction, it takes on that direction.
-                if (before == after && before != BidiRunType::NEUTRAL) {
+                // Between two numbers in a Hebrew line, only one of + - , . joins
+                // them into one number ("05:18-16:55", Unicode bidi W4); anything
+                // else - "23 = 3" - goes the line's way, as a browser shows it
+                // (23 first, at the right). Before 2026-11-06 "23=3 שבועות"
+                // came out with the 3 at the right (Omer's Compact wording).
+                if (isOverallRtl && before == BidiRunType::LTR && after == BidiRunType::LTR &&
+                    digitsOnly(runs[j - 1]) && digitsOnly(runs[j + 1]) &&
+                    !(runs[j].end - runs[j].start == 1 && (codepoints[runs[j].start] == '+' || codepoints[runs[j].start] == '-' ||
+                                                           codepoints[runs[j].start] == ',' || codepoints[runs[j].start] == '.'))) {
+                    runs[j].type = BidiRunType::RTL;
+                } else if (before == after && before != BidiRunType::NEUTRAL) {
+                    // If a neutral is between two strong types of the same direction, it takes on that direction.
                     runs[j].type = before;
                 } else {
                     // Otherwise, it takes on the paragraph's base direction.

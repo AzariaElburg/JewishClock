@@ -18,9 +18,14 @@ const char* LOG_PATH       = FS_LOG_DIR "/diagnostic_log.txt";
 const char* LOG_OLD_PATH   = FS_LOG_DIR "/diagnostic_log.old.txt";
 
 // === TUNABLES ===  (rule: see Config.h header)
-const size_t   MAX_LOG_BYTES        = 32768;   // 32KB cap per file (~3MB free on this device)
+const size_t   MAX_LOG_BYTES        = DiagnosticLog::MAX_FILE_BYTES;   // per file (DiagnosticLog.h)
+const size_t   LINE_MAX_BYTES       = 220;     // one log line at most (longer: cut)
 const size_t   PENDING_BYTES        = 3072;    // lines waiting for the file (RTC memory, see s_pending)
 const size_t   PENDING_FLUSH_BYTES  = 2048;    // written out at once from this much waiting
+// A line fits the waiting room many times; the waiting
+// room is written out before it's full; a file holds many writes.
+static_assert(LINE_MAX_BYTES * 4 < PENDING_FLUSH_BYTES && PENDING_FLUSH_BYTES < PENDING_BYTES && PENDING_BYTES * 8 < DiagnosticLog::MAX_FILE_BYTES,
+              "log buffer sizes out of proportion");
 
 // Lines wait here, and are written to the file together when the screen
 // stands still (loop(), DisplayManager::goodMomentToWrite() - which also
@@ -106,6 +111,18 @@ void DiagnosticLog::begin() {
     flush();                               // lines from before a restart/crash
 }
 
+size_t DiagnosticLog::growthLeft() {
+    size_t used = 0;
+    if (s_fileMutex) xSemaphoreTake(s_fileMutex, portMAX_DELAY);
+    for (const char* p : { LOG_PATH, LOG_OLD_PATH }) {
+        File f = LittleFS.open(p, "r");
+        if (f) { used += f.size(); f.close(); }
+    }
+    if (s_fileMutex) xSemaphoreGive(s_fileMutex);
+    const size_t most = 2 * MAX_LOG_BYTES + PENDING_BYTES;
+    return used < most ? most - used : 0;
+}
+
 void DiagnosticLog::loop() {
     if (s_oldestPendingMs && DisplayManager::goodMomentToWrite(s_oldestPendingMs)) flush();
 }
@@ -143,7 +160,7 @@ void DiagnosticLog::record(const char* category, const char* fmt, ...) {
         strftime(clockBuf, sizeof(clockBuf), "%Y-%m-%d %H:%M:%S", &tmLocal);
     }
 
-    char line[220];
+    char line[LINE_MAX_BYTES];
     int n = snprintf(line, sizeof(line), "uptime=%lu clock=%s [%s] %s\r\n",
                      millis(), clockBuf, category, msgBuf);
     if (n < 0) return;
@@ -186,7 +203,7 @@ void DiagnosticLog::Streak::ok(const char* category, const char* what) {
     failed = 0;
 }
 
-void DiagnosticLog::sendTo(AsyncWebServerRequest* req) {
+void DiagnosticLog::sendTo(AsyncWebServerRequest* req, bool old) {
     // Deliberately streams straight from LittleFS (ESPAsyncWebServer's own
     // AsyncFileResponse, which reads in small chunks on demand) instead of
     // building a String and handing that to send(). The previous version
@@ -195,17 +212,18 @@ void DiagnosticLog::sendTo(AsyncWebServerRequest* req) {
     // NUL-byte bug this replaced), it crashed the live device: building the
     // combined old+current content into one String, then copying THAT into
     // the response's own buffer, held two full copies in RAM at once and
-    // exhausted the heap. Only the current file is served, not the rotated
-    // .old one, for the same RAM reason - this is a live debug viewer, not
-    // an archival export.
+    // exhausted the heap. The two files go as two requests (old = the
+    // rotated .old one), each streamed - never both in RAM.
     flush();   // the waiting lines too
+    const char* path = old ? LOG_OLD_PATH : LOG_PATH;
     xSemaphoreTake(s_fileMutex, portMAX_DELAY);
-    bool exists = LittleFS.exists(LOG_PATH);
+    bool exists = LittleFS.exists(path);
     xSemaphoreGive(s_fileMutex);
 
     if (!exists) {
-        req->send(200, "text/plain", "(no diagnostic log entries yet)");
+        if (old) req->send(200, "text/plain", "");
+        else req->send(200, "text/plain", "(no diagnostic log entries yet)");
         return;
     }
-    req->send(LittleFS, LOG_PATH, "text/plain");
+    req->send(LittleFS, path, "text/plain");
 }

@@ -93,6 +93,12 @@ def pre():
     (data / "diagnostic_log.txt").unlink(missing_ok=True)
     (data / "log").mkdir(exist_ok=True)
     (data / "log" / "diagnostic_log.txt").write_bytes(diag)
+    # and the previous file (2026-11-07; firmware before that answers with the current one again)
+    old = get("/api/debug/diagnostic-log?part=old", 60)
+    if old and old != diag:
+        (data / "log" / "diagnostic_log.old.txt").write_bytes(old)
+    else:
+        (data / "log" / "diagnostic_log.old.txt").unlink(missing_ok=True)
 
     # Event pictures: Data/images (or, from older firmware, Data/photos).
     shutil.rmtree(data / "photos", ignore_errors=True)

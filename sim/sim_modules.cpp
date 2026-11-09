@@ -93,6 +93,7 @@ String WiFiManager::joiningSsid() {
     return String();
 }
 bool WiFiManager::isApActive() { return millis() >= Sim::wifiUpMs; }
+uint32_t WiFiManager::offlineForMs() { return millis() >= Sim::wifiUpMs ? 0 : millis(); }
 uint32_t WiFiManager::getDisconnectCount() { return 0; }
 uint32_t WiFiManager::getReconnectCount() { return 0; }
 uint32_t WiFiManager::getApRebuildCount() { return 0; }
@@ -119,7 +120,8 @@ void DiagnosticLog::record(const char* category, const char* fmt, ...) {
     va_list ap; va_start(ap, fmt); vsnprintf(buf, sizeof(buf), fmt, ap); va_end(ap);
     fprintf(stderr, "[DiagnosticLog] [%s] %s\n", category, buf);
 }
-void DiagnosticLog::sendTo(AsyncWebServerRequest*) {}
+void DiagnosticLog::sendTo(AsyncWebServerRequest*, bool) {}
+size_t DiagnosticLog::growthLeft() { return 0; }
 void DiagnosticLog::loop() {}
 void DiagnosticLog::flushNow() {}
 void DiagnosticLog::discardPending() {}

@@ -254,6 +254,14 @@ static int runClock() {
     std::thread(controlServer).detach();
     std::thread(watchdogThread).detach();
     fprintf(stderr, "[sim] JewishClock %s (slot %d, reset reason %d)\n", Sim::firmwareVersion.c_str(), atoi(getenv("JC_SLOT") ? getenv("JC_SLOT") : "0"), (int)g_resetReason);
+    // Its window says which simulator it is (the user, 2026-11-07): JC_TITLE
+    // from the script that started it ("Released", "Work", "Test (ui_tests)"),
+    // then the version running now - set on every start, so it follows updates.
+    if (const char* t = getenv("JC_TITLE")) {
+        std::string s = std::string(t) + " v" + Sim::firmwareVersion + " - 127.0.0.1:" + std::to_string(Sim::homePort);
+        wchar_t w[512];
+        if (MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w, 512) > 0) SetConsoleTitleW(w);
+    }
 
     const long long start = realMs();
     {
@@ -335,6 +343,7 @@ static int supervise(int argc, char** argv) {
 }
 
 int main(int argc, char** argv) {
+    SetConsoleOutputCP(CP_UTF8);   // the log is UTF-8 (Hebrew): without this a console shows it as code page 437
     std::string fsDir = "C:/pio3/jc_clean/sim/clock/fs", stateDir;
     Sim::quiet = true;
     for (int i = 1; i < argc; i++) {

@@ -14,6 +14,7 @@
 #include "Display.h"
 #include "LogLevel.h"
 #include <LittleFS.h>
+#include <algorithm>
 #include <ArduinoJson.h>
 #include <esp_system.h>
 #include <atomic>
@@ -193,6 +194,11 @@ void Storage::applyDefaults(AppConfig& cfg) {
     cfg.switchoverWindowDays  = SWITCHOVER_DISPLAY_DAYS;
     cfg.nusach                = NUSACH_DEFAULT;
     cfg.eventDayChange        = EVENT_DAY_CHANGE_DEFAULT;
+    cfg.candleShow    = CANDLE_SHOW_DEFAULT;
+    cfg.havdalahShow  = HAVDALAH_SHOW_DEFAULT;
+    cfg.fastShow      = FAST_SHOW_DEFAULT;
+    cfg.parashaShow   = PARASHA_SHOW_DEFAULT;
+    cfg.mevarchimShow = MEVARCHIM_SHOW_DEFAULT;
 
     // Default order matches the historical hardcoded build order in
     // MessageAggregator; default frequencies match the old individual
@@ -226,6 +232,7 @@ void Storage::applyDefaults(AppConfig& cfg) {
     cfg.setupComplete      = false;
 
     strlcpy(cfg.logLevel, "info", sizeof(cfg.logLevel));
+    cfg.logLevelUntil = 0;
 }
 
 // =============================================================================
@@ -354,6 +361,12 @@ bool Storage::loadConfig(AppConfig& cfg) {
     cfg.showSwitchoverPhrases = doc["showSwitchover"]     | true;
     cfg.nusach                = doc["nusach"].as<int>() == 1 ? Nusach::Sefard : Nusach::Ashkenaz;
     cfg.eventDayChange        = doc["eventDayChange"].as<int>() == 1 ? EventDayChange::Midnight : EventDayChange::WithHebrewDay;
+    cfg.candleShow    = CANDLE_SHOW_DEFAULT;      // keys missing (files before 2026-11-08): as it always was
+    cfg.havdalahShow  = HAVDALAH_SHOW_DEFAULT;
+    cfg.fastShow      = FAST_SHOW_DEFAULT;
+    cfg.parashaShow   = PARASHA_SHOW_DEFAULT;
+    cfg.mevarchimShow = MEVARCHIM_SHOW_DEFAULT;
+    readShowWindows(doc.as<JsonVariantConst>(), cfg);
     cfg.switchoverWindowDays  = doc["prayerSwitchDays"]   | SWITCHOVER_DISPLAY_DAYS;   // new key (2026-10-17): the old "switchoverDays" was an unused setting whose saved 0 meant something else
 
     // Order is a list of type keys, frequency a key->int map. Either one
@@ -386,9 +399,82 @@ bool Storage::loadConfig(AppConfig& cfg) {
     cfg.setupComplete = doc["setupComplete"] | false;
 
     strlcpy(cfg.logLevel, doc["logLevel"] | "info", sizeof(cfg.logLevel));
+    cfg.logLevelUntil = doc["logLevelUntil"] | (int64_t)0;
 
+    if (clampConfig(cfg)) DiagnosticLog::record("Storage", "settings outside their limits were corrected (Config.h LIMITS)");
     CLOCK_LOG("Storage", "Config loaded OK");
     return true;
+}
+
+// The five show windows (Config.h ShowSpan): key prefix, setting, default,
+// the "from" choices that slide offers.
+struct ShowKey { const char* name; ShowSpan AppConfig::* field; ShowSpan def; unsigned fromChoices; };
+static const ShowKey SHOW_KEYS[] = {
+    { "candle",    &AppConfig::candleShow,    CANDLE_SHOW_DEFAULT,    SHOW_FROM_TIMED },
+    { "havdalah",  &AppConfig::havdalahShow,  HAVDALAH_SHOW_DEFAULT,  SHOW_FROM_TIMED },
+    { "fast",      &AppConfig::fastShow,      FAST_SHOW_DEFAULT,      SHOW_FROM_TIMED },
+    { "parasha",   &AppConfig::parashaShow,   PARASHA_SHOW_DEFAULT,   SHOW_FROM_PARASHA },
+    { "mevarchim", &AppConfig::mevarchimShow, MEVARCHIM_SHOW_DEFAULT, SHOW_FROM_MEVARCHIM },
+};
+
+void Storage::readShowWindows(JsonVariantConst doc, AppConfig& cfg) {
+    char key[24];
+    for (const ShowKey& k : SHOW_KEYS) {
+        ShowSpan& w = cfg.*k.field;
+        snprintf(key, sizeof(key), "%sFrom", k.name);
+        if (doc[key].is<int>()) w.from = static_cast<ShowFrom>(doc[key].as<int>());
+        snprintf(key, sizeof(key), "%sUntil", k.name);
+        if (doc[key].is<int>()) w.until = static_cast<ShowUntil>(doc[key].as<int>());
+        snprintf(key, sizeof(key), "%sTomorrow", k.name);
+        if (doc[key].is<bool>()) w.tomorrow = doc[key].as<bool>();
+    }
+}
+
+void Storage::writeShowWindows(JsonObject doc, const AppConfig& cfg) {
+    char key[24];
+    for (const ShowKey& k : SHOW_KEYS) {
+        const ShowSpan& w = cfg.*k.field;
+        snprintf(key, sizeof(key), "%sFrom", k.name);     doc[key] = static_cast<int>(w.from);
+        snprintf(key, sizeof(key), "%sUntil", k.name);    doc[key] = static_cast<int>(w.until);
+        snprintf(key, sizeof(key), "%sTomorrow", k.name); doc[key] = w.tomorrow;
+    }
+}
+
+// A choice the slide doesn't offer goes back to its default.
+static bool clampShowWindows(AppConfig& cfg) {
+    bool moved = false;
+    for (const ShowKey& k : SHOW_KEYS) {
+        ShowSpan& w = cfg.*k.field;
+        int f = static_cast<int>(w.from), u = static_cast<int>(w.until);
+        if (f < 0 || f > 31 || !(k.fromChoices & (1u << f))) { w.from = k.def.from; moved = true; }
+        if (u != (int)ShowUntil::AtTime && u != (int)ShowUntil::Midnight) { w.until = k.def.until; moved = true; }
+    }
+    return moved;
+}
+
+bool Storage::clampConfig(AppConfig& cfg) {
+    bool moved = false;
+    auto fix = [&moved](int& v, IntRange r) { int c = v < r.lo ? r.lo : v > r.hi ? r.hi : v; moved |= c != v; v = c; };
+    auto fixf = [&moved](float& v, IntRange r) { float c = v < r.lo ? r.lo : v > r.hi ? r.hi : v; moved |= c != v; v = c; };
+    fix(cfg.brightPct, PERCENT_RANGE);
+    fixf(cfg.nightPct, PERCENT_RANGE); fixf(cfg.dayPct, PERCENT_RANGE);
+    fixf(cfg.roomDarkPct, PERCENT_RANGE); fixf(cfg.roomLightPct, PERCENT_RANGE);
+    fix(cfg.messageDwellSec, MESSAGE_DWELL_SEC_RANGE);
+    fix(cfg.scrollSpeed, SCROLL_SPEED_RANGE);
+    fix(cfg.fontCharGapPx, FONT_CHAR_GAP_RANGE);
+    fix(cfg.fontWordGapPx, FONT_WORD_GAP_RANGE);
+    fix(cfg.fontWidthScalePct, FONT_WIDTH_SCALE_RANGE);
+    // The window: its size kept, its place moved so all of it is on the
+    // screen (shrinking it instead lost the size for good when the place
+    // moved back).
+    fix(cfg.calibW, CALIB_W_RANGE);
+    fix(cfg.calibH, CALIB_H_RANGE);
+    fix(cfg.calibX, { CALIB_X_RANGE.lo, std::min(CALIB_X_RANGE.hi, (int)TFT_WIDTH - cfg.calibW) });
+    fix(cfg.calibY, { CALIB_Y_RANGE.lo, std::min(CALIB_Y_RANGE.hi, (int)TFT_HEIGHT - cfg.calibH) });
+    fix(cfg.calibTearUs, CALIB_TEAR_US_RANGE);
+    fix(cfg.switchoverWindowDays, PRAYER_SWITCH_DAYS_RANGE);
+    moved |= clampShowWindows(cfg);
+    return moved;
 }
 
 // Replaces `path` only with content that is known to be complete: written to
@@ -518,6 +604,7 @@ bool Storage::saveConfig(const AppConfig& cfg) {
     doc["prayerSwitchDays"]   = cfg.switchoverWindowDays;
     doc["nusach"]             = static_cast<int>(cfg.nusach);
     doc["eventDayChange"]     = static_cast<int>(cfg.eventDayChange);
+    writeShowWindows(doc.as<JsonObject>(), cfg);
 
     JsonArray orderArr = doc["contentOrder"].to<JsonArray>();
     for (int i = 0; i < (int)ContentType::COUNT; i++) orderArr.add(CONTENT_TYPE_KEYS[cfg.contentOrder[i]]);
@@ -529,6 +616,7 @@ bool Storage::saveConfig(const AppConfig& cfg) {
     doc["setupComplete"] = cfg.setupComplete;
 
     doc["logLevel"] = cfg.logLevel;
+    doc["logLevelUntil"] = cfg.logLevelUntil;
 
     if (!writeJsonAtomic(FS_CONFIG_PATH, doc)) return false;
     CLOCK_LOG("Storage", "Config saved");
@@ -594,7 +682,7 @@ static void parseEventsFromDoc(JsonDocument& doc, EventList& events) {
             strncpy(e.icon, ev["icon"] | "", sizeof(e.icon) - 1);
             strncpy(e.image, ev["image"] | "", sizeof(e.image) - 1);
             strncpy(e.type, ev["type"] | "", sizeof(e.type) - 1);
-            e.warningDays  = ev["warn"] | 0;
+            e.warningDays  = clampTo(EVENT_WARN_DAYS_RANGE, ev["warn"] | 0);
 
             events.push_back(e);
         }
@@ -603,11 +691,11 @@ static void parseEventsFromDoc(JsonDocument& doc, EventList& events) {
     }
 }
 
-bool Storage::loadEvents(EventList& events) {
+bool Storage::loadEvents(EventList& events, const char* path) {
     events.clear();
-    if (!exists(FS_EVENTS_PATH)) return true;
+    if (!exists(path)) return true;
 
-    File f = LittleFS.open(FS_EVENTS_PATH, "r");
+    File f = LittleFS.open(path, "r");
     if (!f) return false;
 
     FileTools::skipUtf8ByteOrderMark(f);
@@ -616,16 +704,16 @@ bool Storage::loadEvents(EventList& events) {
     DeserializationError err = deserializeJson(doc, f);
     f.close();
     if (err) {
-        DiagnosticLog::record("Storage", "Events file unreadable (%s) - no events until it's fixed", err.c_str());
+        DiagnosticLog::record("Storage", "%s unreadable (%s) - no events from it until it's fixed", path, err.c_str());
         return false;
     }
 
     parseEventsFromDoc(doc, events);
-    CLOCK_LOG("Storage", "Loaded %d personal events", (int)events.size());
+    CLOCK_LOG("Storage", "Loaded %d personal events from %s", (int)events.size(), path);
     return true;
 }
 
-bool Storage::saveEvents(const EventList& events) {
+bool Storage::saveEvents(const EventList& events, const char* path) {
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
 
@@ -656,8 +744,8 @@ bool Storage::saveEvents(const EventList& events) {
         ev["warn"] = e.warningDays;
     }
 
-    if (!writeJsonAtomic(FS_EVENTS_PATH, doc)) return false;
-    CLOCK_LOG("Storage", "Saved %d personal events", (int)events.size());
+    if (!writeJsonAtomic(path, doc)) return false;
+    CLOCK_LOG("Storage", "Saved %d personal events to %s", (int)events.size(), path);
     return true;
 }
 

@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -86,8 +87,18 @@ def main():
     if subprocess.run(cmd).returncode != 0:
         sys.exit("BUILD FAILED")
     dest = VERSIONS / ver
+    # A release's build is kept as it was (the family's clock runs it - complaints
+    # are looked at on exactly that build): never replaced, unless --force. Before
+    # 2026-11-07 a withdrawn "2.1.1" kept running under the name of the new one.
+    commit = git("rev-parse", "HEAD")
+    source = dest / "SOURCE.txt"
+    if "-" not in ver and source.exists() and "--force" not in sys.argv:
+        print("OK:", exe, "(version %s; the kept release build %s stays as it is - %s)"
+              % (ver, dest / "jcclock.exe", source.read_text(encoding="utf-8").split("\n")[0]))
+        return
     dest.mkdir(parents=True, exist_ok=True)
     shutil.copy2(exe, dest / "jcclock.exe")
+    source.write_text("commit %s\nbuilt %s\n" % (commit, time.strftime("%Y-%m-%d %H:%M")), encoding="utf-8")
     print("OK:", exe, "(version %s, also %s)" % (ver, dest / "jcclock.exe"))
 
 

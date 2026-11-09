@@ -27,15 +27,16 @@ ROOT = Path(__file__).resolve().parent.parent
 FIRMWARE = FIRMWARE_BUILD / "esp32s3" / "firmware.bin"
 DATA = ROOT / "Data"
 
-# The clock's own data - never shipped (Updater.cpp refuses them too).
-EXCLUDE = {"config.json", "events.json", "diagnostic_log.txt", "diagnostic_log.old.txt"}
-# Event pictures (FS_IMAGE_DIR in Config.h; "photos" = the 2026-10-19..21
-# folder) and the family's replacements of the clock's own pictures
-# (FS_CUSTOM_DIR) - in Data/ only to survive an uploadfs, never shipped.
-EXCLUDE_DIRS = {"images", "photos", "custom", "log"}
+# The clock's own data (settings, events, log, pictures...) - never shipped:
+# the firmware's own list (Config.h isClockDataPath(), read by
+# clock_data_paths.py - this script kept a copy until 2026-11-08). In Data/
+# only to survive an uploadfs.
+from clock_data_paths import is_clock_data_path
 
 
 def main():
+    # --out DIR: written there instead of DIST (test runs: never next to the packages that get emailed)
+    out_dir = Path(sys.argv[sys.argv.index("--out") + 1]) if "--out" in sys.argv else DIST
     if not FIRMWARE.exists():
         sys.exit(f"No firmware at {FIRMWARE} - run `pio run` first.")
     fw = FIRMWARE.read_bytes()
@@ -57,7 +58,7 @@ def main():
 
     entries = []
     for rel, data, f in clock_files(DATA):   # the page files gzipped, as uploadfs puts them
-        if f.name in EXCLUDE or f.relative_to(DATA).parts[0] in EXCLUDE_DIRS:
+        if is_clock_data_path(rel):
             continue
         entries.append((1, "/" + rel, data))
     entries.append((2, "firmware.bin", fw))
@@ -74,8 +75,8 @@ def main():
         out += data
     out += b"JCEND!"
 
-    DIST.mkdir(parents=True, exist_ok=True)
-    target = DIST / f"JewishClock-update-{version}.jcupdate"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target = out_dir / f"JewishClock-update-{version}.jcupdate"
     target.write_bytes(out)
     web = [e for e in entries if e[0] == 1]
     print(f"Version {version}: firmware {len(fw):,} bytes + {len(web)} web files "

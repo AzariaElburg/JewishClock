@@ -17,9 +17,13 @@
 // (2026-10-22). Anything else (an old file): a strip whose width is a clean
 // multiple of its height is square frames. The one rule for the display
 // and for the upload checks (WebUI.cpp); Data/index.html's decodeBmp() matches.
+// The most frames one picture may have, and how long each may show (ms,
+// in biYPelsPerMeter). The page asks the clock for them (/api/limits).
+static constexpr int32_t PICTURE_MAX_FRAMES = 64;
+static constexpr IntRange PICTURE_FRAME_MS_RANGE = { 20, 2000 };
 inline int32_t bmpFrameCount(int32_t width, int32_t height, int32_t xPelsPerMeter) {
     if (xPelsPerMeter == 1) return 1;
-    if (xPelsPerMeter >= 2 && xPelsPerMeter <= 64 && width % xPelsPerMeter == 0) return xPelsPerMeter;
+    if (xPelsPerMeter >= 2 && xPelsPerMeter <= PICTURE_MAX_FRAMES && width % xPelsPerMeter == 0) return xPelsPerMeter;
     if (width > height && height > 0 && width % height == 0) return width / height;
     return 1;
 }
@@ -125,6 +129,8 @@ public:
     static void setScrollSpeed(int pixelsPerFrame);
 
     static int measureString(const char* utf8text);
+    // The calibrated window's width: a text up to this wide stands still.
+    static int windowWidth() { return _winW; }
 
     static void update(const AppConfig& cfg);
 
@@ -220,6 +226,9 @@ public:
     // took 0.9 s for Settings > Pictures' list and froze the screen).
     struct ImageEntry { String path; int32_t frameWidth, height, frames, frameMs; size_t fileSize; };
     static std::vector<ImageEntry> imagesIn(const char* folder);
+    // How tall the clock shows a picture: its window's height, at most the
+    // screen's (PICTURE_MAX_H_ROWS). The page makes pictures this tall (/api/limits).
+    static int  pictureMaxH();
 
 private:
     enum class BidiRunType { LTR, RTL, NEUTRAL };
@@ -259,7 +268,6 @@ private:
     static CachedBmp        loadBmp(const char* path, int maxHeight);
 
     static void sendFrame(bool wholePanel);
-    static int  pictureMaxH();
     static void keepTeOn();
     static void drawCalibBorder();
     static void updateCalibration();

@@ -86,17 +86,26 @@ struct DayInfo {
     bool isShabbat;
 };
 
-// What the fast-times slide should say on the current civil day. Times come
-// straight from Hebcal ("Fast begins"/"Fast ends", Israel rules in Israel
-// mode). Shown from midnight the day before a fast until midnight after it.
+// What the fast-times slide should say now. Times come straight from Hebcal
+// ("Fast begins"/"Fast ends", Israel rules in Israel mode). When it shows:
+// AppConfig::fastShow (by default from midnight the day before a fast until
+// midnight after it). The days ahead count civil days ("מחר", "מחרתיים").
 struct FastNotice {
     enum class Kind { None, Fast, SeudaMafseket };
     Kind kind = Kind::None;
     char begin[10] = "";      // "" = not shown (already started yesterday)
-    bool beginTomorrow = false;
+    int  beginInDays = 0;     // 0 today, 1 tomorrow, 2 the day after
     char end[10] = "";        // "" = Hebcal gives no end (Ta'anit Bechorot, Friday fasts)
-    bool endTomorrow = false;
+    int  endInDays = 0;
     char name[48] = "";       // Used as the label when there's no end time
+};
+
+// Candle lighting / Havdalah to show now: time "" = nothing. inDays: civil
+// days from today to the day of that time (1 = tomorrow, when shown from the
+// evening before).
+struct TimedNotice {
+    char time[10] = "";
+    int  inDays = 0;
 };
 
 // Rain/dew prayer switch: משיב הרוח from Musaf of Shemini Atzeret (22 Tishrei), מוריד
@@ -153,6 +162,15 @@ public:
     static String getUpcomingMevarchim();
     static const char*     getTodaySummary();
     static FastNotice getFastNotice();
+    // The same slides by the user's show windows (AppConfig::candleShow ...,
+    // Config.h ShowSpan). The default windows give exactly what
+    // getCivilToday() / getUpcomingParasha() / getUpcomingMevarchim() /
+    // getFastNotice() give - those are what they use.
+    static TimedNotice getCandle(const AppConfig& cfg);
+    static TimedNotice getHavdalah(const AppConfig& cfg);
+    static String getParasha(const AppConfig& cfg);
+    static String getMevarchim(const AppConfig& cfg);
+    static FastNotice getFastNotice(const AppConfig& cfg);
     // windowDays (0-2): how many days before/after the switch day to show it.
     // civilTodayAbs: today's civil date (absolute day) - both count civil days.
     // Ashkenazim abroad say nothing in summer: no מוריד הטל for them.

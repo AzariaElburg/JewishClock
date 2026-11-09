@@ -10,6 +10,7 @@
 // We fetch once per day (or on forced refresh) and cache to /hebcal_cache.json.
 // =============================================================================
 
+#include <climits>
 #include "Calendar.h"
 #include "EventsLock.h"
 #include "NTPManager.h"
@@ -1352,7 +1353,7 @@ FastNotice Calendar::getFastNotice() {
         n.kind = FastNotice::Kind::Fast;
         strlcpy(n.begin, t0.fastBegin, sizeof(n.begin));
         strlcpy(n.end, t1.fastEnd, sizeof(n.end));
-        n.endTomorrow = true;
+        n.endInDays = 1;
         strlcpy(n.name, t1.fastName[0] ? t1.fastName : t0.fastName, sizeof(n.name));
     } else if (t0.fastEnd[0]) {                                // 2nd day of an evening-start fast
         n.kind = FastNotice::Kind::Fast;
@@ -1361,15 +1362,219 @@ FastNotice Calendar::getFastNotice() {
     } else if (t1.fastBegin[0] && isMorning(t1.fastBegin)) {   // day before a dawn-start fast
         n.kind = FastNotice::Kind::Fast;
         strlcpy(n.begin, t1.fastBegin, sizeof(n.begin));
-        n.beginTomorrow = true;
+        n.beginInDays = 1;
         strlcpy(n.end, t1.fastEnd, sizeof(n.end));
-        n.endTomorrow = true;
+        n.endInDays = 1;
         strlcpy(n.name, t1.fastName, sizeof(n.name));
     } else if (t0.candleLightStr[0] && strncmp(t1.holidayHebrew, "יום כיפור", strlen("יום כיפור")) == 0) {
         n.kind = FastNotice::Kind::SeudaMafseket;
         strlcpy(n.end, t0.candleLightStr, sizeof(n.end));
     }
     return n;
+}
+
+// ── Show windows (the user's father, 2026-11-08) ─────────────────────────────
+// When candle lighting, Havdalah, the fast times, the parasha and Shabbat
+// Mevarchim show: AppConfig's ShowSpan per slide (Config.h). Moments are
+// local seconds (days since 1970 * 86400 + time of day), the same scale as
+// NTPManager::getLocalEpoch(). The default windows keep the code above
+// (getCivilToday(), findOnNearestShabbat(), getFastNotice()) - nothing about
+// them changed.
+
+static long dayNumberOf(const DayInfo& d) {
+    int y = 0, m = 0, dd = 0;
+    if (sscanf(d.gregorianDate, "%d-%d-%d", &y, &m, &dd) != 3) return LONG_MIN;
+    return (long)daysFromCivil(y, m, dd);
+}
+
+// "HH:MM" or "HH:MM:SS" on day `day`, or -1 when there is no time.
+static int64_t momentAt(long day, const char* hhmm) {
+    int h = 0, mi = 0, s = 0;
+    if (!hhmm || !hhmm[0] || sscanf(hhmm, "%d:%d:%d", &h, &mi, &s) < 2) return -1;
+    return (int64_t)day * 86400 + h * 3600 + mi * 60 + s;
+}
+
+static int64_t midnightStarting(long day) { return (int64_t)day * 86400; }
+
+static void civilFromDays(long z, int& y, int& m, int& d) {   // H. Hinnant's civil_from_days
+    z += 719468;
+    const long era = (z >= 0 ? z : z - 146096) / 146097;
+    const long doe = z - era * 146097;
+    const long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    const long doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const long mp = (5 * doy + 2) / 153;
+    d = (int)(doy - (153 * mp + 2) / 5 + 1);
+    m = (int)(mp < 10 ? mp + 3 : mp - 9);
+    y = (int)(yoe + era * 400 + (m <= 2));
+}
+
+using Manifest = std::vector<DayInfo>;
+
+static const DayInfo* entryForDay(const Manifest& man, long day) {
+    for (const DayInfo& e : man) if (dayNumberOf(e) == day) return &e;
+    return nullptr;
+}
+
+// When the Jewish day that follows civil day `day` begins: that evening's
+// sunset or צאת הכוכבים (the Hebrew-date change setting), or midnight when
+// that setting is midnight. A day without the time in the calendar gets it
+// computed, as syncToday() does.
+static int64_t eveningOf(const Manifest& man, long day, const AppConfig& cfg) {
+    if (cfg.rolloverMode == RolloverMode::Midnight) return midnightStarting(day + 1);
+    const bool tzeit = cfg.rolloverMode == RolloverMode::Tzeit;
+    const DayInfo* e = entryForDay(man, day);
+    const char* t = e ? (tzeit ? e->tzeit : e->sunset) : "";
+    char calc[10] = "";
+    if (!t[0]) {
+        int y, m, d;
+        civilFromDays(day, y, m, d);
+        computeZman(y, m, d, cfg.latitude, cfg.longitude, tzeit, calc, sizeof(calc));
+        t = calc;
+    }
+    const int64_t at = momentAt(day, t);
+    return at >= 0 ? at : midnightStarting(day + 1);
+}
+
+static int64_t nowLocalSeconds() { return (int64_t)NTPManager::getLocalEpoch(); }
+static long dayOfMoment(int64_t t) { return (long)(t >= 0 ? t / 86400 : (t - 86399) / 86400); }
+
+// Candle lighting / Havdalah. Of the times whose window holds now, the next
+// one still ahead; if all have passed, the latest (shown on until its window
+// ends). Two can overlap only around a two-day Yom Tov or one next to Shabbat.
+static TimedNotice timedNotice(const Manifest& man, char (DayInfo::*field)[10], const ShowSpan& w, const AppConfig& cfg) {
+    TimedNotice out;
+    const int64_t now = nowLocalSeconds();
+    const long today = dayOfMoment(now);
+    int64_t bestAt = 0;
+    bool bestAhead = false, found = false;
+    for (const DayInfo& e : man) {
+        const char* time = e.*field;
+        if (!time[0]) continue;
+        const long day = dayNumberOf(e);
+        const int64_t at = momentAt(day, time);
+        if (at < 0) continue;
+        const int64_t from = w.from == ShowFrom::Evening ? eveningOf(man, day - 1, cfg) : midnightStarting(day);
+        const int64_t until = w.until == ShowUntil::AtTime ? at : midnightStarting(day + 1);
+        if (now < from || now >= until) continue;
+        const bool ahead = at > now;
+        const bool better = !found || (ahead && (!bestAhead || at < bestAt)) || (!ahead && !bestAhead && at > bestAt);
+        if (!better) continue;
+        found = true; bestAhead = ahead; bestAt = at;
+        strlcpy(out.time, time, sizeof(out.time));
+        out.inDays = (int)(day - today);
+    }
+    return out;
+}
+
+TimedNotice Calendar::getCandle(const AppConfig& cfg) {
+    const ShowSpan& w = cfg.candleShow;
+    if (w.from == ShowFrom::Midnight && w.until == ShowUntil::Midnight) {
+        TimedNotice out;
+        strlcpy(out.time, s_civilToday.candleLightStr, sizeof(out.time));
+        return out;
+    }
+    return timedNotice(s_manifest, &DayInfo::candleLightStr, w, cfg);
+}
+
+TimedNotice Calendar::getHavdalah(const AppConfig& cfg) {
+    const ShowSpan& w = cfg.havdalahShow;
+    if (w.from == ShowFrom::Midnight && w.until == ShowUntil::Midnight) {
+        TimedNotice out;
+        strlcpy(out.time, s_civilToday.havdalahStr, sizeof(out.time));
+        return out;
+    }
+    return timedNotice(s_manifest, &DayInfo::havdalahStr, w, cfg);
+}
+
+// When Shabbat `e` ends: its Havdalah; a Shabbat followed by Yom Tov has a
+// candle lighting instead; else צאת הכוכבים; else midnight.
+static int64_t shabbatEnd(const DayInfo& e, long day) {
+    for (const char* t : { e.havdalahStr, e.candleLightStr, e.tzeit }) {
+        const int64_t at = momentAt(day, t);
+        if (at >= 0) return at;
+    }
+    return midnightStarting(day + 1);
+}
+
+// Parasha / Mevarchim with a window other than "all week": from Friday
+// (its midnight, or the Jewish Friday's start - Thursday evening) until the
+// end of Shabbat or the midnight after it.
+static String shabbatText(const Manifest& man, char (DayInfo::*field)[80], const ShowSpan& w, const AppConfig& cfg) {
+    const int64_t now = nowLocalSeconds();
+    for (const DayInfo& e : man) {
+        if (!e.isShabbat || !(e.*field)[0]) continue;
+        const long day = dayNumberOf(e);
+        const int64_t from = w.from == ShowFrom::Evening ? eveningOf(man, day - 2, cfg) : midnightStarting(day - 1);
+        const int64_t until = w.until == ShowUntil::AtTime ? shabbatEnd(e, day) : midnightStarting(day + 1);
+        if (now >= from && now < until) return String(e.*field);
+    }
+    return String();
+}
+
+String Calendar::getParasha(const AppConfig& cfg) {
+    if (cfg.parashaShow.from == ShowFrom::AllWeek) return getUpcomingParasha();
+    return shabbatText(s_manifest, &DayInfo::parashaHebrew, cfg.parashaShow, cfg);
+}
+
+String Calendar::getMevarchim(const AppConfig& cfg) {
+    const ShowSpan& w = cfg.mevarchimShow.from == ShowFrom::LikeParasha ? cfg.parashaShow : cfg.mevarchimShow;
+    if (w.from == ShowFrom::AllWeek || w.from == ShowFrom::LikeParasha) return getUpcomingMevarchim();
+    return shabbatText(s_manifest, &DayInfo::mevarchimHebrew, w, cfg);
+}
+
+// The fast slide by the user's window. Each fast in the calendar, in the
+// three shapes getFastNotice() knows: a dawn-to-night fast (begin and end on
+// its day), an evening-start fast (Tisha B'Av: begins on the eve, ends the
+// next day), and the eve of Yom Kippur (seudah mafseket until candle
+// lighting). "Day before" = from midnight of the day before the fast's day
+// (what getFastNotice() does); "Evening before" = from the evening before
+// the fast begins - the start of the Jewish day it begins in. The words
+// "מחר" / "מחרתיים" count civil days from today, as people say them.
+FastNotice Calendar::getFastNotice(const AppConfig& cfg) {
+    const ShowSpan& w = cfg.fastShow;
+    if (w.from == ShowFrom::Midnight && w.until == ShowUntil::Midnight) return getFastNotice();
+    const int64_t now = nowLocalSeconds();
+    const long today = dayOfMoment(now);
+    auto isMorning = [](const char* hhmm) { return atoi(hhmm) < 12; };
+    for (size_t k = 0; k < s_manifest.size(); k++) {
+        const DayInfo& t0 = s_manifest[k];
+        const DayInfo* t1 = k + 1 < s_manifest.size() ? &s_manifest[k + 1] : nullptr;
+        const long day = dayNumberOf(t0);
+        FastNotice n;
+        long beginDay = day, endDay = day, fastDay = day;
+        if (t0.fastBegin[0] && isMorning(t0.fastBegin)) {                 // dawn to night
+            n.kind = FastNotice::Kind::Fast;
+            strlcpy(n.begin, t0.fastBegin, sizeof(n.begin));
+            strlcpy(n.end, t0.fastEnd, sizeof(n.end));
+            strlcpy(n.name, t0.fastName, sizeof(n.name));
+        } else if (t0.fastBegin[0]) {                                      // evening start (Tisha B'Av)
+            n.kind = FastNotice::Kind::Fast;
+            strlcpy(n.begin, t0.fastBegin, sizeof(n.begin));
+            if (t1) strlcpy(n.end, t1->fastEnd, sizeof(n.end));
+            strlcpy(n.name, t1 && t1->fastName[0] ? t1->fastName : t0.fastName, sizeof(n.name));
+            endDay = fastDay = day + 1;
+        } else if (k == 0 && t0.fastEnd[0]) {                              // its eve is before the calendar's first day
+            n.kind = FastNotice::Kind::Fast;
+            strlcpy(n.end, t0.fastEnd, sizeof(n.end));
+            strlcpy(n.name, t0.fastName, sizeof(n.name));
+            beginDay = day - 1;
+        } else if (t0.candleLightStr[0] && t1 && strncmp(t1->holidayHebrew, "יום כיפור", strlen("יום כיפור")) == 0) {
+            n.kind = FastNotice::Kind::SeudaMafseket;
+            strlcpy(n.end, t0.candleLightStr, sizeof(n.end));
+            fastDay = day + 1;
+        } else {
+            continue;
+        }
+        const int64_t from = w.from == ShowFrom::Evening ? eveningOf(s_manifest, beginDay - 1, cfg) : midnightStarting(fastDay - 1);
+        const int64_t endAt = momentAt(endDay, n.end);
+        const int64_t until = (w.until == ShowUntil::AtTime && endAt >= 0) ? endAt : midnightStarting(endDay + 1);
+        if (now < from || now >= until) continue;
+        if (beginDay < today) n.begin[0] = 0;   // started on an earlier day: "עד 19:57"
+        n.beginInDays = (int)(beginDay - today);
+        n.endInDays = (int)(endDay - today);
+        return n;
+    }
+    return FastNotice();
 }
 
 // Both rain/dew notices count civil days (midnight to midnight), not the

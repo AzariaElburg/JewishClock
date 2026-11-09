@@ -172,6 +172,8 @@ static bool            g_apActive = false;
 // The AP that's up is the synchronized one (startAP()), not the setup one.
 // Atomic: the web server's filters read it (ON_STA_OR_SYNCED_AP_FILTER).
 static std::atomic<bool> g_syncedApUp{false};
+// Last loop() pass that saw a working connection (offlineForMs()).
+static uint32_t        g_lastOnlineMs = 0;
 static AppConfig*      g_cfgPtr = nullptr;
 static String          g_mdnsHost = makeMdnsHost(PROJECT_NAME_DEFAULT);  // Hostname without .local suffix
 static const char* portal_html = R"rawliteral(
@@ -240,14 +242,20 @@ static const char* portal_html = R"rawliteral(
       if (pwd) passwordInput.value = pwd;
     }
 
+    // The first answer is usually "scanning" with no networks (the clock
+    // starts a scan then): ask again until the list is there - asked once,
+    // the list stayed empty until a reload (found 2026-11-07, sim/ui_tests.py).
     async function scanNetworks() {
-      try {
-        const resp = await fetch('/wifi-scan');
-        if (!resp.ok) throw new Error('scan failed');
-        const data = await resp.json();
-        setScanResults(data.networks || []);
-      } catch (e) {
-        console.log('Scan error', e);
+      for (let i = 0; i < 20; i++) {
+        try {
+          const resp = await fetch('/wifi-scan');
+          if (!resp.ok) throw new Error('scan failed');
+          const data = await resp.json();
+          if (data.status !== 'scanning') { setScanResults(data.networks || []); return; }
+        } catch (e) {
+          console.log('Scan error', e);
+        }
+        await new Promise(r => setTimeout(r, 1500));
       }
     }
 
@@ -564,6 +572,7 @@ void WiFiManager::loop() {
                 CLOCK_LOG("WiFi", "Detected IP loss while in connected state. Re-initiating connection.");
                 setState(WiFiState::STA_CONNECTING);
             } else {
+                g_lastOnlineMs = millis();
                 serviceRoaming();
             }
             break;
@@ -711,15 +720,15 @@ String WiFiManager::getStatusMessage() {
         // The "Connecting..." message is now handled by MessageAggregator
         // for better context (it can show the SSID name).
         case WiFiState::AP_PORTAL:
-            {
-                // The Wi-Fi that's really up: once the clock has been online
-                // its own synchronized one stays up (startAPPortal() doesn't
-                // replace it) - naming "...Setup" then sent people to a
-                // network that didn't exist (found on the simulator, 2026-11-06).
-                String apName = g_syncedApUp ? String(g_cfgPtr->projectName) : String(AP_SSID_PREFIX) + "Setup";
-                // Scrolls, and starts over when read (MessageAggregator::loop()).
-                info = "Setup: join Wi-Fi " + apName + " - password " + String(AP_PASSWORD_DEFAULT) + " - open 192.168.4.1";
-            }
+            // Only while the setup hotspot is what's up. Once the clock has
+            // been online its own synchronized Wi-Fi stays up instead
+            // (startAPPortal() doesn't replace it) with the full page - the
+            // screen then keeps its slides plus "Internet unreachable"
+            // (MessageAggregator, the user 2026-11-06); naming "...Setup"
+            // there sent people to a network that didn't exist.
+            // Scrolls, and starts over when read (MessageAggregator::loop()).
+            if (!g_syncedApUp)
+                info = "Setup: join Wi-Fi " + String(AP_SSID_PREFIX) + "Setup - password " + String(AP_PASSWORD_DEFAULT) + " - open 192.168.4.1";
             break;
         // In all other states (eg. connected, connecting), return an empty string
         // to avoid cluttering the display.
@@ -734,6 +743,12 @@ bool WiFiManager::isApActive() {
 }
 
 bool WiFiManager::syncedApUp() { return g_syncedApUp; }
+
+uint32_t WiFiManager::offlineForMs() {
+    WiFiLock::Guard guard;
+    if (g_state == WiFiState::STA_CONNECTED && WiFi.status() == WL_CONNECTED) return 0;
+    return millis() - g_lastOnlineMs;
+}
 
 // ─── Private Actions (Triggered by State Transitions) ───────────────────────
 
@@ -945,12 +960,17 @@ void WiFiManager::startAPPortal(AppConfig& cfg) {
             strlcpy(wifiPasswordAt(*g_cfgPtr, slot), pass.c_str(), sizeof(g_cfgPtr->wifiPassword));
             Storage::saveConfig(*g_cfgPtr);
 
-            String html = "<html><head><meta http-equiv='refresh' content='5;url=/'></head>";
+            // The clock's name on the network (its mDNS name follows the clock's
+            // name - "jewishclock" was fixed here until 2026-11-07), and the
+            // page goes there after the 10 s it says (it reloaded the setup
+            // page after 5 s - gone with the setup Wi-Fi).
+            String host = makeMdnsHost(g_cfgPtr->projectName) + ".local";
+            String html = "<html><head><meta http-equiv='refresh' content='10;url=http://" + host + "/'></head>";
             html += "<body style='font-family:sans-serif; text-align:center; padding-top:50px;'>";
             html += "<h2>Settings Saved</h2>";
             html += "<p>Connecting to <b>" + ssid + "</b>...</p>";
             html += "<p>The setup hotspot will close shortly.</p>";
-            html += "<p>If your device supports mDNS, you will be redirected to <a href='http://jewishclock.local/'>jewishclock.local</a> in 10 seconds.</p>";
+            html += "<p>If your device supports mDNS, you will be redirected to <a href='http://" + host + "/'>" + host + "</a> in 10 seconds.</p>";
             html += "<p>Otherwise, check your router for the new IP address.</p>";
             html += "</body></html>";
 

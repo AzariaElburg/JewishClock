@@ -29,6 +29,8 @@ namespace ImageLibrary {
     // the size of everything a package would replace, plus a margin). `why`
     // gets a sentence for the user when not.
     bool   hasRoomFor(size_t bytes, String* why);
+    // How many bytes of pictures still fit by that rule (Settings > Pictures).
+    size_t roomLeft();
     // One-time move of the 2026-10-19..21 per-event photos (/photos/<eventId>.bmp)
     // into the library; returns true if any event changed (caller saves).
     bool   migrateOldPhotos(EventList& events);

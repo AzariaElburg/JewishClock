@@ -46,7 +46,7 @@ AP_URL = "http://192.168.4.1"   # the clock's own Wi-Fi (both the synced AP and 
 LEARNED = {"nightPct", "roomLightPct"}
 
 
-def use_simulator(home_port=8080, ap_port=8081):
+def use_simulator(home_port, ap_port):
     """--sim: the same trips against the full simulator (sim/build_clock.py,
     jcclock.exe) instead of the clock: its home side and its own Wi-Fi are two
     ports on this PC, so there is no Wi-Fi to switch - "joining" a network is
@@ -172,6 +172,8 @@ def watch_page(pg, errors):
     pg.on("pageerror", lambda e: errors.append("page error: %s" % e))
     pg.on("console", lambda m: errors.append("console %s: %s" % (m.type, m.text)) if m.type == "error" else None)
     pg.on("requestfailed", lambda r: errors.append("request failed: %s %s" % (r.url, r.failure)))
+    # which address: the console's "404 (Not Found)" doesn't say
+    pg.on("response", lambda r: errors.append("HTTP %d: %s" % (r.status, r.url)) if r.status >= 400 else None)
     pg.on("dialog", lambda d: (errors.append("dialog (accepted): %s" % d.message), d.accept()))
 
 
@@ -190,6 +192,20 @@ def wait_until(fn, timeout_s, step_s=1.0):
 
 
 # ── Trip 1: the page ─────────────────────────────────────────────────────────
+# The page files the clock has before the update: Data/ (the clock runs this
+# version), or --pages-before DIR (a simulated clock started at an older
+# release has that release's pages - run_all_tests.py; 2026-11-08).
+PAGES_BEFORE = PROJ / "Data"
+
+
+def pages_differ(url, data_dir):
+    """The page files the clock serves that aren't data_dir's - their line ends as LF on
+    both sides, as the clock gets them (utils/web_files.py; a git archive of a tag has CRLF)."""
+    lf = lambda b: b.replace(b"\r\n", b"\n")
+    return [p for p in ("index.html", "update.html", "sortable.min.js")
+            if lf(get(url, "/" + p if p != "index.html" else "/")) != lf((Path(data_dir) / p).read_bytes())]
+
+
 def trip_page(url, browser):
     errors = []
     ctx = browser.new_context(viewport={"width": 1280, "height": 900}, accept_downloads=True)
@@ -221,10 +237,9 @@ def trip_page(url, browser):
     stage("page loads", page_load)
 
     def files_match():
-        bad = [p for p in ("index.html", "update.html", "sortable.min.js")
-               if get(url, "/" + p if p != "index.html" else "/") != (PROJ / "Data" / p).read_bytes()]
-        result("page files = Data/", not bad, "differ: %s" % bad if bad else "index.html, update.html, sortable.min.js")
-    stage("page files = Data/", files_match)
+        bad = pages_differ(url, PAGES_BEFORE)
+        result("page files = the version's", not bad, "differ: %s" % bad if bad else "index.html, update.html, sortable.min.js")
+    stage("page files = the version's", files_match)
 
     def setting():
         pg.click("button.rail-item[data-view=settings]")
@@ -528,10 +543,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--skip", default="", help="comma list: page,settings,update,empty")
     ap.add_argument("--package", help="the .jcupdate to install (default: newest in %s)" % DIST)
-    ap.add_argument("--sim", action="store_true", help="against the full simulator (jcclock.exe on ports 8080/8081), not the clock")
+    ap.add_argument("--sim", action="store_true", help="against a simulated clock on the trips' ports (sim/sim_ports.py), not the clock")
+    ap.add_argument("--sim-port-offset", type=int, default=0, help="with --sim: shifts those ports")
+    ap.add_argument("--pages-before", help="the page files the clock has before the update (default Data/)")
     args = ap.parse_args()
+    if args.pages_before:
+        global PAGES_BEFORE
+        PAGES_BEFORE = Path(args.pages_before)
     if args.sim:
-        use_simulator()
+        # Its own ports - never the work simulator's: trip 4 factory-resets its clock
+        sys.path.insert(0, str(PROJ / "sim"))
+        from sim_ports import ports
+        use_simulator(*ports("trips", args.sim_port_offset)[:2])
     skip = set(filter(None, args.skip.split(",")))
     OUT.mkdir(parents=True, exist_ok=True)
     from playwright.sync_api import sync_playwright
@@ -577,6 +600,10 @@ def main():
             if end:
                 result("home: new version running", end["firmware"] == new_version and end["updateState"] == "ok",
                        "%s (%s), expected %s" % (end["firmware"], end["updateState"], new_version))
+                # The update's page files go in only once the new firmware's trial has
+                # passed ("ok" above) - checked after it, not at the update page's "Done".
+                bad = pages_differ(home_base(), PROJ / "Data")
+                result("page files after the update = Data/", not bad, "differ: %s" % bad if bad else "index.html, update.html, sortable.min.js")
         if "empty" not in skip and xlsx:
             try:
                 browser = p.chromium.launch(channel="msedge", headless=True)

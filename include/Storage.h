@@ -38,6 +38,15 @@ public:
     static void saveConfigSoon();
     static void loop(const AppConfig& cfg);
     static void applyDefaults(AppConfig& cfg);
+    // Every number inside its LIMITS (Config.h); true if one had to move.
+    // After each load and each change from the page or an import - whatever
+    // wrote config.json, the clock runs only on values it was built for.
+    static bool clampConfig(AppConfig& cfg);
+    // The show windows (AppConfig::candleShow ...) to / from JSON keys
+    // candleFrom, candleUntil, candleTomorrow, ...: read takes only the keys
+    // present (loadConfig after applyDefaults, a change from the page).
+    static void readShowWindows(JsonVariantConst doc, AppConfig& cfg);
+    static void writeShowWindows(JsonObject doc, const AppConfig& cfg);
     // Factory reset: deletes everything the clock wrote itself
     // (isClockDataPath(): settings, events, pictures, logs, cache, ...) -
     // its own files (page, built-in pictures, tz table) stay - then writes
@@ -49,8 +58,10 @@ public:
     // Replaces every element of `events` with what's on disk. Any event
     // missing an id (events.json written before ids existed) gets one
     // assigned here, once, as part of the load - see generateEventId().
-    static bool loadEvents(EventList& events);
-    static bool saveEvents(const EventList& events);
+    // `path`: FS_EVENTS_PATH, or FS_DELETED_EVENTS_PATH (the recycle bin -
+    // same format; a missing file is an empty list).
+    static bool loadEvents(EventList& events, const char* path = FS_EVENTS_PATH);
+    static bool saveEvents(const EventList& events, const char* path = FS_EVENTS_PATH);
 
     // A 16-hex-digit id from the hardware RNG, guaranteed unique against
     // `existing` by construction: candidates are checked against every

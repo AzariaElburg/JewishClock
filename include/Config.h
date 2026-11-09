@@ -52,7 +52,8 @@ enum class OmerMode : int {
     Off = 0,          // only in old config.json files - loadConfig() turns it into the Omer row's "Off"
     ShortText = 1,
     FullText = 2,
-    Abbreviated = 3
+    Abbreviated = 3,
+    Compact = 4       // "23 = 3 שבועות + 2 ימים", shortened until it fits the window (user, 2026-11-06)
 };
 
 // Wording of the rain request in ברכת השנים: Ashkenaz "ותן טל ומטר" /
@@ -69,6 +70,39 @@ enum class EventDayChange : int {
     WithHebrewDay = 0,
     Midnight = 1
 };
+
+// When a timed slide (candle lighting, Havdalah, fast, parasha, Shabbat
+// Mevarchim) starts and stops showing - the user's father, 2026-11-08: he
+// chooses, defaults = how it always was. Calendar.cpp ("Show windows").
+//   Midnight    candles/Havdalah: from midnight starting their day; fast: from
+//               midnight of the day before the fast's day; parasha/Mevarchim:
+//               from Friday midnight.
+//   Evening     the evening before: when the Jewish day starts (the Hebrew-date
+//               change setting - sunset / צאת הכוכבים; with "midnight" there,
+//               midnight). Parasha: Thursday evening (the Jewish Friday).
+//   AllWeek     parasha/Mevarchim only: all week, switching at the end of Shabbat.
+//   LikeParasha Mevarchim only: whatever the parasha does.
+enum class ShowFrom : int { Midnight = 0, Evening = 1, AllWeek = 2, LikeParasha = 3 };
+//   AtTime      until its own time: the lighting, Havdalah, the fast's end;
+//               parasha/Mevarchim: Havdalah at the end of Shabbat.
+//   Midnight    until the midnight after it.
+enum class ShowUntil : int { AtTime = 0, Midnight = 1 };
+struct ShowSpan {
+    ShowFrom  from;
+    ShowUntil until;
+    bool      tomorrow;   // candles/Havdalah: "מחר" before the time when shown the day before
+};
+// The "from" choices each slide offers (bits of ShowFrom); any other saved
+// value goes back to the default (Storage::clampConfig()).
+static constexpr unsigned showFromBit(ShowFrom f) { return 1u << (int)f; }
+static constexpr unsigned SHOW_FROM_TIMED     = showFromBit(ShowFrom::Midnight) | showFromBit(ShowFrom::Evening);   // candles, Havdalah, fast
+static constexpr unsigned SHOW_FROM_PARASHA   = SHOW_FROM_TIMED | showFromBit(ShowFrom::AllWeek);
+static constexpr unsigned SHOW_FROM_MEVARCHIM = SHOW_FROM_PARASHA | showFromBit(ShowFrom::LikeParasha);
+static constexpr ShowSpan CANDLE_SHOW_DEFAULT   = { ShowFrom::Midnight,    ShowUntil::Midnight, true };
+static constexpr ShowSpan HAVDALAH_SHOW_DEFAULT  = { ShowFrom::Midnight,    ShowUntil::Midnight, true };
+static constexpr ShowSpan FAST_SHOW_DEFAULT      = { ShowFrom::Midnight,    ShowUntil::Midnight, true };
+static constexpr ShowSpan PARASHA_SHOW_DEFAULT   = { ShowFrom::AllWeek,     ShowUntil::AtTime,   true };
+static constexpr ShowSpan MEVARCHIM_SHOW_DEFAULT = { ShowFrom::LikeParasha, ShowUntil::AtTime,   true };
 
 // Default Mode Constants
 // The Hebrew day changes at צאת הכוכבים (after Shabbat/Yom Tov: at Havdalah) -
@@ -320,6 +354,8 @@ static constexpr int DEFAULT_CALIB_TEAR_US = 10800;
 
 #define FS_CONFIG_PATH  "/config.json"
 #define FS_EVENTS_PATH  "/events.json"
+// Deleted events (the recycle bin, 2026-11-07): restorable until emptied.
+#define FS_DELETED_EVENTS_PATH "/deleted_events.json"
 
 // Event pictures: a shared library, FS_IMAGE_DIR/<id>.bmp - see ImageLibrary.h.
 #define FS_IMAGE_DIR    "/images"
@@ -348,7 +384,7 @@ inline String customImagePath(const char* name) { return String(FS_CUSTOM_DIR "/
 // here, or the next update deletes it.
 inline bool isClockDataPath(const String& p) {
     static const char* const files[] = {
-        FS_CONFIG_PATH, FS_EVENTS_PATH,
+        FS_CONFIG_PATH, FS_EVENTS_PATH, FS_DELETED_EVENTS_PATH,
         "/jewish_calendar_data.json", "/backup_tmp.json", "/upload_image.tmp", "/upload_custom.tmp",
     };
     for (const char* f : files) {
@@ -359,6 +395,78 @@ inline bool isClockDataPath(const String& p) {
     }
     return false;
 }
+
+
+// =============================================================================
+// LIMITS - what a setting or an event may be
+// =============================================================================
+// Defined here once (2026-11-07). The clock keeps every value inside them
+// (Storage::clampConfig() after each load and change; events when saved or
+// imported) and sends them to the page (GET /api/limits), which sets its
+// sliders, boxes and checks from that reply - the page and the tests hold no
+// copies. What depends on each one, and what a much larger or smaller value
+// would do: docs/limits.md. The static_asserts below fail the build when a
+// change breaks a relation between values.
+struct IntRange { int lo, hi; };
+static constexpr bool inRange(IntRange r, long v) { return v >= r.lo && v <= r.hi; }
+static constexpr int  clampTo(IntRange r, long v) { return v < r.lo ? r.lo : v > r.hi ? r.hi : (int)v; }
+
+static constexpr IntRange PERCENT_RANGE           = { 0, 100 };   // brightness and room-light %
+static constexpr IntRange MESSAGE_DWELL_SEC_RANGE = { 2, 60 };
+static constexpr IntRange SCROLL_SPEED_RANGE      = { 1, 10 };    // px per frame
+// The display window: inside the screen (Display.cpp draws only there).
+static constexpr IntRange CALIB_X_RANGE = { 0, TFT_WIDTH - 1 };
+static constexpr IntRange CALIB_Y_RANGE = { 0, TFT_HEIGHT - 1 };
+static constexpr IntRange CALIB_W_RANGE = { 16, TFT_WIDTH };      // X moves so that X + W <= TFT_WIDTH (clampConfig)
+static constexpr IntRange CALIB_H_RANGE = { 16, TFT_HEIGHT };     // Y moves so that Y + H <= TFT_HEIGHT; also the pictures' height
+// One panel redraw is ~15.5 ms (CLAUDE.md "Scroll tearing"): a later start
+// is the same as an earlier one in the next redraw. Was 0..20000 in the clock
+// and 0..15500 on the page until 2026-11-07.
+static constexpr IntRange CALIB_TEAR_US_RANGE = { 0, 15500 };
+static constexpr IntRange PRAYER_SWITCH_DAYS_RANGE = { 0, 2 };
+// No page control (config.json / settings import only): generous bounds, so
+// a stray value can't make letters overlap or run off by hundreds of px.
+static constexpr IntRange FONT_CHAR_GAP_RANGE   = { 0, 30 };
+static constexpr IntRange FONT_WORD_GAP_RANGE   = { 0, 80 };
+static constexpr IntRange FONT_WIDTH_SCALE_RANGE = { 50, 200 };
+// Events. Reminder days: the calendar downloads holiday data for the longest
+// reminder of any event (+7 days, Calendar.cpp) - an unlimited one made the
+// clock download, keep and search a whole year or more (docs/limits.md).
+static constexpr IntRange EVENT_WARN_DAYS_RANGE = { 0, 30 };
+// Years an event's date may have: the same span in both calendars (5560 =
+// 1799/1800, 5999 = 2238/2239 - the last year written with ה׳).
+static constexpr IntRange EVENT_GREG_YEAR_RANGE = { 1800, 2239 };
+static constexpr IntRange EVENT_HEB_YEAR_RANGE  = { 5560, 5999 };
+// Debug time: only years the clock was checked at (CLAUDE.md "Time is 64-bit").
+static constexpr IntRange DEBUG_TIME_YEAR_RANGE = { 2000, 2299 };
+// Days from 1970-01-01 to a Gregorian date (H. Hinnant's days_from_civil), for
+// turning such years into moments at compile time.
+static constexpr int64_t daysFromCivil(int y, int m, int d) {
+    y -= m <= 2;
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const int64_t yoe = y - era * 400;                                   // year of the 400-year era
+    const int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;  // day of the year, from March
+    const int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;           // day of the era
+    return era * 146097 + doe - 719468;
+}
+static_assert(daysFromCivil(1970, 1, 1) == 0 && daysFromCivil(2000, 1, 1) * 86400 == 946684800LL &&
+              daysFromCivil(2300, 1, 1) * 86400 == 10413792000LL, "daysFromCivil is wrong");
+
+static_assert(inRange(PERCENT_RANGE, BRIGHT_PCT_DEFAULT) && inRange(PERCENT_RANGE, (long)NIGHT_PCT_DEFAULT) &&
+              inRange(PERCENT_RANGE, (long)DAY_PCT_DEFAULT) && inRange(PERCENT_RANGE, (long)ROOM_DARK_PCT_DEFAULT) &&
+              inRange(PERCENT_RANGE, (long)ROOM_LIGHT_PCT_DEFAULT), "a brightness default outside 0-100%");
+static_assert(inRange(MESSAGE_DWELL_SEC_RANGE, MESSAGE_DWELL_SEC_DEFAULT), "MESSAGE_DWELL_SEC_DEFAULT outside its range");
+static_assert(inRange(SCROLL_SPEED_RANGE, SCROLL_SPEED_DEFAULT), "SCROLL_SPEED_DEFAULT outside its range");
+static_assert(inRange(CALIB_X_RANGE, DEFAULT_CALIB_X) && inRange(CALIB_Y_RANGE, DEFAULT_CALIB_Y) &&
+              inRange(CALIB_W_RANGE, DEFAULT_CALIB_W) && inRange(CALIB_H_RANGE, DEFAULT_CALIB_H) &&
+              DEFAULT_CALIB_X + DEFAULT_CALIB_W <= TFT_WIDTH && DEFAULT_CALIB_Y + DEFAULT_CALIB_H <= TFT_HEIGHT,
+              "the default display window is not inside the screen");
+static_assert(inRange(CALIB_TEAR_US_RANGE, DEFAULT_CALIB_TEAR_US), "DEFAULT_CALIB_TEAR_US outside one panel redraw");
+static_assert(inRange(PRAYER_SWITCH_DAYS_RANGE, SWITCHOVER_DISPLAY_DAYS), "SWITCHOVER_DISPLAY_DAYS outside its range");
+static_assert(inRange(FONT_CHAR_GAP_RANGE, FONT_CHAR_GAP_DEFAULT) && inRange(FONT_WORD_GAP_RANGE, FONT_WORD_GAP_DEFAULT) &&
+              inRange(FONT_WIDTH_SCALE_RANGE, FONT_WIDTH_SCALE_DEFAULT), "a font spacing default outside its range");
+static_assert(EVENT_HEB_YEAR_RANGE.lo - EVENT_GREG_YEAR_RANGE.lo == 3760 && EVENT_HEB_YEAR_RANGE.hi - EVENT_GREG_YEAR_RANGE.hi == 3760,
+              "the event year ranges no longer cover the same span in both calendars");
 
 
 // =============================================================================
@@ -498,6 +606,10 @@ struct AppConfig {
     int      switchoverWindowDays;   // Rain/dew prayer slide: days before/after the switch day, 0-2 (see SWITCHOVER_DISPLAY_DAYS)
     Nusach   nusach;                 // rain request wording (NUSACH_DEFAULT)
     EventDayChange eventDayChange;   // Hebrew-date events: with the Hebrew day or at midnight
+    // When each timed slide shows (ShowSpan; *_SHOW_DEFAULT). Config keys:
+    // candleFrom/candleUntil/candleTomorrow, havdalah..., fastFrom/fastUntil,
+    // parashaFrom/parashaUntil, mevarchimFrom/mevarchimUntil.
+    ShowSpan candleShow, havdalahShow, fastShow, parashaShow, mevarchimShow;
 
     // -- Message content order + frequency (see ContentType in Config.h) --
     uint8_t  contentOrder[(int)ContentType::COUNT];     // Display order, as ContentType values
@@ -516,6 +628,10 @@ struct AppConfig {
     // persist, stays RAM-only and reverts to whatever's here on any reboot -
     // this field is what it reverts TO. "none"/"error"/"warn"/"info"/"debug".
     char     logLevel[8];
+    // A level set "for 1 hour / day / week" (2026-11-07): the real time
+    // (seconds since 1970) it goes back to "info" - kept across restarts.
+    // 0 = no end ("always", or nothing timed).
+    int64_t  logLevelUntil;
 };
 
 // Known Wi-Fi network i (0 .. WIFI_NETWORKS-1); "" = slot empty.

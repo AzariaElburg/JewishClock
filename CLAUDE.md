@@ -33,6 +33,15 @@ header only when a second file needs it. A value is described only where
 it's defined; anywhere else, point to it. **To list every tunable: search
 the code for `TUNABLES`.**
 
+**Limits are defined once, across languages too (2026-11-07):** what a
+setting or an event may be is in Config.h's LIMITS; the clock enforces it
+(`Storage::clampConfig()`, events on save/import) and the page and the tests
+ask `GET /api/limits` - never copy a clock number into index.html or a test
+(`data-limit="key"` on a slider/box). Relations go in `static_assert`s. Every
+limit, what depends on it and what 10x / 1/10 would do: **`docs/limits.md`**
+- update it with any new limit. (A 32 KB copy in four places and a reserve
+that silently assumed a small log were found when the log grew.)
+
 ## Project Overview
 
 One-off gift, not a published product: a single clock for the author's
@@ -172,6 +181,10 @@ re-telling the story.
   e.g. "2.0.1-3-g1a2b3c4" (3 commits later, at that commit), "-dirty" with
   uncommitted firmware changes (Data/config.json/events.json don't count).
   Tags: v1.2.0 (= `pre-64bit`), v2.0.0 (start of 2.0, 2026-10-18).
+  v2.1.0 = the version handed over with the clock (2026-11-06; earlier
+  v2.1.0/v2.1.1 tags were removed and their work folded into it - the user
+  wanted the first release a round .0; the old tag objects are listed in
+  `C:\pio3\jc_clean\dist\old_tags_2.1.x.txt`).
   Major = new foundation / one-way step (2.0: framework 3.x), minor =
   features, patch = fixes. The old `version_base.txt` + `build_number.txt`
   (up to 2.0.0.0101) are gone; their compiler define made every build a full
@@ -198,12 +211,55 @@ feature is tested on the full simulator: the clock's whole program (all of
 downloads, web on 127.0.0.1:8080 (home) / 8081 (its own Wi-Fi), updates
 across versions with trial and rollback. `utils/ap_tests.py --sim` = the four
 trips; `sim/drills.py` = failure drills (Wi-Fi gone, power cuts, bad updates,
-full flash, a complaint from a backup) - **both, plus `compare_web.py` and
-`replay_moments.py`, before every release**. See `sim/README.md`. **A stand-in must behave like the hardware/library
+full flash, a complaint from a backup) - **before every release, all of it in
+one go: `python sim/run_all_tests.py --from <the family's version>`** (~1.5 h;
+builds, screen tests, date check, the update from that version, web check,
+drills). See `sim/README.md`. Since 2026-11-08 it builds the firmware and
+its own update package (in its run folder, never dist - `--package` tests a
+given one) and stages today's `Data/` itself: it used to take the newest
+package in dist and the last USB upload's page files (both stale). Every
+simulated clock has its own ports, in **`sim/sim_ports.py`** only - no test
+runs on the work simulator's (a drill stopped it once; the trips factory-reset
+their clock). Drills that need a particular day move their own clock there
+(`to_friday_morning()`): two failed just for running on a Sunday. **Flash a release from its tag, never from a
+later commit** (the version would read "2.1.0-6-g..."): `git worktree add
+C:/pio3/jc_clean/wt210 v2.1.0`, build and upload there with
+`PLATFORMIO_BUILD_DIR=C:/pio3/jc_clean/pio/build210` (2026-11-06). **A stand-in must behave like the hardware/library
 it replaces, never like a shortcut** (the user, 2026-11-05: no PC time, no
 "replacing" project code). Real clock's answers and screenshots:
 `reference/` (out of git, OneDrive-backed - an exception to "generated files
 outside the project": they can't be made again without the clock).
+
+**Two simulators side by side** (2026-11-07, `sim/start_clock.py family|dev`):
+`family` = the parents' exact build (`sim/family_version.txt`, kept in
+`C:/pio3/jc_clean/sim/versions/<v>/`, never rebuilt - `build_clock.py` won't overwrite
+a release's build) with their synced data, on 127.0.0.1:8070 - reproduce their
+complaints there; `dev` = the working build and `Data/`, on 8080 (each start =
+a USB flash: its own copy of the build and the page files, its data kept).
+Independent: an event made on one is not on the other. Each clock's window
+title says which one it is and its version ("Released v2.1.1", "Work v...",
+"Test (ui_tests) v...": `JC_TITLE` from the starting script, set by the clock
+itself on every start; builds before 2026-11-07 get it from start_clock.py).
+start_clock.py opens each in a classic console window (`conhost.exe`), not a
+Windows Terminal tab - tabs cut the title short; that one window outlives the
+clock's restarts, and the supervisor's lines show there, not in run.log.
+
+**Every control of the web pages: `sim/ui_tests.py`** (2026-11-07, part of
+run_all_tests; ~15 min, its own clock on 8060). Coverage is measured in the
+page, not declared: every control ever on screen (each select option, both
+states of a switch, rows and buttons made on the fly, delegated ones) must be
+used by a test, else the run fails with "UNCOVERED". **A new control needs a
+test there.** Results must be checked on the clock (settings, events, files,
+`/state` "screen" = what it shows), not "the click worked". Found on its first
+day: the setup page's network list stayed empty (asked once, the clock said
+"scanning"), Detect hidden after Connect, dead headings looking clickable,
+wrong-year dates passing.
+
+**Time-dependent checks run on simulated time** (the user, 2026-11-08): what the screen
+shows at a moment (candles, day change, fasts, ...) is checked on jcsim - two minutes of
+slides in ~3 s (`sim/test_show_windows.py`: 51 moments in ~45 s) - not by waiting on the
+full simulator, which runs in real time (real NTP, real web). ui_tests checks the page's
+controls and what the clock saved; the screen at other times belongs in a jcsim test.
 
 ### PC simulator (`sim/`, 2026-10-17)
 The clock's calendar/slide/drawing code compiled for the PC unchanged
@@ -278,7 +334,7 @@ task of our own: it's handed to lwIP's existing task (`tcpip_callback` →
 For anything worth correlating after the fact (reconnects, retries, boot
 events) across hours/days, not just the live serial view: `DiagnosticLog::record(category, fmt, ...)`
 (`DiagnosticLog.h`/`.cpp`). Always prints live *and* appends to
-`/log/diagnostic_log.txt` on LittleFS (own folder: in the root it made LittleFS compact the root's change list every ~9 lines, ~250 ms), capped at 32KB with two-file rotation
+`/log/diagnostic_log.txt` on LittleFS (own folder: in the root it made LittleFS compact the root's change list every ~9 lines, ~250 ms), capped at 128 KB per file with two-file rotation (32 KB until 2026-11-07; the page, Get log and the sync script read both files)
 (`.old` on overflow) — survives reboots, not `uploadfs` (see above). Fetch
 via `GET /api/debug/diagnostic-log`, viewable in the UI's Advanced section.
 Added 2026-10-08 after an mDNS investigation where only live serial logs
@@ -497,6 +553,14 @@ caught half-sent. **Settled setup (2026-10-26):**
 (parts of letters blinked under TE timing); the DMA bus (Arduino_ESP32SPIDMA
 left the screen blank as dropped in, not investigated); the Advanced "live
 SPI speed" switch (never took effect - removed).
+
+### Picture sizes come from the display window, never a fixed number (2026-11-07)
+Event pictures and replaced icons are made in the page as tall as the clock
+shows a picture: the window height `calibH` (at most the screen's 128 rows;
+Display.cpp `pictureMaxH()`), event pictures 3:4 wide (`setPictureSize()` in
+index.html). Until then a fixed 72x96 from a prototype's narrower window -
+pictures made then stay as they are (tiles take each picture's own size).
+Only the Hebrew-date mark keeps its own small height (`BI_OWN_HEIGHT`).
 
 ### A reset doesn't power-cycle anything wired to the board
 The BH1750 (or any peripheral) draws power from the ESP32 board's own 3.3V

@@ -378,6 +378,20 @@ void loop() {
     TIMED_STEP("DiagnosticLog::loop", DiagnosticLog::loop());
     TIMED_STEP("Storage::loop", Storage::loop(g_cfg));
 
+    // A log level set for a while (Settings > Diagnostic log): back to info
+    // when its time is up - checked once a minute, once the real time is known.
+    static unsigned long lastLogLevelCheckMs = 0;
+    if (g_cfg.logLevelUntil > 0 && now - lastLogLevelCheckMs > 60000UL && NTPManager::isSynced()) {
+        lastLogLevelCheckMs = now;
+        if ((int64_t)time(nullptr) >= g_cfg.logLevelUntil) {
+            DiagnosticLog::record("Log", "level %s: its time is up - back to info", g_cfg.logLevel);
+            strlcpy(g_cfg.logLevel, "info", sizeof(g_cfg.logLevel));
+            g_cfg.logLevelUntil = 0;
+            Logging::setLevel(LogLevel::INFO);
+            Storage::saveConfigSoon();
+        }
+    }
+
     // --- Permanent diagnostic: total loop() time, same SLOW_STEP_US threshold.
     uint32_t __loopTotalUs = micros() - __loopStartUs;
     if (__loopTotalUs > SLOW_STEP_US) DiagnosticLog::record("Timing", "SLOW LOOP: total %u us", __loopTotalUs);

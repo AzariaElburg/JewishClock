@@ -29,9 +29,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 EXE = Path("C:/pio3/jc_clean/sim/build/jcclock.exe")
-STAGED = Path("C:/pio3/jc_clean/fs")
+# The page files as uploadfs would put them - staged from Data/ at the start of each run
+# (main()); until 2026-11-08 the last USB upload's folder was used: stale pages.
+STAGED = None
 OUT = Path("C:/pio3/jc_clean/sim/drills") / time.strftime("%Y%m%d_%H%M%S")
-HOME, AP, CTL = "http://127.0.0.1:8080", "http://127.0.0.1:8081", "http://127.0.0.1:8090"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from sim_ports import ports, urls  # noqa: E402
+HOME, AP, CTL = urls("drills")   # its own ports, not the work simulator's (sim_ports.py)
 results = []
 
 
@@ -85,9 +89,11 @@ def jget(base, path):
     return json.loads(http(base, path))
 
 
-def api_post(path, obj, base=HOME, timeout=60):
-    """As the page's apiPost(): form field body=<JSON>."""
-    return http(base, path, form={"body": json.dumps(obj, ensure_ascii=False)}, raw=True, timeout=timeout)
+def api_post(path, obj, base=None, timeout=60):
+    """As the page's apiPost(): form field body=<JSON>. base=None: HOME as it is NOW
+    (a default of HOME was fixed at import, before --port-offset - drills then
+    changed another simulator's settings, 2026-11-06)."""
+    return http(base or HOME, path, form={"body": json.dumps(obj, ensure_ascii=False)}, raw=True, timeout=timeout)
 
 
 def ctl(path, body=None):
@@ -114,9 +120,9 @@ def wait(cond, timeout, step=1.0):
     return None
 
 
-def up(base=HOME):
+def up(base=None):
     try:
-        return http(base, "/api/status", timeout=3) and True
+        return http(base or HOME, "/api/status", timeout=3) and True
     except Exception:
         return False
 
@@ -150,6 +156,15 @@ def rmtree(p):
 class Clock:
     """One fresh simulated clock for one drill."""
     def __init__(self, name, exe=EXE, world=None):
+        # Never beside another clock on the same ports: its notes went to the work
+        # simulator and stop() switched that one off (2026-11-07).
+        for url in (HOME, CTL):
+            host, port = url.rsplit("/", 1)[-1].rsplit(":", 1)
+            try:
+                socket.create_connection((host, int(port)), timeout=1).close()
+                sys.exit("port %s is taken (a simulator running there?) - run with --port-offset 100" % port)
+            except OSError:
+                pass
         self.dir = OUT / name
         self.fs, self.state = self.dir / "fs", self.dir / "state"
         rmtree(self.dir)
@@ -163,8 +178,10 @@ class Clock:
         if world is not None:
             (self.state / "world.json").write_text(json.dumps(world), encoding="utf-8")
         self.logf = open(self.dir / "run.log", "wb")
-        self.p = subprocess.Popen([str(exe), "--fs", str(self.fs), "--state", str(self.state), "--verbose"],
-                                  stdout=self.logf, stderr=subprocess.STDOUT, cwd=str(self.dir))
+        ports = ["--home-port", HOME.rsplit(":", 1)[1], "--ap-port", AP.rsplit(":", 1)[1], "--control-port", CTL.rsplit(":", 1)[1]]
+        self.p = subprocess.Popen([str(exe), "--fs", str(self.fs), "--state", str(self.state), "--verbose"] + ports,
+                                  stdout=self.logf, stderr=subprocess.STDOUT, cwd=str(self.dir),
+                                  env=dict(os.environ, JC_TITLE="Test (drills)"))
 
     def log_text(self):
         self.logf.flush()
@@ -178,7 +195,10 @@ class Clock:
         try:
             self.p.wait(15)
         except subprocess.TimeoutExpired:
-            self.p.kill()
+            pass
+        # This clock only (supervisor and its child) - never every jcclock.exe:
+        # another simulator may be running beside the drills (sim/soak.py).
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.p.pid)], capture_output=True)
         self.logf.close()
 
 
@@ -254,29 +274,78 @@ def drill_wifi_failover():
         c.stop()
 
 
+def to_friday_morning():
+    """The drill clock to the coming Friday, 10:00 (debug time), its calendar for that day in:
+    a drill that needs candle lighting, or the full set of slides, must not depend on the
+    day it runs - two failed on a Sunday night (2026-11-08)."""
+    import datetime
+    d = datetime.date.today()
+    d += datetime.timedelta(days=(4 - d.weekday()) % 7 or 7)   # the next Friday, never today
+    api_post("/api/debug/time", {"local": d.isoformat() + "T10:00"})
+    return wait(lambda: jget(HOME, "/api/calendar").get("candleTime"), 120, 2)
+
+
 def drill_wifi_all_down():
     """No known network around: setup mode; back when one returns (PORTAL_RETRY_MS, 2 min)."""
     c = Clock("wifi_all_down")
+    t_boot = time.time()
+    UNREACH = "אין חיבור לאינטרנט"   # Hebrew settings (lang.cpp internetUnreachable)
+
+    def showings(seconds):
+        """How often the notice comes on screen in `seconds`, how many rounds of slides
+        passed meanwhile (each slide comes once a round: the typical number of times a
+        slide came on), the other screens seen, and whether the setup line showed.
+        Rounds, not a fixed count: how many slides a round has depends on the day
+        (a Sunday night has fewer - 2026-11-08)."""
+        n, prev, came, setup, last = 0, False, {}, False, None
+        end = time.time() + seconds
+        while time.time() < end:
+            s = state().get("screen", "")
+            on = UNREACH in s
+            n += on and not prev
+            prev = on
+            setup |= "Setup: join" in s
+            if s and not on and s != last:
+                came[s] = came.get(s, 0) + 1
+            last = s
+            time.sleep(0.5)
+        counts = sorted(c for c in came.values() if c >= 2)
+        rounds = counts[len(counts) // 2] if counts else 0
+        return n, rounds, len(came), setup
+
     try:
         wait(synced, 90)
+        check("a Friday morning on the drill clock (its calendar in)", to_friday_morning())
         w = default_world()
         for n in w["networks"]:
             n["up"] = False
         ctl("/world", json.dumps(w).encode())
         # Once online, the clock's own Wi-Fi stays its synchronized one ("JewishClock"):
-        # the full page must work there, and the screen must name that network
-        # (both broken before 2.1.1 - a redirect loop, and "JewishClock-Setup").
-        scr = wait(lambda: (lambda s: s if "Setup: join Wi-Fi" in s else None)(state().get("screen", "")), 150, 2)
-        check("Wi-Fi all gone: screen names the clock's Wi-Fi that's up",
-              scr and "join Wi-Fi JewishClock " in scr, (scr or state().get("screen", ""))[:90])
+        # the full page must work there (a redirect loop before 2.1.1), and the screen
+        # keeps its slides plus "Internet unreachable" - every round in the startup
+        # minutes, then every 4th (the user, 2026-11-06).
+        first = wait(lambda: UNREACH in state().get("screen", ""), 100, 0.5)
+        check("Wi-Fi all gone: 'Internet unreachable' on screen within ~1 min", first)
+        left = t_boot + 175 - time.time()
+        n1, r1, o1, s1 = showings(max(left, 30))
+        check("Wi-Fi all gone, startup minutes: notice every round, slides between", n1 >= 2 and o1 >= 2 and n1 >= r1 - 1,
+              "%d times in %d rounds, %d other screens in %.0f s" % (n1, r1, o1, left))
         code, page = http(AP, "/", raw=True)
         check("Wi-Fi all gone: the page works on the clock's own Wi-Fi", code == 200 and b"<html" in page.lower(), "status %s" % code)
         check("Wi-Fi all gone: its settings answer there", "wifiSSID" in jget(AP, "/api/config"))
+        time.sleep(max(0, t_boot + 200 - time.time()))
+        n2, r2, o2, s2 = showings(240)
+        check("Wi-Fi all gone, later: notice every 4th round", n2 >= 1 and o2 >= 2 and 2.5 <= r2 / n2 <= 5.5,
+              "%d times in %d rounds, %d other screens in 240 s" % (n2, r2, o2))
+        check("Wi-Fi all gone: never the setup line (its Wi-Fi is JewishClock)", not (s1 or s2))
         for n in w["networks"]:
             n["up"] = True
         ctl("/world", json.dumps(w).encode())
         back = wait(lambda: state().get("sta"), 200, 3)
         check("Wi-Fi back: rejoins by itself within the 2-minute retry", back)
+        time.sleep(5)
+        n3, _, _, _ = showings(60)
+        check("Wi-Fi back: notice gone", n3 == 0, "%d times" % n3)
     finally:
         c.stop()
 
@@ -364,6 +433,200 @@ def drill_light():
         c.stop()
 
 
+SETTINGS_CHANGE = {   # every setting the page posts to /api/config (WebUI.cpp), each to a value it doesn't have
+    "rolloverMode": 0, "use24Hour": False, "rotationMode": 1, "messageDwellSec": 7, "separator": " ~ ",
+    "scrollSpeed": 6, "fontCharGapPx": 2, "fontWordGapPx": 12, "fontWidthScalePct": 90, "brightPct": 60,
+    "useLightSensor": False, "nightPct": 20.5, "dayPct": 80, "roomDarkPct": 3, "roomLightPct": 70, "learnRoomLight": False,
+    "calibX": 2, "calibY": 30, "calibW": 470, "calibH": 95, "calibTearUs": 9000,
+    "showHebrewYear": False, "showShabbatShalom": True, "showRoshChodesh": False, "showFasts": False, "omerMode": 1,
+    "showSpecialShabbat": False, "showLiturgical": False, "showSwitchover": False, "prayerSwitchDays": 1, "nusach": 1,
+    "eventDayChange": 1,
+}
+
+
+def same(a, b):
+    if isinstance(a, float) or isinstance(b, float):
+        try:
+            return abs(float(a) - float(b)) < 0.06
+        except (TypeError, ValueError):
+            return False
+    return a == b
+
+
+def drill_settings_roundtrip():
+    """Every setting: changed from the page's API, read back, still so after a restart; nothing else moves."""
+    c = Clock("settings_roundtrip")
+    try:
+        wait(synced, 90)
+        before = jget(HOME, "/api/config")
+        order = before.get("contentOrder")
+        new_order = list(reversed(order)) if isinstance(order, list) else list(reversed(order.split()))
+        freq = before.get("contentFrequency") or {}
+        new_freq = {k: (0 if v else 1) for k, v in freq.items()}
+        change = dict(SETTINGS_CHANGE, contentOrder=new_order, contentFrequency=new_freq,
+                      wifiSSID3="DrillNet", wifiPassword3="drill-pass-1")
+        code, said = api_post("/api/config", change)
+        check("settings: all accepted in one go", code == 200, said.decode()[:40])
+
+        def compare(cfg, when):
+            bad = [k for k, v in SETTINGS_CHANGE.items() if not same(cfg.get(k), v)]
+            got_order = cfg.get("contentOrder"); got_order = got_order.split() if isinstance(got_order, str) else got_order
+            if got_order != new_order: bad.append("contentOrder")
+            if {k: v for k, v in (cfg.get("contentFrequency") or {}).items() if k in new_freq} != new_freq: bad.append("contentFrequency")
+            if cfg.get("wifiSSID3") != "DrillNet": bad.append("wifiSSID3")
+            check("settings: every change %s" % when, not bad, "differ: %s" % bad if bad else "%d settings" % (len(SETTINGS_CHANGE) + 3))
+            untouched = [k for k in before if k not in change and k not in ("wifiPassword", "wifiPassword2", "wifiPassword3", "debugTimeOffset")
+                         and not same(before[k], cfg.get(k))]
+            check("settings: nothing else changed %s" % when, not untouched, "changed: %s" % untouched)
+        compare(jget(HOME, "/api/config"), "read back at once")
+        time.sleep(4)   # the save lands 2 s after the last change
+        ctl("/reset")
+        wait(up, 90)
+        time.sleep(3)
+        compare(jget(HOME, "/api/config"), "after a restart")
+        api_post("/api/config", {"wifiSSID3": ""})
+        time.sleep(4)
+        check("settings: a network removed again", jget(HOME, "/api/config").get("wifiSSID3", "") == "")
+    finally:
+        c.stop()
+
+
+def drill_day_change():
+    """The Hebrew date changes at nightfall (צאת הכוכבים), live, as the clock runs into it."""
+    c = Clock("day_change")
+    try:
+        wait(synced, 90)
+        # Midday first: after nightfall the calendar has no "tzeit" left for the day.
+        today = time.strftime("%Y-%m-%d")
+        api_post("/api/debug/time", {"local": today + "T12:00"})
+        cal = wait(lambda: (lambda x: x if x.get("tzeit") else None)(jget(HOME, "/api/calendar")), 90, 2)
+        tzeit, before = cal["tzeit"], cal["hebrewDate"]
+        h, m = map(int, tzeit.split(":"))
+        t = h * 60 + m - 2   # two minutes before nightfall
+        api_post("/api/debug/time", {"local": "%sT%02d:%02d" % (today, t // 60, t % 60)})
+        wait(lambda: jget(HOME, "/api/calendar")["hebrewDate"] == before, 60)
+        seen_before = jget(HOME, "/api/calendar")["hebrewDate"]
+        after = wait(lambda: (lambda d: d if d != seen_before else None)(jget(HOME, "/api/calendar")["hebrewDate"]), 300, 5)
+        check("day change: Hebrew date moves on at nightfall (%s)" % tzeit, after, "%s -> %s" % (seen_before, after))
+        shown = wait(lambda: (lambda s: s if after and after in s else None)(state().get("screen", "")), 120, 0.5)
+        check("day change: the screen shows the new date", shown, (shown or "")[:60])
+        api_post("/api/debug/time", {"offset": 0})
+    finally:
+        c.stop()
+
+
+def drill_place_follows_network():
+    """Each network has its place: moving to the other one switches city (and candle times)."""
+    c = Clock("place_follows_network")
+    try:
+        wait(synced, 90)
+        cfg = jget(HOME, "/api/config")
+        ssids = [cfg.get("wifiSSID"), cfg.get("wifiSSID2")]
+        places = [p.get("city") for p in cfg.get("places", [])]
+        here = state().get("ssid")
+        other = ssids[1] if here == ssids[0] else ssids[0]
+        want = places[ssids.index(other)]
+        check("a Friday morning on the drill clock (its calendar in)", to_friday_morning())
+        city0, candle0 = cfg.get("city"), jget(HOME, "/api/calendar").get("candleTime")
+        w = default_world()
+        for n in w["networks"]:
+            n["up"] = n["ssid"] == other
+        ctl("/world", json.dumps(w).encode())
+        wait(lambda: state().get("ssid") == other and state().get("sta"), 120)
+        city = wait(lambda: (lambda x: x if x == want else None)(jget(HOME, "/api/config").get("city")), 60)
+        check("place: on %s the place is %s" % (other, want), city, "%s -> %s" % (city0, jget(HOME, "/api/config").get("city")))
+        candle = wait(lambda: (lambda x: x if x and x != candle0 else None)(jget(HOME, "/api/calendar").get("candleTime")), 90, 3)
+        check("place: candle lighting follows (%s)" % want, candle or city0 == want, "%s -> %s" % (candle0, candle))
+    finally:
+        c.stop()
+
+
+def drill_log_rotation():
+    """The diagnostic log at its cap (128 KB per file since 2026-11-07): moves to .old, keeps writing, stays readable."""
+    c = Clock("log_rotation")
+    try:
+        wait(synced, 90)
+        for i in range(1000):   # ~170 KB: past one file's 128
+            http(HOME, "/api/debug/diagnostic-log/note", form={"msg": "drill line %03d " % i + "x" * 130})
+        time.sleep(5)
+        log = c.diag()
+        cur = c.fs / "log" / "diagnostic_log.txt"
+        old = c.fs / "log" / "diagnostic_log.old.txt"
+        check("log: rotated at the cap (.old exists)", old.exists(), "%d / %d bytes" % (cur.stat().st_size if cur.exists() else -1, old.stat().st_size if old.exists() else -1))
+        check("log: current file stays under 129 KB", cur.exists() and cur.stat().st_size <= 129 * 1024)
+        check("log: the last line is in what the page gets", "drill line 999" in log)
+    finally:
+        c.stop()
+
+
+def drill_corrupt_files():
+    """Flash damage: settings or events unreadable - the clock still starts, no restart loop."""
+    c = Clock("corrupt_files")
+    try:
+        wait(synced, 90)
+        (c.fs / "events.json").write_bytes(b"\x00\xff{ not json")
+        ctl("/reset")
+        check("damaged events: clock comes back online", wait(synced, 120))
+        check("damaged events: running, events list answers", isinstance(jget(HOME, "/api/events/list"), list),
+              "%d events" % len(jget(HOME, "/api/events/list")))
+        (c.fs / "config.json").write_bytes(b"{\"wifiSSID\": tr")
+        ctl("/reset")
+        time.sleep(30)
+        starts = c.log_text().count("[sim] JewishClock")
+        check("damaged settings: no restart loop", starts <= 4, "%d starts in all" % starts)
+        check("damaged settings: reachable (setup mode or online)", in_setup_mode() or up(), "")
+    finally:
+        c.stop()
+
+
+def drill_roaming():
+    """Mesh: the access point it's on fades - after 30 s weak it moves to a clearly stronger one (serviceRoaming)."""
+    c = Clock("roaming")
+    try:
+        wait(synced, 90)
+        w = default_world()
+        here = state().get("ssid")
+        net = next(n for n in w["networks"] if n["ssid"] == here)
+        weak = dict(net, rssi=-86)
+        # Clearly the strongest of all: roaming goes to any known network's best
+        # access point (WiFiManager.cpp serviceRoaming), not only this network's.
+        strong = dict(net, rssi=-45, bssid="5A:1E:00:00:AA:BB", channel=11)
+        w["networks"] = [n for n in w["networks"] if n["ssid"] != here] + [weak, strong]
+        strong["up"] = False
+        ctl("/world", json.dumps(w).encode())          # first: only the weak one (same address = the same access point)
+        time.sleep(3)
+        strong["up"] = True
+        ctl("/world", json.dumps(w).encode())          # a stronger node appears
+        moved = wait(lambda: "ap=5A:1E:00:00:AA:BB" in c.log_text(), 150, 3)
+        check("roaming: moves to the clearly stronger access point", moved)
+        check("roaming: the roam scan is logged", "roam scan" in c.log_text())
+        check("roaming: online again after the move", wait(lambda: state().get("sta"), 60))
+    finally:
+        c.stop()
+
+
+def drill_setup_portal_save():
+    """First setup: a factory-new clock, the home Wi-Fi typed into the setup page - it restarts and joins."""
+    c = Clock("setup_portal_save")
+    try:
+        wait(synced, 90)
+        w = default_world()
+        target = w["networks"][0]
+        http(HOME, "/api/factory-reset", form={"body": "{}"})
+        check("setup: factory reset -> setup page", wait(in_setup_mode, 120, 2))
+        code, html = http(AP, "/", raw=True)
+        check("setup: the setup page itself", code == 200 and b"Setup" in html and b"/save" in html, "status %s" % code)
+        nets = wait(lambda: (lambda j: j if j.get("networks") else None)(json.loads(http(AP, "/wifi-scan"))), 30, 2)
+        check("setup: it lists the networks around", nets and any(n["ssid"] == target["ssid"] for n in nets["networks"]),
+              str([n["ssid"] for n in (nets or {}).get("networks", [])]))
+        code, said = http(AP, "/save", form={"ssid": target["ssid"], "password": target["password"]}, raw=True)
+        check("setup: saved", code == 200 and b"Settings Saved" in said)
+        check("setup: restarts and joins the home Wi-Fi", wait(lambda: state().get("sta") and state().get("ssid") == target["ssid"], 120, 2))
+        check("setup: time and page there", wait(synced, 90) and b"<html" in http(HOME, "/").lower())
+    finally:
+        c.stop()
+
+
 OLD_EXE = Path("C:/pio3/jc_clean/sim/versions/2.0.0-146-g08b7548/jcclock.exe")   # a version to update FROM
 DIST = Path("C:/pio3/jc_clean/dist")
 
@@ -372,11 +635,11 @@ def newest_package():
     return max(DIST.glob("*.jcupdate"), key=lambda p: p.stat().st_mtime)
 
 
-def upload(data, name="update.jcupdate", base=HOME):
+def upload(data, name="update.jcupdate", base=None):
     boundary = "----drill%d" % int(time.time() * 1000)
     body = (("--%s\r\nContent-Disposition: form-data; name=\"firmware\"; filename=\"%s\"\r\n"
              "Content-Type: application/octet-stream\r\n\r\n") % (boundary, name)).encode() + data + ("\r\n--%s--\r\n" % boundary).encode()
-    return http(base, "/update", data=body, raw=True, timeout=120,
+    return http(base or HOME, "/update", data=body, raw=True, timeout=120,
                 headers={"Content-Type": "multipart/form-data; boundary=" + boundary})
 
 
@@ -397,11 +660,15 @@ def drill_update_bad_files():
         for label, data, want in [("damaged", bytes(bad), "damaged"), ("cut off", pkg[:len(pkg) // 2], "incomplete"),
                                   ("not an update", b"\x89PNG\r\n\x1a\n" + os.urandom(5000), "not a clock update"),
                                   ("empty", b"", "")]:
+            ms0 = state().get("millis", 0)
             code, msg = upload(data)
             text = msg.decode("utf-8", "replace")
             time.sleep(4)
             check("update %s: refused" % label, code != 200 and (want in text), "%s: %s" % (code, text[:110]))
-            check("update %s: clock unchanged, no restart" % label, version() == before and state().get("millis", 0) > 10000)
+            # No restart: its uptime kept counting from before the upload (a fixed
+            # "over 10 s" failed once when the time sync came at 5 s - 2026-11-06).
+            ms1 = state().get("millis", 0)
+            check("update %s: clock unchanged, no restart" % label, version() == before and ms1 > ms0 + 3000, "uptime %d -> %d ms" % (ms0, ms1))
         check("update: no leftovers waiting (state ok)", jget(HOME, "/api/status").get("updateState") == "ok")
     finally:
         c.stop()
@@ -579,7 +846,9 @@ def drill_complaint_repro():
 DRILLS = {f.__name__[6:]: f for f in [drill_boot_ntp, drill_rtc_memory, drill_wifi_failover, drill_wifi_all_down,
                                        drill_wrong_password, drill_no_internet, drill_settings_power_cut, drill_light,
                                        drill_update_bad_files, drill_update_power_cut_in_trial, drill_update_trial_fail,
-                                       drill_pictures_fill, drill_events_many, drill_complaint_repro]}
+                                       drill_pictures_fill, drill_events_many, drill_complaint_repro,
+                                       drill_settings_roundtrip, drill_day_change, drill_place_follows_network,
+                                       drill_log_rotation, drill_corrupt_files, drill_roaming, drill_setup_portal_save]}
 
 
 def main():
@@ -588,7 +857,11 @@ def main():
     ap.add_argument("--only", nargs="*")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--exe", help="another build (e.g. C:/pio3/jc_clean/sim/versions/<version>/jcclock.exe) - before/after a fix")
+    ap.add_argument("--port-offset", type=int, default=0, help="shifts the drills' ports (sim_ports.py) - beside another run")
     a = ap.parse_args()
+    if a.port_offset:
+        global HOME, AP, CTL
+        HOME, AP, CTL = urls("drills", a.port_offset)
     if a.exe:
         global EXE
         EXE = Path(a.exe)
@@ -597,16 +870,19 @@ def main():
         print("\n".join(DRILLS))
         return
     OUT.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["taskkill", "/F", "/IM", "jcclock.exe"], capture_output=True)
+    global STAGED
+    sys.path.insert(0, str(ROOT / "utils"))
+    import web_files
+    STAGED = OUT / "_staged"
+    web_files.stage(ROOT / "Data", STAGED)
     for name, fn in DRILLS.items():
         if a.only and name not in a.only:
             continue
         log("== %s ==" % name)
         try:
-            fn()
+            fn()   # each drill stops its own clock (Clock.stop) - other simulators keep running
         except Exception as e:
             check(name + ": drill ran", False, "%s: %s" % (type(e).__name__, e))
-        subprocess.run(["taskkill", "/F", "/IM", "jcclock.exe"], capture_output=True)
         time.sleep(1)
     bad = [r for r in results if not r[1]]
     log("== %d checks, %d failed ==" % (len(results), len(bad)))

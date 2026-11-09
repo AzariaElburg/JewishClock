@@ -62,9 +62,11 @@ td,th{border:1px solid #E1DFDD;padding:4px 8px;text-align:left;vertical-align:to
 <p>A sequence of short messages in the window, over and over:</p>
 <ul>
   <li>The Hebrew and the Gregorian date.</li>
-  <li>Shabbat: candle lighting on Friday, Havdalah on Saturday night, the weekly parasha, Shabbat Mevarchim and the
-    special Shabbatot.</li>
+  <li>Shabbat: candle lighting on Friday, Havdalah on Saturday, the weekly parasha all week, Shabbat Mevarchim and the
+    special Shabbatot; the same for Yom Tov.</li>
   <li>Holidays, Rosh Chodesh, fasts with their start and end times, the Omer count.</li>
+  <li>When candle lighting, Havdalah, the fast times, the parasha and Shabbat Mevarchim show - from midnight or from the
+    evening before, until their time or until midnight - is chosen in <a href="#content">Calendar Content</a>.</li>
   <li>Daf Yomi and Mishna Yomit.</li>
   <li>The rain/dew changes in prayer (see below).</li>
   <li>The family's events - birthdays, anniversaries, yahrzeits - with the age or number of years.</li>
@@ -106,8 +108,9 @@ td,th{border:1px solid #E1DFDD;padding:4px 8px;text-align:left;vertical-align:to
   list, type its password, <span class="ui">Connect</span>. To put back a backup instead, choose
   <span class="ui">Restore from backup</span> there (see <a href="#backup">Backup</a>).</p>
 <h3>When the home Wi-Fi is gone</h3>
-<p>Router off, out of reach, or its password changed: the clock keeps its own Wi-Fi, and the screen says which one to
-  join. The page works there as always (<b>192.168.4.1</b>) - e.g. to type the new password in
+<p>Router off, out of reach, or its password changed: the clock goes on with the dates it has saved (three weeks or more) and
+  now and then shows <b>Internet unreachable</b> (<span dir="rtl">אין חיבור לאינטרנט</span>) among its messages. Its own Wi-Fi, <b>JewishClock</b>, stays up,
+  and the page works there as always (<b>192.168.4.1</b>) - e.g. to type the new password in
   <span class="ui">Settings</span> &rarr; <span class="ui">Wi-Fi</span>. Every two minutes the clock tries the home
   Wi-Fi again by itself.</p>
 
@@ -120,12 +123,15 @@ td,th{border:1px solid #E1DFDD;padding:4px 8px;text-align:left;vertical-align:to
   <li><span class="ui">＋</span> (new) - or click an existing event to change it.</li>
   <li>Name, and the type: <span class="ui">Birthday</span>, <span class="ui">Wedding</span>, <span class="ui">Yahrzeit</span>,
     <span class="ui">Other</span>.</li>
-  <li>The date: <span class="ui">Gregorian</span>, <span class="ui">Hebrew</span>, or both. For a Hebrew date tick
+  <li>The date: <span class="ui">Gregorian</span>, <span class="ui">Hebrew</span>, or both. It starts at today (or at
+    the day you clicked, this year) - change what differs; the other calendar follows. With both dates and a year on
+    either, <span class="ui">Save</span> checks they are the same day. For a Hebrew date tick
     <span class="ui">After sunset</span> if it happened after sunset - the Hebrew date is then the next day's.
     <span class="ui">Adar II</span> for a leap year's second Adar.</li>
-  <li><span class="ui">Remind ... days before</span>: also show it that many days ahead ("in 2 days").</li>
+  <li><span class="ui">Remind ... days before</span>: also show it that many days ahead ("in 2 days"), up to 30 days.</li>
   <li>An icon or a picture (next section).</li>
-  <li><span class="ui">Save</span>. <span class="ui">Delete</span> removes it.</li>
+  <li><span class="ui">Save</span>. <span class="ui">Delete</span> moves it to the recycle bin: <span class="ui">Undo</span> right after, or <span class="ui">Settings</span> &rarr; <span class="ui">Deleted events</span> &rarr; <span class="ui">Restore</span> (one), or tick several and <span class="ui">Restore selected</span>, or
+    <span class="ui">Restore all</span>. <span class="ui">Empty recycle bin</span> deletes them for good.</li>
 </ol>
 <p class="note">Many events at once: edit them in Excel - see <a href="#backup">Export &amp; import</a>.</p>
 
@@ -133,11 +139,15 @@ td,th{border:1px solid #E1DFDD;padding:4px 8px;text-align:left;vertical-align:to
 <p>Each event can carry an icon (cake, candle, rings, ...) or a picture of your own: a photo, or one frame of a video
   (move the video's slider to the moment). The slider under the picture zooms in and out, and dragging the picture
   chooses the part that shows; the picture is shrunk to the clock's window. <span class="ui">✎</span> replaces it, <span class="ui">✕</span> removes it (the icon is
-  back). Pictures are kept in one library on the clock (<span class="ui">Library</span>) - one picture can serve several events.</p>
-<p><b>The clock's own pictures</b> - candles, Havdalah, Torah, Mishna, the event icons - can be replaced with your own:
-  <span class="ui">Settings</span> &rarr; <span class="ui">Pictures</span>. Here a short part of a video becomes a small
-  animation (<span class="ui">Start here</span> / <span class="ui">End here</span>). Each one can be put back to the original.
-  <span class="ui">Room for replaced pictures</span> shows how much space is left.</p>
+  back). Pictures are kept in one library on the clock (<span class="ui">Library</span>) - one picture can serve several events.
+  <span class="ui">Settings</span> &rarr; <span class="ui">Pictures and icons</span> shows them all, each with the events that use it
+  (a name opens that event). The <span class="ui">Storage</span> bar at its top shows the space on the clock: event
+  pictures, your icons, and what is available (about how many more pictures fit). A picture no event uses any more is removed by itself (deleted events keep theirs
+  while they are in the recycle bin).</p>
+<p><b>The clock's icons</b> - candles, Havdalah, Torah, Mishna, birthday, wedding... - can be replaced with your own photo or GIF:
+  <span class="ui">Settings</span> &rarr; <span class="ui">Pictures and icons</span>. Here a short part of a video becomes a small
+  animation (<span class="ui">Start here</span> / <span class="ui">End here</span>). <span class="ui">Original</span> puts one back.
+  Next to <span class="ui">Icons</span>: how many you replaced; the bar above shows the space they use.</p>
 
 <h2 id="display">5. Display and brightness</h2>
 <p><span class="ui">Settings</span> &rarr; <span class="ui">Display</span>:</p>
@@ -158,11 +168,26 @@ td,th{border:1px solid #E1DFDD;padding:4px 8px;text-align:left;vertical-align:to
 <p><span class="ui">Settings</span> &rarr; <span class="ui">Calendar Content</span> lists every kind of message. For each:
   whether and how often it shows; drag <b>⠿</b> to change the order (higher = earlier). Some have their own choices:</p>
 <table>
+  <tr><td>Parasha</td><td><span class="ui">All week</span> (it changes when Shabbat ends), or only around Shabbat:
+    <span class="ui">From Thu evening</span> (when the Jewish Friday begins) or <span class="ui">From Fri midnight</span>,
+    <span class="ui">Until Havdalah</span> or <span class="ui">Until midnight</span> after Shabbat.</td></tr>
+  <tr><td>Candle Lighting, Havdalah</td><td><span class="ui">From midnight</span> of their day, or
+    <span class="ui">From evening before</span>; <span class="ui">Until lighting</span> / <span class="ui">Until Havdalah</span>
+    or <span class="ui">Until midnight</span>. Shown from the evening before, <span class="ui">Tomorrow</span> puts
+    "<span class="he">מחר</span>" before the time. Erev Yom Tov and the end of Yom Tov the same way.</td></tr>
+  <tr><td>Fast Times</td><td><span class="ui">From day before</span> (midnight) or <span class="ui">From evening before</span>
+    the fast begins; <span class="ui">Until fast end</span> or <span class="ui">Until midnight</span>. Erev Yom Kippur's
+    <span class="he">סעודה מפסקת</span> the same way.</td></tr>
+  <tr><td>Shabbat Mevarchim</td><td><span class="ui">Like Parasha</span>, or its own choice, as the parasha's.</td></tr>
   <tr><td>Birthdays &amp; Events</td><td>A Hebrew-date event starts the evening before, or at midnight.</td></tr>
-  <tr><td>Omer</td><td>Short, medium or the full wording of the count.</td></tr>
+  <tr><td>Omer</td><td>Short, weeks and days, or the full wording of the count. "23 = 3 שבועות + 2 ימים" is cut down until it fits the screen without scrolling.</td></tr>
   <tr><td><span class="he">משיב הרוח · טל ומטר</span></td><td>Nusach (<span class="he">אשכנז / ספרד</span>) and the days shown
     before and after a switch day.</td></tr>
 </table>
+<p>"Evening" is when the Hebrew date changes (<span class="he">צאת הכוכבים</span>). "<span class="he">מחר</span>" and
+  "<span class="he">מחרתיים</span>" count by the ordinary date: on Thursday evening Friday's candle lighting is
+  "<span class="he">מחר</span>". To see a choice at work, move the clock's time (<a href="#advanced">Advanced</a>,
+  Debug time) - and set it back afterwards.</p>
 <p><span class="ui">Show year</span> adds the year to the date messages.</p>
 
 <h2 id="wifi">7. Wi-Fi, place and name</h2>
@@ -219,7 +244,7 @@ td,th{border:1px solid #E1DFDD;padding:4px 8px;text-align:left;vertical-align:to
 </ul>
 
 <h2 id="advanced">11. Advanced</h2>
-<p><span class="ui">Settings</span> &rarr; <span class="ui">Advanced</span> - not needed in daily use:</p>
+<p><span class="ui">Settings</span> &rarr; <span class="ui">Advanced</span>, at the bottom - not needed in daily use:</p>
 <ul>
   <li><b>Window calibration</b> (<span class="ui">Offset X</span>, <span class="ui">Offset Y</span>, <span class="ui">Width</span>,
     <span class="ui">Height</span>, <span class="ui">Calibrate</span>): where the visible window is on the screen - only
@@ -227,12 +252,13 @@ td,th{border:1px solid #E1DFDD;padding:4px 8px;text-align:left;vertical-align:to
     above and below the letters.</li>
   <li><span class="ui">Demo</span>: everything the clock can show, once.</li>
   <li><b>Debug time</b>: test the clock at another date (<span class="ui">Shift by</span>, <span class="ui">Set to (Gregorian)</span>,
-    <span class="ui">Set to (Hebrew)</span>, <span class="ui">Apply</span>). Always finish with
+    <span class="ui">Set to (Hebrew)</span>, <span class="ui">Apply</span>); the dates start at today. Always finish with
     <span class="ui">Back to real time</span>.</li>
   <li><span class="ui">Holiday &amp; times data (from Hebcal)</span>: <span class="ui">Refresh now</span> downloads it again,
     <span class="ui">Clear cache</span> drops the stored copy. Your own events are not affected.</li>
   <li><span class="ui">NTP server</span>: where the clock gets its time. <span class="ui">Log level</span>: how much the log
-    records.</li>
+    records, and for how long - until the clock restarts, for an hour / a day / a week, or always; then it is back to
+    Info by itself.</li>
 </ul>
 
 <h2 id="about">12. Data sources and licenses</h2>
@@ -242,7 +268,7 @@ td,th{border:1px solid #E1DFDD;padding:4px 8px;text-align:left;vertical-align:to
   <li>The software parts made by others and their licenses: <span class="ui">Settings</span> &rarr;
     <span class="ui">Clock software</span> &rarr; <span class="ui">Licenses</span>.</li>
 </ul>
-<p class="ver">For clock software version <span class="fwver">2.1.1</span></p>
+<p class="ver">For clock software version <span class="fwver">2.1.2</span></p>
 </main>
 <a class="back" href="/" onclick="return backToClock()">&larr; Back to the clock's page</a>
 <script>

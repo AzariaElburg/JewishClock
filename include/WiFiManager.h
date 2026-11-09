@@ -25,6 +25,9 @@ public:
     // full page - startAP()), not the setup one (startAPPortal()). Stays up
     // while the home network is gone. Any task, no lock (web filters ask).
     static bool   syncedApUp();
+    // How long no known network has been joined: 0 while connected, else ms
+    // since the last connection (since startup if none yet). Main loop only.
+    static uint32_t offlineForMs();
     // The known network being joined (or joined); "" while still choosing.
     static String joiningSsid();
     // Join known network `slot` now ("Connect" on the page; any task).

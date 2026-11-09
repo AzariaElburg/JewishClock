@@ -231,7 +231,10 @@ static time_t parseLocalTime(const std::string& s, bool utc) {
     return wall - Sim::utcOffsetAt(guess);
 }
 
+extern "C" __declspec(dllimport) int __stdcall SetConsoleOutputCP(unsigned int);   // windows.h clashes with the stubs
+
 int main(int argc, char** argv) {
+    SetConsoleOutputCP(65001);   // the log is UTF-8 (Hebrew): without this a console shows it as code page 437
     std::string fsDir = "sim_fs", outDir = "sim_out", when, cacheDir, matchDir;
     double seconds = 90, speed = 1; bool live = false, utc = false, printEpoch = false; long long epoch = -1;
     uint32_t seed = 0; bool seedGiven = false;

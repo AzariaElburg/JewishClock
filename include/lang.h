@@ -60,8 +60,12 @@ struct DisplayStrings {
     // Fast-times slide - kept short for the display
     const char* fastLabel;          // "צום" / "Fast" / "Vasten"
     const char* tomorrow;           // "מחר" / "tomorrow" / "morgen"
+    const char* dayAfterTomorrow;   // "מחרתיים" / "day after tomorrow" / "overmorgen"
     const char* until;              // "עד" / "until" / "tot"
     const char* seudaMafseketUntil; // "סעודה מפסקת עד" / "Pre-fast meal until" / "Laatste maaltijd tot"
+
+    // No known Wi-Fi network for a while (MessageAggregator's offline slide)
+    const char* internetUnreachable; // "אין חיבור לאינטרנט" / "Internet unreachable" / "Internet onbereikbaar"
 
     // Gregorian month names, index 0 = January. Used for the Gregorian date
     // slide, formatted as "<day> <month> <year>".
