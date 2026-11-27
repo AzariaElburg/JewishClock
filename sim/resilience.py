@@ -2017,6 +2017,24 @@ def drill_ntp():
         check("... and asks again by itself within its failed-ask wait (%.0f s), not after %.0f h" % (FAILED_S, T["SYNC_INTERVAL_MS"] / 3600000),
               wait(lambda: W().count("ntpSent", c.log_text()) > n_sent, FAILED_S + 30, 1))
 
+        # ── the list changed while a jump waits for its second opinion (2026-11-27, a full run under load:
+        #    the first opinion's server was kept as a slot number - the new list's first server, left out) ──
+        srv.set(off=0)
+        use_fresh()
+        settle(0, 30, 30)
+        a_ips = use_fresh(first={"off": 3600 * 1000}, second={"silent": True})
+        t_b = time.time()
+        b_asked = wait(lambda: asked_since(a_ips[1], t_b), 30, 0.1)   # the second opinion asked (it stays silent)
+        srv.set(off=3600 * 1000)
+        new = use_fresh()
+        t_new = time.time()
+        check("NTP: the list changed while a jump waited for its second opinion: the new list's first server asked",
+              b_asked and wait(lambda: asked_since(new[0], t_new), 20, 0.25), [len(asked_since(ip, t_new)) for ip in new])
+        check("... and the jump made (its answer agreed with the first opinion)", settle(3600 * 1000, 30, 30), err(3600 * 1000))
+        srv.set(off=0)
+        use_fresh()
+        settle(0, 30, 30)
+
         # ── replies that must not be used (all servers +5 s, but each reply wrong) ──
         bad = [("its clock not set (LI=3)", {"li": 3}), ("stratum 16", {"stratum": 16}),
                # (kiss-o'-death RATE / DENY: their own part below - the server then rests)

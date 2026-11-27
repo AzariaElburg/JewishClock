@@ -922,10 +922,16 @@ static void setServersInternal(const char* const* servers, int count) {
         if (servers[i] && servers[i][0]) g_servers[g_serverCount++] = servers[i];
     if (!g_serverCount) g_servers[g_serverCount++] = NTP_SERVER_1;   // Storage::clampConfig() keeps one; just in case
     bool kept[NTP_SERVER_SLOTS] = {};
+    // A jump's first opinion follows its server by name too (2026-11-27: kept as a slot number, it
+    // pointed at the new list's first server after a change, and that one was left out). Gone from
+    // the list: the opinion still counts, any server of the new list may give the second one.
+    const int confirmWas = g_confirmFrom;
+    g_confirmFrom = -1;
     for (int j = 0; j < NTP_SERVER_SLOTS; j++) {
         int from = -1;
         for (int i = 0; j < g_serverCount && i < oldCount && from < 0; i++)
             if (old[i].name.equalsIgnoreCase(g_servers[j])) from = i;
+        if (from >= 0 && from == confirmWas) g_confirmFrom = j;
         if (from >= 0) {
             const Slot& s = old[from];
             kept[from] = true;

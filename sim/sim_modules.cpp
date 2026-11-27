@@ -9,6 +9,7 @@
 #include <atomic>
 #include "NTPManager.h"
 #include "WiFiManager.h"
+#include "Storage.h"
 #include "Location.h"
 #include "Texts.h"
 #include "DiagnosticLog.h"
@@ -99,7 +100,7 @@ void WiFiManager::loop() {}
 bool g_simSetupMode = false;
 String WiFiManager::getStatusMessage() {
     if (!g_simSetupMode) return String();
-    return Texts::fill(Texts::setupLine, String(AP_SSID_PREFIX) + "Setup", AP_PASSWORD_DEFAULT);
+    return Texts::fill(Texts::setupLine, String(AP_SSID_PREFIX) + "Setup", WiFiManager::apPassword());
 }
 // The first known network, as if it were the strongest (no scan simulated).
 String WiFiManager::joiningSsid() {
@@ -116,7 +117,12 @@ uint32_t WiFiManager::getLastReconnectChainMs() { return 0; }
 // the simulator was given (the clock's active place).
 int WiFiManager::connectedSlot() { return -1; }
 String WiFiManager::ownWifiName() { return s_wifiCfg ? String(s_wifiCfg->projectName).substring(0, 32) : String(); }
-const char* WiFiManager::apPassword() { return AP_PASSWORD_DEFAULT[0] ? AP_PASSWORD_DEFAULT : "abcd2345"; }
+// As the clock's (WiFiManager.cpp): the one in its settings; none there - the build's, else one of its
+// own (a fixed stand-in here: the real one is random and saved, the screen simulator saves nothing).
+const char* WiFiManager::apPassword() {
+    if (s_wifiCfg && !Storage::apPasswordProblem(s_wifiCfg->apPassword).length()) return s_wifiCfg->apPassword;
+    return AP_PASSWORD_DEFAULT[0] ? AP_PASSWORD_DEFAULT : "abcd2345";
+}
 
 // ── Location: no lookups or place searches in the simulator (no network) ─────
 namespace Location {

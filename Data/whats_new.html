@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JewishClock - What's new</title>
+<!-- What changed in each version, newest first (2026-11-27, the user: it ships with the version). Served
+     by the clock (/whats_new.html, Settings > Clock software > What's new) and carried by every update;
+     utils/make_whats_new.py prints the versions after the family's into the release's PDF - the text is
+     only here. A new version: a new <section class="ver"> on top whose version is the fwver mark
+     (utils/stamp_docs.py writes it); the one below it then gets its version as plain text.
+     Style (the user, 2026-11-27): short, natural, specific English sentences - one read is enough. -->
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#F3F2F1;color:#201F1E;font:15px/1.55 'Segoe UI',-apple-system,Roboto,Arial,sans-serif}
+main{background:#fff;max-width:820px;margin:16px auto;padding:28px 36px;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.12)}
+h1{font-size:26px;margin:0 0 4px}
+h2{font-size:19px;margin:26px 0 6px;padding-top:8px;border-top:1px solid #E1DFDD;color:#0078D4}
+h3{font-size:15.5px;margin:14px 0 4px}
+ul{margin:4px 0;padding-left:22px}
+li{margin:3px 0}
+.sub{color:#605E5C}
+.back{display:block;text-align:center;margin:12px 0 0;color:#0078D4;text-decoration:none}
+.ver-foot{color:#605E5C;font-size:13px;margin-top:22px}
+@media print{body{background:#fff}main{box-shadow:none;margin:0;padding:0}.back{display:none}}
+</style>
+</head>
+<body>
+<a class="back" href="/" onclick="return backToClock()">&larr; Back to the clock's page</a>
+<main>
+<h1>JewishClock - What's new</h1>
+<p class="sub">Your events, pictures and settings stay as they are with every update.</p>
+
+<section class="ver" data-version="2.2.1">
+<h2>Version <span class="fwver">2.2.1</span></h2>
+<h3>New</h3>
+<ul>
+  <li>From this version on, each version has a <b>What's new</b> page like this one. Open it from <b>Settings</b> &rarr; <b>Clock software</b> &rarr; <b>What's new</b>.</li>
+</ul>
+<h3>Changed</h3>
+<ul>
+  <li>A clock that is set up from new now makes its own Wi-Fi password and shows it on its screen. Clocks that are already set up keep their existing password.</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+  <li>A rare problem when the clock checks its time is fixed.</li>
+</ul>
+</section>
+
+<section class="ver" data-version="2.2.0">
+<h2>Version 2.2.0</h2>
+<h3>New</h3>
+<ul>
+  <li>The clock now looks for a new version on the internet once a day and installs it by itself at night.</li>
+  <li>If you would rather decide yourself, turn off <b>Install new versions at night by themselves</b> in <b>Settings</b> &rarr; <b>Clock software</b>. A new version then waits there until you press <b>Install</b>.</li>
+  <li>If an update does not work, the clock still goes back to its old version by itself. It now also tells you: a red line on the clock and a note in <b>Clock software</b> say which update failed, until you press <b>OK, seen</b>.</li>
+  <li>When the clock loses its internet connection, it now shows the name and password of its own Wi-Fi every few rounds, so you can still open its page. It also shows them for the first few minutes after it is switched on.</li>
+  <li>The password of the clock's own Wi-Fi can be changed in <b>Settings</b> &rarr; <b>Wi-Fi</b> &rarr; <b>Change</b>.</li>
+  <li>When the clock finds a problem by itself, its screen shows <b>Error - see Settings</b>, and the top of <b>Settings</b> says what is wrong.</li>
+  <li>The clock installs only updates that are signed by its maker.</li>
+</ul>
+<h3>Changed</h3>
+<ul>
+  <li>When you change the order of the messages in <b>Calendar Content</b>, the clock follows the new order from its next message.</li>
+  <li>Installing an update now restarts the clock once instead of twice.</li>
+  <li>A name or text that is too long is now refused with a message saying why. Before, it was cut short without a word.</li>
+  <li>Changing the clock's name now restarts the clock, so the new name is used everywhere at once.</li>
+  <li>The Mishnah Yomit message has a new picture.</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+  <li>The <b>24-hour clock</b> setting now changes the times on the clock (candle lighting, Havdalah, fasts). Before, it was saved but not used.</li>
+  <li>An icon you make from an emoji or a few letters now shows on the clock. Before, it stayed blank.</li>
+  <li>When the clock's storage was full, saving the events could lose all of them at the next restart. The clock now checks for room first, and tells you if there is none.</li>
+  <li>After several weeks without a restart, the clock could stop setting its time. It now keeps it right however long it runs.</li>
+  <li>After the clock got back onto the home Wi-Fi, its own Wi-Fi could keep the name it uses during setup.</li>
+</ul>
+</section>
+
+<p class="ver-foot">For clock software version <span class="fwver">2.2.1</span></p>
+</main>
+<a class="back" href="/" onclick="return backToClock()">&larr; Back to the clock's page</a>
+<script>
+// As in manual.html: close this tab (the clock's page opened it), else go to the clock's page.
+function backToClock() { window.close(); setTimeout(() => { location.href = '/'; }, 300); return false; }
+</script>
+</body>
+</html>

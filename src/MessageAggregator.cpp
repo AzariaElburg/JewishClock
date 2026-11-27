@@ -359,7 +359,7 @@ void MessageAggregator::loop(const AppConfig& cfg, bool showOverlay) {
         // A status line (setup info, "Connecting to ...") is the only item:
         // in Alternating mode a long one scrolled to its end once and then
         // stood still there - nothing came next (seen 2026-10-24: the setup
-        // screen showed only "| PASS: jewishclock"). Start it over once read.
+        // screen showed only the end of the setup line, its password). Start it over once read.
         static int64_t s_statusLineEndMs = 0;   // when its scroll was first seen finished
         bool statusLine = !overlayMsg.isEmpty() || !NTPManager::isSynced();
         if (!statusLine || DisplayManager::getAlternatingScrollRevealElapsedMs() == 0) s_statusLineEndMs = 0;

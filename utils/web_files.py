@@ -23,7 +23,7 @@ import stat
 from pathlib import Path
 
 GZIP = {"index.html", "update.html", "sortable.min.js", "licenses.txt",   # paths under Data/
-        "start.html", "manual.html"}
+        "start.html", "manual.html", "whats_new.html"}
 
 
 def clock_files(data_dir):

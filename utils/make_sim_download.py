@@ -19,6 +19,7 @@ Real internet: time servers, Hebcal and the place lookup go out for real (curl.e
 Windows 10 and 11).
 """
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -71,7 +72,7 @@ def main():
     if "OK:" not in out.stdout:
         sys.exit("simulator build failed:\n" + out.stdout[-2000:] + out.stderr[-2000:])
     exe = Path(out.stdout.split("OK: ")[1].split(" ")[0])
-    version = out.stdout.split("version ")[1].split(",")[0].strip()
+    version = re.search(r"version ([^\s,;)]+)", out.stdout).group(1)   # also "(version X; the kept release build ...)"
     work = LOCAL / "sim_download" / "JewishClock-Simulator"
     shutil.rmtree(work.parent, ignore_errors=True)
     (work / "state").mkdir(parents=True)

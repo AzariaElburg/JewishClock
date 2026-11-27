@@ -155,6 +155,10 @@ def main():
     done = []
     names = tunable_names() + (unshared_names() if "--all" in sys.argv else [])
     for name, src in names:
+        if src is None and any(re.search(r'#define\s+%s\s+"' % name, h.read_text(encoding="utf-8"))
+                               for h in (ROOT / "include").glob("*.h")):
+            done.append("%-32s kept (a text, not a number - e.g. the update feed's name)" % name)
+            continue
         if src is None:
             sys.exit("nudged_build: %s - its definition not found" % name)
         dest = TREE / src.relative_to(ROOT)

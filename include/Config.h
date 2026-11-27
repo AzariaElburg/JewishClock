@@ -264,8 +264,9 @@ static constexpr int DEFAULT_CALIB_TEAR_US = 10800;
 #define AP_SSID_PREFIX               "JewishClock-"
 // The clock's own Wi-Fi (setup mode and normal operation) - a network WE make:
 // always WPA2 with a password, never open (the user, 2026-11-13). Either fixed
-// here (this clock: printed on the family's start guide), or "" = every clock
-// makes its own at its first start, at random, and keeps it (AppConfig::
+// here, or "" = every clock makes its own at its first start, at random, and keeps
+// it (since 2.2.1: the family's clock copied its printed one into its settings with
+// 2.2.0, and keeps it there) (AppConfig::
 // apPassword; shown on its setup screen and in Settings) - the clean copy
 // (utils/clean/snapshot.py writes "" here; a published password would open
 // every clock built from it). WPA2 wants 8-63 characters (a shorter one would

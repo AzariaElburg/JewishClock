@@ -754,6 +754,8 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
                  { sendWebFile(req, "/start.html", "text/html"); }).setFilter(ON_ANY_INCL_SETUP_FILTER);
     g_server->on("/manual.html", HTTP_GET, [](AsyncWebServerRequest *req)
                  { sendWebFile(req, "/manual.html", "text/html"); }).setFilter(ON_ANY_INCL_SETUP_FILTER);
+    g_server->on("/whats_new.html", HTTP_GET, [](AsyncWebServerRequest *req)
+                 { sendWebFile(req, "/whats_new.html", "text/html"); }).setFilter(ON_ANY_INCL_SETUP_FILTER);
 
     // The page in restore-only view (it checks its own address): "Restore
     // from backup" on the setup page links here - a factory-new clock, put

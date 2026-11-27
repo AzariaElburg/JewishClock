@@ -319,7 +319,11 @@ def follow(name):
 
 
 def config_ap_password():
-    for line in (ROOT / "include" / "Config.h").read_text(encoding="utf-8").splitlines():
+    # only builds before 2026-11-13 need this (the family's 2.1.2): their password is in their own tag
+    tag = "v" + (ROOT / "sim" / "family_version.txt").read_text(encoding="utf-8").strip()
+    cfg = subprocess.run(["git", "show", tag + ":include/Config.h"], cwd=ROOT, capture_output=True,
+                         text=True, encoding="utf-8").stdout
+    for line in cfg.splitlines():
         if "AP_PASSWORD_DEFAULT" in line and line.lstrip().startswith("#define"):
             return line.split('"')[1]
     return ""

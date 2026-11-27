@@ -476,12 +476,13 @@ def trip_update(url, browser, package):
 # Factory reset (over the home network), then what the family would do: join
 # the clock's setup Wi-Fi, open 192.168.4.1/restore, choose the Excel file.
 # The clock restarts and joins its Wi-Fi from the backup; then everything is
-# compared with the start. The setup Wi-Fi's name and password come from
-# Config.h (AP_SSID_PREFIX + "Setup", AP_PASSWORD_DEFAULT) - not written here.
+# compared with the start. The setup Wi-Fi's name comes from Config.h (AP_SSID_PREFIX
+# + "Setup"); its password is the one the clock made at the reset (since 2.2.1 no build
+# has a fixed one): typed in as the clock's screen shows it.
 def setup_ap():
     cfg = (PROJ / "include" / "Config.h").read_text(encoding="utf-8")
     prefix = re.search(r'#define AP_SSID_PREFIX\s+"([^"]*)"', cfg).group(1)
-    pw = re.search(r'#define AP_PASSWORD_DEFAULT\s+"([^"]*)"', cfg).group(1)
+    pw = input("Type the %sSetup network's password (on the clock): " % prefix).strip()
     return prefix + "Setup", pw
 
 

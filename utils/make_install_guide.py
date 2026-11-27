@@ -6,8 +6,9 @@ real page, the thing to click framed in red. Printed by the family, so no
 flipping between the instructions and the page.
 
 The screenshots come from a simulated clock at the family's version (its own
-pages, the family's settings) that really installs the package through its
-own Wi-Fi side (192.168.4.1 at the family's) - the page they will see.
+pages; made-up settings and events since 2026-11-27 - the guide is a release
+file) that really installs the package through its own Wi-Fi side
+(192.168.4.1 at the family's) - the page they will see.
 
     C:/pio3/jc_clean/venv/Scripts/python utils/make_install_guide.py --package FILE.jcupdate [--from 2.1.1] [--out DIR]
 
@@ -36,7 +37,6 @@ import web_files            # noqa: E402
 from sim_ports import ports  # noqa: E402
 
 WORK = Path("C:/pio3/jc_clean/sim/work/install_guide")
-FAMILY_SEED = Path("C:/pio3/jc_clean/sim/family/seed")
 RED = "e => { e.style.outline = '4px solid #e00000'; e.style.outlineOffset = '4px'; e.style.borderRadius = '6px'; }"
 UNRED = "e => { e.style.outline = ''; e.style.outlineOffset = ''; }"
 
@@ -55,19 +55,16 @@ def start_clock(version):
     tarfile.open(fileobj=io.BytesIO(tar)).extractall(tag)
     fs = WORK / "clock" / "fs"
     web_files.stage(tag / "Data", fs)
-    # The family's own settings, events and pictures as last synced (the family
-    # simulator's seed): the page names their networks, as it will for them.
-    seed = FAMILY_SEED if (FAMILY_SEED / "config.json").exists() else ROOT / "Data"
-    for f in ("config.json", "events.json"):
-        shutil.copy2(seed / f, fs / f)
-    # At the family's the clock is on their own network (the first); the seed was
-    # synced here before the handover, last on ours - the page names the network.
-    cfg = json.loads((fs / "config.json").read_text(encoding="utf-8"))
-    cfg["wifiLastNetwork"] = 0
+    # Made-up settings and events, never the family's (the user, 2026-11-27: the guide is a release
+    # file) - the manual's sample settings (utils/manual_shots.py SAMPLE_CONFIG: network "HomeNetwork")
+    # on the clean copy's blank config, and a few made-up events.
+    import manual_shots
+    cfg = json.loads((ROOT.parent / "JewishClock_clean" / "Data" / "config.json").read_text(encoding="utf-8"))
+    cfg.update(manual_shots.SAMPLE_CONFIG)
     (fs / "config.json").write_text(json.dumps(cfg, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    (fs / "events.json").write_text(json.dumps(SAMPLE_EVENTS, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     for sub in ("images", "custom"):
-        if (seed / sub).is_dir():
-            shutil.copytree(seed / sub, fs / sub, dirs_exist_ok=True)
+        shutil.rmtree(fs / sub, ignore_errors=True)
     exe = Path("C:/pio3/jc_clean/sim/versions") / version / "jcclock.exe"
     if not exe.exists():
         sys.exit("no simulator build of %s: %s" % (version, exe))
@@ -83,6 +80,24 @@ def start_clock(version):
             pass
         time.sleep(1)
     sys.exit("the clock didn't start - see %s" % (WORK / "clock" / "run.log"))
+
+
+def _event(i, name, icon, typ, g=None, j=None):
+    """A made-up event (the fields of events.json)."""
+    gd, gm, gy = g or (0, 0, 0)
+    jd, jm, jy, jyn = j or (0, 0, "", 0)
+    return {"id": "sample%010d" % i, "name": name, "hasG": bool(g), "gD": gd, "gM": gm, "gY": gy, "afterSunset": False,
+            "hasJ": bool(j), "jD": jd, "jM": jm, "jYNum": jyn, "jY": jy, "icon": icon, "image": "", "type": typ, "warn": 0}
+
+
+_M = time.localtime().tm_mon   # the month the guide is made: the first screenshot shows this month's events
+SAMPLE_EVENTS = [
+    _event(1, "יום הולדת - נועה", "🎂", "birthday", g=(3, _M, 1990)),
+    _event(2, "יום נישואין - רחל ויוסף", "💍", "birthday", g=(9, _M, 1975)),
+    _event(3, "יום הולדת - דוד", "🎂", "birthday", g=(14, _M, 1985)),
+    _event(4, "יום הולדת - סבתא שרה", "🎂", "birthday", g=(21, _M, 1948)),
+    _event(5, "אזכרה - סבא משה", "🕯️", "yahrzeit", j=(17, 2, "תשנ״ט", 5759)),
+]
 
 
 def stop_clock(p):
@@ -165,27 +180,27 @@ def screenshots(package, shots):
 STEPS = [   # (screenshot or None, what to do, notes) - short bullets, the page's own words in <b> (the user, 2026-11-08)
     (None, "Save the update file attached to the email (its name ends in <b>.jcupdate</b>).",
      ["Do this first, while on your home Wi-Fi."]),
-    (None, "Switch the computer's Wi-Fi to <b>{ap}</b>.",
-     ["Password: on your printed start guide."]),
+    (None, "Switch the computer's Wi-Fi to the clock's own Wi-Fi.",
+     ["Its name and password are on your printed start guide."]),
     ("open", "The clock's page opens. Click <b>Settings</b>.", []),
     ("search", "In <b>Search settings...</b> type <b>update</b>.", []),
     ("settings", "Click <b>Update the clock</b>.", []),
     ("choose", "Click <b>Tap to choose the update file</b> and choose the saved file.", []),
     ("update", "Click <b>Update</b>.", []),
     ("wait", "Wait about 2 minutes. Keep the page open.",
-     ["If the computer switches back to your home Wi-Fi: switch to <b>{ap}</b> again."]),
+     ["If the computer switches back to your home Wi-Fi: switch to the clock's Wi-Fi again."]),
     ("done", "When it says <b>Done!</b> - switch back to your home Wi-Fi.",
      ["Finished. Events and settings are as before."]),
 ]
 
 
-def build_pdf(shots, version, ap, out_pdf):
+def build_pdf(shots, version, out_pdf):
     img = lambda n: "data:image/png;base64," + base64.b64encode((shots / (n + ".png")).read_bytes()).decode()
     items = []
     for name, line, notes in STEPS:
         items.append('<li><div class="do">%s</div>%s%s</li>' % (
-            line.format(ap=ap),
-            "<ul>%s</ul>" % "".join("<li>%s</li>" % n.format(ap=ap) for n in notes) if notes else "",
+            line,
+            "<ul>%s</ul>" % "".join("<li>%s</li>" % n for n in notes) if notes else "",
             '<img src="%s">' % img(name) if name else ""))
     html = """<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Updating the Jewish Clock</title><style>
 @page { size: A4; margin: 14mm 15mm; }
@@ -227,8 +242,6 @@ def main():
     out = Path(a.out)
     shots = out / "screenshots"
     shots.mkdir(parents=True, exist_ok=True)
-    seed = FAMILY_SEED if (FAMILY_SEED / "config.json").exists() else ROOT / "Data"
-    ap_name = json.loads((seed / "config.json").read_text(encoding="utf-8")).get("projectName", "JewishClock")
     p = start_clock(a.frm)
     try:
         version = screenshots(Path(a.package).resolve(), shots)
@@ -237,7 +250,7 @@ def main():
     if not version:
         sys.exit("the update didn't end with Done - see %s" % (WORK / "clock" / "run.log"))
     pdf = out / ("JewishClock-install-guide-%s.pdf" % version)
-    build_pdf(shots, version, ap_name, pdf)
+    build_pdf(shots, version, pdf)
     print("OK:", pdf)
 
 

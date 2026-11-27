@@ -2414,12 +2414,14 @@ def clock_software(ui, clock):
           wait(lambda: not pg.is_visible("#fwupd-failed-row"), 10, 0.5) and status().get("updateFailed") == ""
           and not (clock.fs / "update_failed.txt").exists(), status().get("updateFailed"))
     for label, path, want in [("Quick start guide", "/start.html", "For clock software version"), ("Manual", "/manual.html", "For clock software version"),
+                              ("What's new", "/whats_new.html", "For clock software version"),
                               ("Licenses", "/licenses.txt", "LICENSE")]:
         with ui.ctx.expect_page() as np:
-            pg.click("a:has-text('%s')" % label)
+            pg.click("#view-settings a[href='%s']" % path)   # by its address: "What's new" breaks a quoted text match
         p2 = np.value
         p2.wait_for_load_state()
-        check("%s opens in a new tab" % label, p2.url.endswith(path) and want.lower() in p2.content().lower(), p2.url)
+        shown = pg.inner_text("#view-settings a[href='%s']" % path).strip()
+        check("%s opens in a new tab" % label, shown == label and p2.url.endswith(path) and want.lower() in p2.content().lower(), (shown, p2.url))
         harvest(p2)
         p2.close()
     path = download(pg, "button:has-text('Get log')")
@@ -3763,7 +3765,7 @@ def in_setup_mode():
 def manuals(ui, clock):
     """Quick start guide and Manual: their contents links, Back to the clock's page."""
     pg = ui.page
-    for page in ("/manual.html", "/start.html"):
+    for page in ("/manual.html", "/start.html", "/whats_new.html"):
         ui.goto(HOME + page)
         links = pg.locator("a[href^='#']")
         bad = []
@@ -4853,7 +4855,9 @@ def from_family(ui, clock):
                  if k not in ("nightPct", "roomLightPct")   # learned by the clock itself (BrightnessManager.cpp)
                  and before["config"][k] != after["config"].get(k)
                  and not (k == "ntpServers" and filled_ntp(before["config"][k], after["config"].get(k)))
-                 and not (k == "places" and same_places(before["config"][k], after["config"].get(k)))]
+                 and not (k == "places" and same_places(before["config"][k], after["config"].get(k)))
+                 # the version that wrote the update key: every version rewrites it when it first runs (UpdateKeyState.cpp)
+                 and not (k == "updateKeyBy" and after["config"].get(k) == json.loads(get(home, "/api/status")).get("firmware"))]
         def norm(e):   # without "id": an Excel import gives every event a new one
             e = {k: v for k, v in e.items() if k != "id"}
             if not e.get("jYNum") and e.get("jY") == "?":   # a yearless Hebrew date's year text: "?" before 2026-11-18, "" since (28176bc)

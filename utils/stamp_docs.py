@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DOCS = [ROOT / "Data" / "start.html", ROOT / "Data" / "manual.html"]
+DOCS = [ROOT / "Data" / "start.html", ROOT / "Data" / "manual.html", ROOT / "Data" / "whats_new.html"]
 STAMP = re.compile(r'(class="fwver">)[^<]*(<)')
 
 

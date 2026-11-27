@@ -27,10 +27,11 @@ detail the check misses: add a rule or `check.py --add`, not a one-off edit.
 The clock's own Wi-Fi password is a setting, made once per clock (the user,
 2026-11-14): none in the settings yet -> AP_PASSWORD_DEFAULT if the build has one,
 else random - written there, fixed from then on (WiFiManager::apPassword()). The
-clean snapshot writes `AP_PASSWORD_DEFAULT ""`; this project still has the family's
-(their printed start guide) only so their clock copies it into its settings with its
-next update - **after that update, set it to "" here too: one firmware for every
-clock**. Test: drill `ap_own_password`.
+project's is "" too since 2.2.1 (2026-11-27): 2.2.0 still had the family's (their printed
+start guide), so their clock copied it into its settings - 2.2.1 may only be installed on a clock
+that ran 2.2.0 first. The password stays a privacy-check fingerprint (`check.py --add`). A factory
+reset makes a new one (shown on the screen; the printed guide's no longer holds then).
+Test: drill `ap_own_password`.
 
 **Where constants go (decided 2026-10-16):** a hardware fact, or the default
 of a setting saved in config.json, goes in `Config.h`. Anything else (retry
@@ -247,7 +248,12 @@ re-telling the story.
   (one A4 page English + one Hebrew, Hebrew in Hebrew but the UI's English
   names) and `Data/manual.html` (English), linked in Settings > Clock
   software, in every update package. **Change a user-visible behavior or
-  label -> update them in the same commit.** Each ends with "For clock
+  label -> update them in the same commit.** **What's new ships too**
+  (2026-11-27, the user): `Data/whats_new.html`, newest version on top, linked
+  next to Manual; `utils/make_whats_new.py --version X` prints the versions after
+  the family's from the tag - the text is only in that page. A user-visible change:
+  a line in its top section, same commit. The install guide's screenshots use
+  made-up settings and events (manual_shots.py SAMPLE_CONFIG), never the family's. Each ends with "For clock
   software version ...", fixed in the file (2026-11-05, the user: the paper
   describes one firmware state, never changes by how it's viewed). **manual.html copies nothing from the
   clock** (the user, 2026-11-22; written 2026-11-26 in the skim style of the 2.1.2 printed manual; printed for a release by `utils/make_manual.py`): its pictures

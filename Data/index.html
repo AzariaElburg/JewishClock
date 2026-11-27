@@ -700,7 +700,7 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
           <div class="gbody">
             <div class="iorow">
               <div class="txt"><b>Version</b><div id="fwupd-version" style="font-family:var(--mono)">—</div><div id="fwupd-failed-row" class="hidden"><span id="fwupd-failed" style="color:var(--danger)"></span> <button class="mbtn mbtn-ghost" id="fwupd-failed-ok" onclick="failedUpdateSeen()">OK, seen</button></div></div>
-              <div class="btns"><a href="/start.html" target="_blank" class="mbtn mbtn-ghost">Quick start guide</a><a href="/manual.html" target="_blank" class="mbtn mbtn-ghost">Manual</a><a href="/licenses.txt" target="_blank" class="mbtn mbtn-ghost">Licenses</a></div>
+              <div class="btns"><a href="/start.html" target="_blank" class="mbtn mbtn-ghost">Quick start guide</a><a href="/manual.html" target="_blank" class="mbtn mbtn-ghost">Manual</a><a href="/whats_new.html" target="_blank" class="mbtn mbtn-ghost">What's new</a><a href="/licenses.txt" target="_blank" class="mbtn mbtn-ghost">Licenses</a></div>
             </div>
             <div class="iorow">
               <div class="txt"><b>Update</b><div>Install an update file (.jcupdate) you received.</div></div>
@@ -4042,7 +4042,7 @@ function saveBlob(blob, name) {
 // GETs read, the POSTs are all ones the clock refuses (no body, or only a conversion).
 /* RECORD_REQUESTS_BEGIN */
 const RECORD_REQUESTS = {
-  "gets": ["/", "/update.html", "/sortable.min.js", "/licenses.txt", "/start.html", "/manual.html", "/restore",
+  "gets": ["/", "/update.html", "/sortable.min.js", "/licenses.txt", "/start.html", "/manual.html", "/whats_new.html", "/restore",
            "/update-safe", "/api/status", "/api/config", "/api/calendar", "/api/preview", "/api/events/list",
            "/api/events/excel-template", "/api/images/list", "/api/builtin/list", "/api/wifi/networks",
            "/api/backup", "/api/debug/diagnostic-log", "/api/debug/flash", "/api/debug/screenshot",
