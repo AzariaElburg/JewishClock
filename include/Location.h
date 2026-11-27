@@ -19,7 +19,12 @@ namespace Location {
 
     // A lookup's answer (ip-api JSON) for network `slot` - main loop only
     // (Calendar's fetch result handling). False = unusable answer.
-    bool applyLookup(AppConfig& cfg, int slot, const String& payload);
+    // asked: userSets(slot) when the lookup was asked for - a place the user set or confirmed since
+    // wins (the result is dropped, said in the log; true: not a failure to retry).
+    bool applyLookup(AppConfig& cfg, int slot, const String& payload, uint32_t asked);
+    // How often the user has set or confirmed network `slot`'s place this boot (a lookup asked
+    // before that must not overrule it - 2026-11-20, found by web_ui wifi under load).
+    uint32_t userSets(int slot);
 
     // A place chosen in the page for network `slot` (any task): checked,
     // completed (rule from the table), applied by loop() shortly after.

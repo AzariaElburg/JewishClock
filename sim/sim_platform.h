@@ -2,12 +2,16 @@
 // Simulator controls (simulator only - see sim/README.md).
 #include <string>
 #include <ctime>
+#include <cstdint>
 
 namespace Sim {
     extern bool quiet;              // true = the clock's own log lines are not printed
     extern std::string fsRoot;      // PC folder playing the clock's file system
     extern std::string httpCacheDir;
     void advanceMillis(unsigned long ms);
+    uint64_t uptimeMs();
+    void followRealTime();                   // the full simulator: uptime follows the PC's clock continuously
+    void setUptimeStart(uint64_t ms);        // the clock's uptime at start (default 0) - JC_UPTIME_START_MS            // simulated ms since start, 64-bit (never wraps; millis() does)
     void waitForTasks();            // let a running download finish (in zero simulated time)
     void setTimezone(const char* posix);
     long utcOffsetAt(time_t utc);   // seconds east of UTC, DST included
@@ -19,11 +23,16 @@ namespace Sim {
     struct Range { unsigned long lo, hi; };
     extern Range setupTime, wifiUp, ntpAfterWifi, netMain, netZmanim, netGeo;
     extern unsigned long setupMs, wifiUpMs, ntpSyncMs;
+    extern int64_t ntpSilentMs;   // --ntp-silent-hours: the last time sync that long ago (NTPManager::msSinceSync())
     void startTiming(uint32_t seed);
     void pinTiming(const std::string& name, unsigned long ms);   // "main#2" (2nd main download) or "main" (all)
     unsigned long drawTiming(const Range& r, const std::string& kind);   // one more value, by name (printed)
     // The full simulator (jcclock) only - the screen one leaves them alone:
     extern bool (*internetUp)();    // downloads fail when this says no (no network, or one without internet)
+    extern bool (*urlFake)(const std::string& url, std::string& body);         // jcclock: the world's fake keywords - answers with this body
+    extern int  (*urlFakeStatus)(const std::string& url);                      // jcclock: status code for a fake answer (default 200)
+    extern bool (*urlFakeHdr)(const std::string& url, const std::string& name, std::string& value);  // jcclock: headers for a fake answer
+    extern bool (*urlBlocked)(const std::string& url);   // ... or when this says the service is out of reach (jcclock: the world's "blocked")
     extern bool liveNetwork;        // downloads for real, uncached, at their real speed (not the measured simulated one)
     extern bool fsFull;             // file writes fail when LittleFS's 4 MB is full (counted as LittleFS counts)
     extern float roomLux;           // what the light sensor reads

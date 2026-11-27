@@ -10,6 +10,7 @@
 #include "NTPManager.h"
 #include "WiFiManager.h"
 #include "Location.h"
+#include "Texts.h"
 #include "DiagnosticLog.h"
 #include "EventsLock.h"
 #include "DisplayLock.h"
@@ -52,7 +53,11 @@ static bool synced() {
     if (s) g_timeSyncedThisBoot = true;
     return s;
 }
-void begin(const char*, const char* tzPOSIX) { Sim::setTimezone(tzPOSIX ? tzPOSIX : "UTC0"); }
+void begin(const char* const*, int, const char* tzPOSIX) { Sim::setTimezone(tzPOSIX ? tzPOSIX : "UTC0"); }
+void setServers(const char* const*, int) {}
+void testStart(const char*) {}
+void testResult(int& state, String& server, String& detail) { state = 0; server = ""; detail = ""; }
+String currentServer() { return NTP_SERVER_1; }
 void loop() { synced(); }
 void setTimezone(const char* tzPOSIX) { Sim::setTimezone(tzPOSIX); }
 void setDebugOffset(int64_t offset) { g_debugTimeOffsetSec = offset; }
@@ -69,9 +74,18 @@ bool getDateTime(DateTime& out) {
     return true;
 }
 time_t getLocalEpoch() { time_t t = getTime(); return t + Sim::utcOffsetAt(t); }
+// One moment per pass (NTPManager.h): here simulated time moves only between passes
+// (Sim::advanceMillis() after endPass()) - a pass is one moment already.
+void beginPass() {}
+void endPass() {}
 void forceSync() {}
 bool isSynced() { return synced(); }
-unsigned long millisSinceSync() { return 0; }
+int64_t msSinceSync() { return Sim::ntpSilentMs; }
+void serviceTimeSeen() {}
+void serviceTroubleFile() {}
+int troubleList(TroubleInfo*, int) { return 0; }
+bool hasRefusedServer() { return false; }
+void setCountryPool(const char*) {}
 } // namespace NTPManager
 
 // ── Wi-Fi: connected from Sim::wifiUpMs (see WiFi.h). Like the clock, its
@@ -85,7 +99,7 @@ void WiFiManager::loop() {}
 bool g_simSetupMode = false;
 String WiFiManager::getStatusMessage() {
     if (!g_simSetupMode) return String();
-    return "Setup: join Wi-Fi " + String(AP_SSID_PREFIX) + "Setup - password " + String(AP_PASSWORD_DEFAULT) + " - open 192.168.4.1";
+    return Texts::fill(Texts::setupLine, String(AP_SSID_PREFIX) + "Setup", AP_PASSWORD_DEFAULT);
 }
 // The first known network, as if it were the strongest (no scan simulated).
 String WiFiManager::joiningSsid() {
@@ -93,7 +107,7 @@ String WiFiManager::joiningSsid() {
     return String();
 }
 bool WiFiManager::isApActive() { return millis() >= Sim::wifiUpMs; }
-uint32_t WiFiManager::offlineForMs() { return millis() >= Sim::wifiUpMs ? 0 : millis(); }
+int64_t WiFiManager::offlineForMs() { return millis() >= Sim::wifiUpMs ? 0 : (int64_t)millis(); }
 uint32_t WiFiManager::getDisconnectCount() { return 0; }
 uint32_t WiFiManager::getReconnectCount() { return 0; }
 uint32_t WiFiManager::getApRebuildCount() { return 0; }
@@ -101,11 +115,14 @@ uint32_t WiFiManager::getLastReconnectChainMs() { return 0; }
 // No network switching simulated: the place stays the one in the settings
 // the simulator was given (the clock's active place).
 int WiFiManager::connectedSlot() { return -1; }
+String WiFiManager::ownWifiName() { return s_wifiCfg ? String(s_wifiCfg->projectName).substring(0, 32) : String(); }
+const char* WiFiManager::apPassword() { return AP_PASSWORD_DEFAULT[0] ? AP_PASSWORD_DEFAULT : "abcd2345"; }
 
 // ── Location: no lookups or place searches in the simulator (no network) ─────
 namespace Location {
 void loop(AppConfig&) {}
-bool applyLookup(AppConfig&, int, const String&) { return false; }
+bool applyLookup(AppConfig&, int, const String&, uint32_t) { return false; }
+uint32_t userSets(int) { return 0; }
 bool searchToStart(String&) { return false; }
 void searchStarted() {}
 void searchDone(int, const String&) {}
@@ -123,7 +140,6 @@ void DiagnosticLog::record(const char* category, const char* fmt, ...) {
 void DiagnosticLog::sendTo(AsyncWebServerRequest*, bool) {}
 size_t DiagnosticLog::growthLeft() { return 0; }
 void DiagnosticLog::loop() {}
-void DiagnosticLog::flushNow() {}
 void DiagnosticLog::discardPending() {}
 // Same streak logic as the clock (DiagnosticLog.cpp).
 void DiagnosticLog::Streak::fail(const char* category, const char* what, const char* detail) {
@@ -139,3 +155,13 @@ void DiagnosticLog::Streak::ok(const char* category, const char* what) {
 void EventsLock::begin() {} void EventsLock::take() {} void EventsLock::give() {}
 void DisplayLock::begin() {} void DisplayLock::take() {} void DisplayLock::give() {}
 void NTPLock::begin() {} void NTPLock::take() {} void NTPLock::give() {}
+
+// Updater isn't in the screen simulator: no update ever failed here.
+#include "Updater.h"
+String Updater::failedUpdate() { return ""; }
+String Updater::failedUpdateOnScreen() { return ""; }
+// OnlineUpdate isn't in the screen simulator: nothing to fetch.
+#include "OnlineUpdate.h"
+#include "Texts.h"
+void OnlineUpdate::runInTask() {}
+bool OnlineUpdate::feedMissingOnScreen() { return false; }   // no feed asked here (web_ui online_update tests it)

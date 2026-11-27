@@ -1,9 +1,11 @@
+#include "Tunables.h"
 #include <Arduino.h>
 #include "driver/ledc.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 
 #include "Display.h"
+#include "Uptime.h"
 #include "DisplayLock.h"
 #include "Config.h"
 #include "Font.h"
@@ -11,6 +13,8 @@
 #include "StringTools.h"
 #include "WiFiManager.h"
 #include "NTPManager.h"
+#include "DiagnosticLog.h"
+#include "Texts.h"
 #include <Arduino_GFX_Library.h>
 #include <LittleFS.h>
 #include <atomic>
@@ -34,7 +38,7 @@ static std::atomic<bool> s_calibPattern{false};
 // Each window frame starts this long after the panel's TE pulse - the saved
 // "Tear lines" calibration (Config.h DEFAULT_CALIB_TEAR_US). See waitForTe().
 static std::atomic<int32_t> s_tearUs{DEFAULT_CALIB_TEAR_US};
-static uint32_t s_prevFrameEndUs = 0;
+static int64_t  s_prevFrameEndUs = 0;
 
 // === TUNABLES ===  (rule: see Config.h header)
 static const uint32_t DISPLAY_RETRY_MS = 60000UL;
@@ -52,6 +56,7 @@ static const int      PICTURE_MAX_H_ROWS = TFT_HEIGHT;
 // (goodMomentToWrite()) - a waiting log line is lost if the power goes off
 // meanwhile.
 static const uint32_t FLASH_WRITE_MAX_WAIT_MS = 60000UL;
+TUNABLE_SHARED(FLASH_WRITE_MAX_WAIT_MS)   // tests wait this long for a write that waits for a still screen
 // Single-scroll mode never stands still: there a write waits only this long,
 // so a burst of them (a reconnect's log lines, settings) goes as one write.
 static const uint32_t FLASH_WRITE_GATHER_MS = 2000UL;
@@ -127,7 +132,7 @@ static bool readBmpHeader(File& bmpFile, int32_t& width, int32_t& height, int ma
     bmpFile.seek(28); // Seek to BPP
     uint16_t bpp = 0;
     if (bmpFile.read((uint8_t*)&bpp, 2) != 2 || bpp != 16) {
-        CLOCK_LOG("Display", "ERROR: '%s' is not a 16-bit BMP. Must be 16.", bmpFile.name());
+        CLOCK_LOGF("Display", Texts::bmpNot16Bit, bmpFile.name());
         return false;
     }
 
@@ -150,16 +155,16 @@ static bool readBmpHeader(File& bmpFile, int32_t& width, int32_t& height, int ma
         } else if (red_mask == 0x7C00 && green_mask == 0x03E0 && blue_mask == 0x001F) {
             format = DisplayManager::BMP_FMT_555; // Explicit xRGB1555
         } else {
-            CLOCK_LOG("Display", "ERROR: BMP '%s' has unsupported BI_BITFIELDS masks (R:0x%X, G:0x%X, B:0x%X).", bmpFile.name(), (unsigned)red_mask, (unsigned)green_mask, (unsigned)blue_mask);
+            CLOCK_LOGF("Display", Texts::bmpMasks, bmpFile.name(), (unsigned)red_mask, (unsigned)green_mask, (unsigned)blue_mask);
             return false;
         }
     } else {
-        CLOCK_LOG("Display", "ERROR: '%s' has unsupported compression %d. Must be 0 or 3.", bmpFile.name(), (int)compression);
+        CLOCK_LOGF("Display", Texts::bmpCompression, bmpFile.name(), (int)compression);
         return false;
     }
 
     if (height <= 0 || height > max_height) {
-        CLOCK_LOG("Display", "ERROR: BMP '%s' height %d is invalid. Must be 1-%dpx.", bmpFile.name(), (int)height, (int)max_height);
+        CLOCK_LOGF("Display", Texts::bmpHeight, bmpFile.name(), (int)height, (int)max_height);
         return false;
     }
     return true;
@@ -187,7 +192,7 @@ Arduino_GFX*      DisplayManager::_canvas = nullptr;
 DisplayMode       DisplayManager::_mode = DisplayMode::Blank;
 bool              DisplayManager::_isInitialized = false;
 bool              DisplayManager::_displayReal = false;
-uint32_t          DisplayManager::_lastInitAttemptMs = 0;
+int64_t           DisplayManager::_lastInitAttemptMs = 0;
 
 int DisplayManager::_winX = DEFAULT_CALIB_X;
 int DisplayManager::_winY = DEFAULT_CALIB_Y;
@@ -196,9 +201,9 @@ int DisplayManager::_winH = DEFAULT_CALIB_H;
 
 DisplayManager::DisplayState       DisplayManager::_displayState = DisplayState::STATIC;
 DisplayManager::AltScrollPhase     DisplayManager::_altScrollPhase = AltScrollPhase::DONE;
-uint32_t                           DisplayManager::_altItemStartMs = 0;
-uint32_t                           DisplayManager::_altCycleStartMs = 0;
-uint32_t                           DisplayManager::_altRevealDoneAtMs = 0;
+int64_t                            DisplayManager::_altItemStartMs = 0;
+int64_t                            DisplayManager::_altCycleStartMs = 0;
+int64_t                            DisplayManager::_altRevealDoneAtMs = 0;
 bool                                DisplayManager::_altCheckpointArmed = false;
 bool                                DisplayManager::_singleScrollLapCompleted = false;
 std::vector<OnScreenElement> DisplayManager::_currentElements;
@@ -213,10 +218,10 @@ std::unordered_map<String, DisplayManager::CachedBmp, StringHash> DisplayManager
 uint16_t                     DisplayManager::_messageColor = COLOR_TEXT_NORMAL;
 int                          DisplayManager::_scrollX = 0;
 int                          DisplayManager::_scrollSpeed = SCROLL_SPEED_DEFAULT;
-uint32_t                     DisplayManager::_lastScrollMs = 0;
+int64_t                      DisplayManager::_lastScrollMs = 0;
 
 int      DisplayManager::_calibBorderPhase = 0;
-uint32_t DisplayManager::_lastCalibMs = 0;
+int64_t  DisplayManager::_lastCalibMs = 0;
 
 // =============================================================================
 // Public API
@@ -330,7 +335,7 @@ uint32_t DisplayManager::getHitches(bool big)      { return big ? s_bigHitches :
 
 bool DisplayManager::begin() {
     CLOCK_LOG("Display", "-> begin()");
-    uint32_t now = millis();
+    int64_t now = Uptime::ms();
     if (_isInitialized) return true;
     if (_lastInitAttemptMs && now - _lastInitAttemptMs < DISPLAY_RETRY_MS) {
         return _displayReal;
@@ -405,13 +410,19 @@ bool DisplayManager::begin() {
     attachInterrupt(TFT_TE, onTe, RISING);
 
     // Create a canvas for double-buffering to prevent flicker
+    // The canvas MUST be initialized before use to allocate its framebuffer (that was the source of
+    // the StoreProhibited crash). Its ~120 KB framebuffer is what can fail (new itself aborts rather
+    // than return null): a canvas without one would crash the first frame, at every start - so it
+    // counts as a failed start, tried again in DISPLAY_RETRY_MS like any other (2026-11-18 review).
     _canvas = new Arduino_Canvas(TFT_WIDTH, TFT_HEIGHT, _gfx); // Use the correct canvas for Arduino_GFX
-    if (!_canvas) {
-        CLOCK_LOG("Display", "FATAL: Could not allocate canvas for double-buffering.");
-    } else {
-        // The canvas MUST be initialized before use to allocate its framebuffer.
-        // This was the source of the StoreProhibited crash.
-        _canvas->begin();
+    if (!_canvas->begin() || !((Arduino_Canvas*)_canvas)->getFramebuffer()) {
+        DiagnosticLog::record("Display", "no memory for the screen's framebuffer - display start failed, tried again later");
+        delete _canvas; _canvas = nullptr;
+        delete _gfx; _gfx = nullptr;
+        if (_bus) deleteBus(_bus);
+        _isInitialized = false;
+        _displayReal = false;
+        return false;
     }
 
     _isInitialized = true;
@@ -473,10 +484,10 @@ uint32_t DisplayManager::getTePeriodUs() { return esp_timer_get_time() - s_teLas
 // Sent right after the panel's init it didn't take; between frames it does
 // - so whenever TE has been silent for a second, at most every 5 s.
 void DisplayManager::keepTeOn() {
-    static uint32_t s_triedMs = 0;
+    static Timer s_tried;
     if (esp_timer_get_time() - s_teLastUs < 1000000) return;
-    if (s_triedMs && millis() - s_triedMs < 5000) return;
-    s_triedMs = millis() | 1;
+    if (!s_tried.idleOrPassed(5000)) return;
+    s_tried.start();
     _gfx->startWrite();
     _bus->writeCommand(0xFF); _bus->write(0xA5);
     _bus->writeCommand(0xE7); _bus->write(0x10);
@@ -530,10 +541,6 @@ void DisplayManager::setMode(DisplayMode mode) {
         _calibBorderPhase = 0;
         _lastCalibMs = 0;
     }
-}
-
-DisplayMode DisplayManager::getMode() {
-    return _mode;
 }
 
 void DisplayManager::setScrollSpeed(int pixelsPerFrame) {
@@ -643,7 +650,13 @@ void DisplayManager::resetScroll(const AppConfig& cfg) {
 
 bool DisplayManager::isStill() {
     if (s_still) return true;
-    if (_mode != DisplayMode::Normal) return false;
+    if (_mode != DisplayMode::Normal) return false;   // calibration's frame moves
+    return contentStill();
+}
+
+// The clock's own content (slides) stands: no scroll now, no animation - whatever
+// is drawn over it (calibration's moving frame).
+bool DisplayManager::contentStill() {
     bool standing = _displayState == DisplayState::STATIC ||
         (_displayState == DisplayState::ALT_SCROLL && _altScrollPhase != AltScrollPhase::SCROLLING);
     if (!standing) return false;
@@ -653,15 +666,20 @@ bool DisplayManager::isStill() {
 }
 
 // isStill() as of the last frame, for other tasks (update() sets it).
-static std::atomic<uint32_t> s_stillSinceMs{0};   // millis() it became still, 0 = moving
+static std::atomic<int64_t> s_stillSinceMs{0};    // Uptime::ms() it became still, 0 = moving
 static std::atomic<bool> s_framesStarted{false};
 static std::atomic<bool> s_scrollMode{false};      // single-scroll: never still
+static std::atomic<bool> s_contentMoving{false};   // screenMoving(): the slides scroll / animate (update() sets it)
 
-bool DisplayManager::goodMomentToWrite(uint32_t waitingSinceMs) {
+bool DisplayManager::goodMomentToWrite(int64_t waitingSinceMs) {
     if (!s_framesStarted) return true;
-    uint32_t now = millis(), since = s_stillSinceMs;
+    int64_t now = Uptime::ms(), since = s_stillSinceMs;
     if (s_scrollMode) return now - waitingSinceMs >= FLASH_WRITE_GATHER_MS;
     return (since && now - since >= STILL_SETTLE_MS) || now - waitingSinceMs >= FLASH_WRITE_MAX_WAIT_MS;
+}
+
+bool DisplayManager::screenMoving() {
+    return s_contentMoving;
 }
 
 bool DisplayManager::isAlternatingScrollActive() {
@@ -670,7 +688,7 @@ bool DisplayManager::isAlternatingScrollActive() {
 
 uint32_t DisplayManager::getAlternatingScrollRevealElapsedMs() {
     if (_displayState != DisplayState::ALT_SCROLL || _altScrollPhase != AltScrollPhase::DONE) return 0;
-    return _altRevealDoneAtMs - _altItemStartMs;
+    return (uint32_t)(_altRevealDoneAtMs - _altItemStartMs);
 }
 
 bool DisplayManager::consumeSingleScrollLapCompleted() {
@@ -699,6 +717,22 @@ std::vector<OnScreenElement> DisplayManager::getCurrentMessageElements() {
     return _currentElements;
 }
 
+// Alternating mode, a new item just put on screen: too wide for the window ->
+// hold, then scroll (ALT_SCROLL, its timer starts now); fits -> stand still.
+// One caller (update()), for every item - the first after a start included.
+void DisplayManager::startAlternatingItem(int64_t now) {
+    if (_currentMessagePixelWidth > _winW) {
+        _displayState = DisplayState::ALT_SCROLL;
+        _altScrollPhase = AltScrollPhase::HOLD;
+        _altItemStartMs = now;
+        _altRevealDoneAtMs = 0;
+        CLOCK_LOG("Display", "  -> State -> ALT_SCROLL (long item)");
+    } else {
+        _displayState = DisplayState::STATIC;
+        CLOCK_LOG("Display", "  -> State -> STATIC (short item)");
+    }
+}
+
 void DisplayManager::update(const AppConfig& cfg) {
     // Guard, not manual take()/give(): this function returns early from
     // several different points below (uninitialized display, frame-rate
@@ -706,18 +740,16 @@ void DisplayManager::update(const AppConfig& cfg) {
     // automatically covered, instead of relying on remembering to unlock
     // at each new return a future edit might add.
     DisplayLock::Guard guard;
-    uint32_t now = millis();
-    uint32_t diagFrameStartUs = micros(); // Diagnostic: isolates render time vs. SPI transfer time per frame
+    int64_t now = Uptime::ms();
+    int64_t diagFrameStartUs = Uptime::us(); // Diagnostic: isolates render time vs. SPI transfer time per frame
     if (!_isInitialized && (now - _lastInitAttemptMs >= DISPLAY_RETRY_MS)) {
         begin();
     }
 
-    if (!_isInitialized || !_gfx) {
-        if (_mode == DisplayMode::Calibration) return;
-        return;
-    }
+    if (!_isInitialized || !_gfx) return;
     if (!isStill()) s_stillSinceMs = 0;
     else if (!s_stillSinceMs) s_stillSinceMs = now | 1;
+    s_contentMoving = !s_still && !s_calibPattern && (_mode == DisplayMode::Normal || _mode == DisplayMode::Calibration) && !contentStill();
     s_scrollMode = cfg.rotationMode == RotationMode::SingleScroll && _mode == DisplayMode::Normal;
     s_framesStarted = true;
 
@@ -760,53 +792,32 @@ void DisplayManager::update(const AppConfig& cfg) {
             analyzeElements(_nextElements, cfg, _nextMessagePixelWidth, _isNextRtl);
             CLOCK_LOG("Display", "  -> New message analyzed. Width: %d, RTL: %s", _nextMessagePixelWidth, _isNextRtl ? "yes" : "no");
 
-            if (_currentElements.empty()) {
-                // This is the very first message. No transition needed.
-                _currentElements = _nextElements;
-                _nextElements.clear();
-                _currentMessagePixelWidth = _nextMessagePixelWidth;
-                _isCurrentRtl = _isNextRtl;
-                
-                if (cfg.rotationMode == RotationMode::Alternating) {
-                    if (_currentMessagePixelWidth > _winW) {
-                        _displayState = DisplayState::ALT_SCROLL;
-                        _altScrollPhase = AltScrollPhase::HOLD;
-                        _altItemStartMs = now;
-                        _altRevealDoneAtMs = 0;
-                        CLOCK_LOG("Display", "  -> State -> ALT_SCROLL (long message)");
-                    } else {
-                        _displayState = DisplayState::STATIC;
-                        CLOCK_LOG("Display", "  -> State -> STATIC (short message)");
-                    }
-                } else {
-                    // SingleScroll is one continuous ticker, by design (see
-                    // MessageAggregator::buildElements) - unlike Alternating,
-                    // it should never sit still just because this particular
-                    // round's concatenated content happens to be short.
-                    _displayState = DisplayState::LOOPING_SCROLL;
-                    CLOCK_LOG("Display", "  -> State -> LOOPING_SCROLL (SingleScroll)");
-                }
-                resetScroll(cfg); // Set initial scroll position
-            } else if (cfg.rotationMode == RotationMode::Alternating) {
-                // Alternating mode: hard cut to the new item, no scroll/dissolve.
-                // One frame still shows the old item; the very next frame already
+            if (cfg.rotationMode == RotationMode::Alternating) {
+                // Alternating mode: every item the same way - the first after a start
+                // too (2026-11-14: was two copies, "first message" and "hard cut").
+                // A hard cut to the new item, no scroll/dissolve: one frame still shows
+                // the old item (none, the first time); the very next frame already
                 // shows the new one, nothing in between.
                 _currentElements = _nextElements;
                 _nextElements.clear();
                 _currentMessagePixelWidth = _nextMessagePixelWidth;
                 _isCurrentRtl = _isNextRtl;
 
-                if (_currentMessagePixelWidth > _winW) {
-                    _displayState = DisplayState::ALT_SCROLL;
-                    _altScrollPhase = AltScrollPhase::HOLD;
-                    _altItemStartMs = now;
-                    _altRevealDoneAtMs = 0;
-                    CLOCK_LOG("Display", "  -> Alternating hard cut. State -> ALT_SCROLL (long item)");
-                } else {
-                    _displayState = DisplayState::STATIC;
-                    CLOCK_LOG("Display", "  -> Alternating hard cut. State -> STATIC (short item)");
-                }
+                startAlternatingItem(now);
                 resetScroll(cfg);
+            } else if (_currentElements.empty()) {
+                // SingleScroll's very first message: nothing to transition from.
+                _currentElements = _nextElements;
+                _nextElements.clear();
+                _currentMessagePixelWidth = _nextMessagePixelWidth;
+                _isCurrentRtl = _isNextRtl;
+                // SingleScroll is one continuous ticker, by design (see
+                // MessageAggregator::buildElements) - unlike Alternating,
+                // it should never sit still just because this particular
+                // round's concatenated content happens to be short.
+                _displayState = DisplayState::LOOPING_SCROLL;
+                CLOCK_LOG("Display", "  -> State -> LOOPING_SCROLL (SingleScroll)");
+                resetScroll(cfg); // Set initial scroll position
             } else {
                 // An old message exists. Start transitioning.
                 _displayState = DisplayState::TRANSITIONING;
@@ -857,7 +868,7 @@ void DisplayManager::update(const AppConfig& cfg) {
                 // time via isAlternatingScrollActive()). When budget finally
                 // runs out, freeze right at that pass's reveal-complete point
                 // and hold for half the dwell time before moving on.
-                uint32_t dwellMs = (uint32_t)cfg.messageDwellSec * 1000;
+                int64_t dwellMs = (int64_t)cfg.messageDwellSec * 1000;
                 if (_altScrollPhase == AltScrollPhase::HOLD) {
                     if (now - _altItemStartMs >= dwellMs / 3) {
                         _altScrollPhase = AltScrollPhase::SCROLLING;
@@ -876,9 +887,9 @@ void DisplayManager::update(const AppConfig& cfg) {
                     bool reachedCheckpoint = _isCurrentRtl ? (_scrollX >= stopX) : (_scrollX <= stopX);
                     if (_altCheckpointArmed && reachedCheckpoint) {
                         _altCheckpointArmed = false;
-                        uint32_t passDurationMs = now - _altCycleStartMs;
-                        uint32_t elapsedTotal = now - _altItemStartMs;
-                        uint32_t remaining = (elapsedTotal < dwellMs) ? (dwellMs - elapsedTotal) : 0;
+                        int64_t passDurationMs = now - _altCycleStartMs;
+                        int64_t elapsedTotal = now - _altItemStartMs;
+                        int64_t remaining = (elapsedTotal < dwellMs) ? (dwellMs - elapsedTotal) : 0;
                         if (remaining >= passDurationMs / 2) {
                             // Enough budget left to be worth another pass - let it
                             // flow onward (scrollX keeps moving past this point);
@@ -976,7 +987,7 @@ void DisplayManager::update(const AppConfig& cfg) {
                 int frame_index = 0;
                 int frame_width = p.width; // Use element width for both static and animated
                 if (p.type == OnScreenElementType::ANIMATED_SPRITE && p.frame_count > 0 && p.frame_delay_ms > 0) {
-                    frame_index = (millis() / p.frame_delay_ms) % p.frame_count;
+                    frame_index = (int)((Uptime::ms() / p.frame_delay_ms) % p.frame_count);
                 }
                 drawBmp(p.content.c_str(), x, drawY, frame_index, frame_width);
             } else { // Image or Sprite, but it's invalid
@@ -1061,27 +1072,27 @@ void DisplayManager::update(const AppConfig& cfg) {
 
     if (calib) {   // the window frame, moving, on top of whatever is shown
         drawCalibBorder();
-        if (now - _lastCalibMs >= 80) { _lastCalibMs = now; _calibBorderPhase++; }
+        if (now - _lastCalibMs >= 80) { _lastCalibMs = now; if (++_calibBorderPhase >= 1000000000) _calibBorderPhase = 0; }   // never past int (years in calibration)
     }
 
     if (_gfx && _canvas) {
         keepTeOn();
-        uint32_t diagBlitStartUs = micros();
+        int64_t diagBlitStartUs = Uptime::us();
         sendFrame(sendWhole);
-        uint32_t diagBlitUs = micros() - diagBlitStartUs - s_lastTeWaitUs;   // sending only, not the wait for TE
+        uint32_t diagBlitUs = (uint32_t)(Uptime::us() - diagBlitStartUs - s_lastTeWaitUs);   // sending only, not the wait for TE
         s_lastBlitUs = diagBlitUs;
-        uint32_t frameEndUs = micros();
+        int64_t frameEndUs = Uptime::us();
         if (s_prevFrameEndUs) {
-            uint32_t gapUs = frameEndUs - s_prevFrameEndUs;
+            int64_t gapUs = frameEndUs - s_prevFrameEndUs;
             if (gapUs > FRAME_HITCH_US) s_hitches++;
             if (gapUs > FRAME_BIG_HITCH_US) s_bigHitches++;
         }
         s_prevFrameEndUs = frameEndUs;
-        uint32_t diagTotalUs = micros() - diagFrameStartUs;
+        uint32_t diagTotalUs = (uint32_t)(Uptime::us() - diagFrameStartUs);
         // Diagnostic: throttled to ~2/sec so it doesn't flood the log while still showing a live trend.
-        static uint32_t diagLastLogMs = 0;
-        if (millis() - diagLastLogMs > 500) {
-            diagLastLogMs = millis();
+        static int64_t diagLastLogMs = 0;
+        if (Uptime::ms() - diagLastLogMs > 500) {
+            diagLastLogMs = Uptime::ms();
             CLOCK_LOG("Display", "Frame timing: blit=%luus, total=%luus, render=%luus, scrollX=%d",
                       (unsigned long)diagBlitUs, (unsigned long)diagTotalUs,
                       (unsigned long)(diagTotalUs - diagBlitUs), _scrollX);
@@ -1389,16 +1400,7 @@ void DisplayManager::drawGlyph(int x, int y, uint32_t codepoint, uint16_t color,
     // pixels too early.
     if (!directToCanvas && (x + FONT_W <= _winX || x - FONT_W >= _winX + _winW || y + FONT_H <= _winY || y >= _winY + _winH)) return;
 
-    bool isDebugChar = (codepoint == 0x05F4 || codepoint == 0xE000);
-    if (isDebugChar) {
-        // CLOCK_LOG("drawGlyph", "--- Debug Glyph Start ---");
-        // CLOCK_LOG("drawGlyph", "Requested codepoint: 0x%04X", codepoint);
-    }
-
     int idx = fontGetGlyphIdx(codepoint);
-    if (isDebugChar) {
-        // CLOCK_LOG("drawGlyph", "fontGetGlyphIdx returned index: %d", idx);
-    }
 
     if (idx < 0) {
         int rx = x, ry = y, rw = FONT_W - 2, rh = FONT_H - 2;
@@ -1411,17 +1413,7 @@ void DisplayManager::drawGlyph(int x, int y, uint32_t codepoint, uint16_t color,
     }
 
     const uint8_t* bitmap = fontGetGlyphPtr(idx);
-    if (!bitmap) {
-        if (isDebugChar) {
-            // CLOCK_LOG("drawGlyph", "fontGetGlyphPtr returned NULL! Something is wrong.");
-            // CLOCK_LOG("drawGlyph", "--- Debug Glyph End ---");
-        }
-        return;
-    }
-    if (isDebugChar) {
-        // CLOCK_LOG("drawGlyph", "fontGetGlyphPtr returned a valid pointer.");
-        // CLOCK_LOG("drawGlyph", "First 4 bytes of bitmap: 0x%02X 0x%02X 0x%02X 0x%02X", pgm_read_byte(&bitmap[0]), pgm_read_byte(&bitmap[1]), pgm_read_byte(&bitmap[2]), pgm_read_byte(&bitmap[3]));
-    }
+    if (!bitmap) return;
 
     // The glyph is drawn ink-first: its left bearing already puts the ink's
     // leftmost column at x (see PROPORTIONAL METRICS in Font.h), and its
@@ -1467,9 +1459,6 @@ void DisplayManager::drawGlyph(int x, int y, uint32_t codepoint, uint16_t color,
             uint16_t& px = fb[dispY * TFT_WIDTH + dispX];
             px = (cover == 15) ? color : blend565(px, color, cover);
         }
-    }
-    if (isDebugChar) {
-        // CLOCK_LOG("drawGlyph", "--- Debug Glyph End ---");
     }
 }
 
@@ -1573,41 +1562,25 @@ int DisplayManager::drawString(int startX, int y, const char* utf8text, uint16_t
 
     // 2. Draw the runs in the correct visual order.
     int currentX = startX;
-    if (isOverallRtl) {
-        // For RTL messages, draw the runs in reverse order.
-        for (int j = runs.size() - 1; j >= 0; j--) {
-            const auto& run = runs[j];
-            if (run.type == BidiRunType::RTL) {
-                for (int k = run.end - 1; k >= run.start; k--) {
-                    uint32_t cp = mirrorForRtl(codepoints[k]);
-                    drawGlyph(currentX, y, cp, color, directToCanvas);
-                    currentX += fontGetAdvanceForCodepoint(cp);
-                }
-            } else { // LTR or Neutral runs are drawn in logical order.
-                for (int k = run.start; k < run.end; k++) {
-                    drawGlyph(currentX, y, codepoints[k], color, directToCanvas);
-                    currentX += fontGetAdvanceForCodepoint(codepoints[k]);
-                }
+    // One run: an RTL run's characters right to left (mirrored brackets etc.),
+    // an LTR or neutral run's in logical order.
+    auto drawRun = [&](const auto& run) {
+        if (run.type == BidiRunType::RTL) {
+            for (int k = run.end - 1; k >= run.start; k--) {
+                uint32_t cp = mirrorForRtl(codepoints[k]);
+                drawGlyph(currentX, y, cp, color, directToCanvas);
+                currentX += fontGetAdvanceForCodepoint(cp);
+            }
+        } else {
+            for (int k = run.start; k < run.end; k++) {
+                drawGlyph(currentX, y, codepoints[k], color, directToCanvas);
+                currentX += fontGetAdvanceForCodepoint(codepoints[k]);
             }
         }
-    } else {
-        // For LTR messages, draw the runs in logical order.
-        for (const auto& run : runs) {
-            // An RTL run inside an LTR message needs its characters drawn in reverse.
-            if (run.type == BidiRunType::RTL) {
-                for (int k = run.end - 1; k >= run.start; k--) {
-                    uint32_t cp = mirrorForRtl(codepoints[k]);
-                    drawGlyph(currentX, y, cp, color, directToCanvas);
-                    currentX += fontGetAdvanceForCodepoint(cp);
-                }
-            } else { // LTR or Neutral runs are drawn in logical order.
-                for (int k = run.start; k < run.end; k++) {
-                    drawGlyph(currentX, y, codepoints[k], color, directToCanvas);
-                    currentX += fontGetAdvanceForCodepoint(codepoints[k]);
-                }
-            }
-        }
-    }
+    };
+    // An RTL message: its runs from the last to the first; an LTR one in order.
+    if (isOverallRtl) for (int j = (int)runs.size() - 1; j >= 0; j--) drawRun(runs[j]);
+    else              for (const auto& run : runs) drawRun(run);
     return currentX - startX;
 }
 
@@ -1666,7 +1639,7 @@ static void tinyText(Arduino_GFX* g, int x, int y, const char* s, uint16_t color
 void DisplayManager::setCalibrationPattern(bool on) { s_calibPattern = on; }
 
 void DisplayManager::updateCalibration() {
-    uint32_t now = millis();
+    int64_t now = Uptime::ms();
     if (now - _lastScrollMs < 200) return;   // a still picture: redraw 5x a second (frame on top moves)
     _lastScrollMs = now;
     if (!_canvas) return;

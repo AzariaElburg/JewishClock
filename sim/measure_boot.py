@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import moments as M
 
 STAMP = re.compile(r"^\[(\d\d):(\d\d):(\d\d)\.(\d\d\d)\]")
-STARTS = {"geo": "Syncing TZ rules in background", "main": "Fetch conditions met. Requesting", "zmanim": "Requesting Zmanim URL"}
+STARTS = {"geo": "Syncing TZ rules in background", "main": "Fetch conditions met. Requesting", "zmanim": "Requesting Zmanim URL"}   # copy-ok: reads the real clock's log, older versions too
 ENDS = {"geo": "[Geo] Sync Complete", "main": "HTTP GET completed", "zmanim": "Zmanim gap-fill complete"}
 
 
@@ -48,14 +48,14 @@ def one_restart(clock, port, when, seconds=45):
         while b"\n" in buf:
             line, buf = buf.split(b"\n", 1)
             text = line.decode("utf-8", "replace").strip()
-            if "reconnected #1" in text and "ap" not in row:   # which access point it joined, at what signal
+            if "reconnected #1" in text and "ap" not in row:   # which access point it joined, at what signal - copy-ok: reads the real clock's log, older versions too
                 m = re.search(r"rssi=(-?\d+) ap=([0-9A-Fa-f:]+)", text)
                 if m: row["ap"] = "%s(%s)" % (m.group(2)[-5:], m.group(1))
             if "Manifest cache loaded" in text and "setup" not in row:
                 row["setup"] = stamp_s(text)         # uptime: end of the clock's setup()
             if "Got IP" in text and "wifi" not in row:
                 row["wifi"] = stamp_s(text)          # before the first sync the stamp is the uptime
-            if "First sync" in text and "ntp" not in row:
+            if ("First sync" in text or "first time: " in text) and "ntp" not in row:   # firmware before / after 2026-11-17 - copy-ok: reads the real clock's log, older versions too
                 row["ntp"] = time.time() - t0       # PC time since the reset pulse (+-0.1 s)
             for k, pat in STARTS.items():
                 if pat in text and k not in starts:

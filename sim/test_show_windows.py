@@ -121,22 +121,27 @@ def main():
     sys.stdout.reconfigure(encoding="utf-8")
     if not EXE.exists():
         sys.exit("build the screen simulator first: python sim/build.py")
+    # --only CONFIG ...: just those configurations' moments (2026-11-11)
+    only = sys.argv[sys.argv.index("--only") + 1:] if "--only" in sys.argv else None
+    cases = [c for c in CASES if not only or c[0] in only]
+    if not cases:
+        sys.exit("no such configuration - names: %s" % " ".join(dict.fromkeys(c[0] for c in CASES)))
     by_config = {}
-    for name, t, _ in CASES:
+    for name, t, _ in cases:
         by_config.setdefault(name, []).append(t)
     results = {}
     threads = [threading.Thread(target=run_config, args=(n, m, results)) for n, m in by_config.items()]
     for th in threads: th.start()
     for th in threads: th.join()
     bad = 0
-    for name, t, want in CASES:
+    for name, t, want in cases:
         got = results.get((name, t), ["(no slides)"])
         ok = sorted(got) == sorted(want)
         bad += not ok
         print("%s %-22s %s  %s" % ("OK  " if ok else "FAIL", name, t, "  |  ".join(got) or "-"))
         if not ok:
             print("     expected: %s" % ("  |  ".join(want) or "-"))
-    print("show windows test: " + ("ALL CORRECT" if not bad else "%d of %d WRONG" % (bad, len(CASES))))
+    print("show windows test: " + ("ALL CORRECT" if not bad else "%d of %d WRONG" % (bad, len(cases))))
     sys.exit(1 if bad else 0)
 
 

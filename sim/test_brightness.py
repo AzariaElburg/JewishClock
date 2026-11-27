@@ -8,6 +8,7 @@ at most one save an hour. A few seconds.
 
 Exit code 1 on any wrong result.
 """
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -18,16 +19,20 @@ import build  # noqa: E402 - same compiler and flags as the simulator
 
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
-    exe = build.OUT / "test_brightness.exe"
+    # A measuring run (run_all_tests --coverage sets JC_COV_DIR): built with line counting, under
+    # its own name - its counts written at exit to LLVM_PROFILE_FILE (coverage_report.py reads it).
+    cov = bool(os.environ.get("JC_COV_DIR"))
+    if cov and "--coverage" not in sys.argv:
+        sys.argv.append("--coverage")   # build.compiler() looks there
+    exe = build.OUT / ("test_brightness_cov.exe" if cov else "test_brightness.exe")
     build.OUT.mkdir(parents=True, exist_ok=True)
-    cmd = [build.find_zig(), "c++", "-std=c++17", "-O1", "-g0", "-target", "x86_64-windows-gnu",
+    cmd = build.compiler(["c++", "-std=c++17", "-O1", "-g0", "-target", "x86_64-windows-gnu",
            "-include", str(build.SIM / "stubs" / "sim_force.h"),
            "-I", str(build.SIM / "stubs"), "-I", str(build.SIM), "-I", str(build.ROOT / "include"),
            "-I", str(build.ARDUINOJSON), "-DARDUINO=10819", "-DARDUINOJSON_ENABLE_PROGMEM=0",
-           "-Wno-deprecated-declarations",
-           str(build.SIM / "test_brightness.cpp"), str(build.ROOT / "src" / "BrightnessManager.cpp"),
-           "-o", str(exe)]
-    if subprocess.run(cmd).returncode != 0:
+           "-Wno-deprecated-declarations"]) + [
+           str(build.SIM / "test_brightness.cpp"), str(build.ROOT / "src" / "BrightnessManager.cpp"), str(build.ROOT / "src" / "Tunables.cpp")]
+    if not build.link(cmd, exe):
         sys.exit("BUILD FAILED")
     sys.exit(subprocess.run([str(exe)]).returncode)
 

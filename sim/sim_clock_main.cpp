@@ -22,6 +22,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+#include <vector>
 #include <winsock2.h>
 #include <windows.h>
 #include <Arduino.h>
@@ -41,10 +42,16 @@
 #include <sstream>
 #include <map>
 #include <random>
+#include "Tunables.h"
+#include "Texts.h"
 #include "Config.h"
 #include "Storage.h"
 #include "Version.h"
 #include "Display.h"
+#include "MessageAggregator.h"
+#include "NTPManager.h"
+#include <driver/ledc.h>   // the stand-in's backlight duty
+#include <Arduino_GFX_Library.h>   // the panel stand-in's last window (g_simPanelWindow)
 #include "OnScreenElement.h"
 #include "sim_clock.h"
 
@@ -107,6 +114,7 @@ uint32_t EspClass::getFreeHeap() { return 172088; }
 uint32_t EspClass::getMaxAllocHeap() { return 90100; }
 uint32_t EspClass::getMinFreeHeap() { return 118408; }
 size_t sim_psram_used();   // sim_heap.cpp, with getFreePsram()
+void sim_psram_hog(double freePct);   // sim_heap.cpp: PSRAM taken until freePct % is free (< 0: given back)
 uint32_t EspClass::getPsramSize() { return 8u * 1024u * 1024u; }
 
 // ── RTC memory: kept through a restart, not a power cut (esp_attr.h) ─────────
@@ -131,7 +139,9 @@ static void loadRtc() {
 // ── Restarts ──────────────────────────────────────────────────────────────────
 static esp_reset_reason_t g_resetReason = ESP_RST_POWERON;
 esp_reset_reason_t esp_reset_reason() { return g_resetReason; }
-void simRestart(int) { saveRtc(); fflush(stderr); _exit(EXIT_RESTART); }
+void simCovFlush();                          // sim_coverage.cpp: the coverage build's counts, before any _exit()
+bool simCovDump(const std::string& name);
+void simRestart(int) { saveRtc(); fflush(stderr); simCovFlush(); _exit(EXIT_RESTART); }
 void EspClass::restart() { simRestart(ESP_RST_SW); for (;;) {} }
 
 // ── The loop watchdog (main.cpp arms it: WDT_TIMEOUT_SEC) ─────────────────────
@@ -147,7 +157,7 @@ static void watchdogThread() {
         uint32_t t = g_wdtTimeoutMs;
         if (t && g_lastFeedMs && realMs() - g_lastFeedMs > (long long)t) {
             fprintf(stderr, "[sim] task watchdog: loop() did not come back within %u s - restarting\n", t / 1000);
-            saveRtc(); fflush(stderr); _exit(EXIT_WDT);
+            saveRtc(); fflush(stderr); simCovFlush(); _exit(EXIT_WDT);
         }
     }
 }
@@ -163,6 +173,15 @@ float sim_parse_float(const std::string& q, const char* key, float def) {
     return p == std::string::npos ? def : (float)atof(q.c_str() + p + strlen(key) + 1);
 }
 bool simOtaStateJson(std::string& out);
+// A slide as text, as the screen simulator writes it (sim_main.cpp elementsText): "a | b | [icon]".
+static std::string screenText(const std::vector<OnScreenElement>& els) {
+    std::string t;
+    for (const auto& e : els) {
+        if (!t.empty()) t += " | ";
+        t += e.type == OnScreenElementType::TEXT ? std::string(e.content.c_str()) : "[" + std::string(e.content.c_str()) + "]";
+    }
+    return t;
+}
 static std::string controlAnswer(const std::string& method, const std::string& path, const std::string& query, const std::string& body, int& code) {
     code = 200;
     std::lock_guard<std::recursive_mutex> lk(Sim::clockLock());
@@ -170,23 +189,42 @@ static std::string controlAnswer(const std::string& method, const std::string& p
         JsonDocument d;
         d["version"] = Sim::firmwareVersion; d["millis"] = millis(); d["resetReason"] = (int)g_resetReason;
         d["wifi"] = WiFi.status(); d["sta"] = Sim::staUp(); d["ip"] = Sim::staIpString(); d["ssid"] = WiFi.SSID();
-        d["ap"] = Sim::apUp(); d["internet"] = Sim::wifiInternet(); d["lux"] = Sim::roomLux;
+        d["ap"] = Sim::apUp(); d["apSsid"] = Sim::apSsid(); d["apPass"] = Sim::apPass(); d["internet"] = Sim::wifiInternet(); d["lux"] = Sim::roomLux;
         d["psramUsed"] = sim_psram_used();
-        std::string screen;   // what the display shows now, as the screen simulator writes it
-        for (auto& e : DisplayManager::getCurrentMessageElements()) {
-            if (!screen.empty()) screen += " | ";
-            screen += e.type == OnScreenElementType::TEXT ? std::string(e.content.c_str()) : "[" + std::string(e.content.c_str()) + "]";
+        d["screen"] = screenText(DisplayManager::getCurrentMessageElements());   // what the display shows now
+        d["rounds"] = MessageAggregator::roundsDone();
+        d["utcMs"] = NTPManager::utcMs();   // the clock's time by its model, ms (0 = not synced)
+        d["backlight"] = (double)g_simLedcDutyOut / ((1u << g_simLedcBits) - 1);   // 0..1 of full light (the PWM output)
+        JsonArray pw = d["panelWindow"].to<JsonArray>();   // where the last frame went on the panel (x, y, w, h)
+        for (int16_t v : g_simPanelWindow) pw.add(v);
+        // ?rounds=N: the next N rounds as the clock would show them now, each a list of slides in
+        // the "screen" form (MessageAggregator::upcomingRounds - the screen's own code; 2026-11-15)
+        int n = (int)sim_parse_float(query, "rounds", 0);
+        if (n > 0) {
+            JsonArray rs = d["nextRounds"].to<JsonArray>();
+            for (const auto& round : MessageAggregator::upcomingRounds(n > 10 ? 10 : n)) {
+                JsonArray ra = rs.add<JsonArray>();
+                for (const auto& slide : round) ra.add(screenText(slide));
+            }
         }
-        d["screen"] = screen;
         std::string ota; if (simOtaStateJson(ota)) d["ota"] = serialized(ota);
         std::string s; serializeJson(d, s); return s;
     }
+    if (path == "/ntp-port") { Sim::localNtpPort = (int)sim_parse_float(query, "port", 0); return "ok"; }   // the tests' time server
+    if (path == "/ntp-sync") { NTPManager::forceSync(); return "ok"; }   // ask the time server now (not in 6 h)
+    if (path == "/psram-hog") { sim_psram_hog(sim_parse_float(query, "free_pct", -1)); return "ok"; }   // low memory, for a test
     if (path == "/world" && method == "GET") return Sim::worldJson();
     if (path == "/world" && method == "POST") { std::string err; if (!Sim::setWorldJson(body, err)) { code = 400; return err; } return "ok"; }
     if (path == "/light") { Sim::roomLux = sim_parse_float(query, "lux", Sim::roomLux); if (query.find("sensor=0") != std::string::npos) Sim::lightSensorPresent = false; return "ok"; }
-    if (path == "/power-cut") { fflush(stderr); _exit(EXIT_POWER_CUT); }
-    if (path == "/reset") { saveRtc(); fflush(stderr); _exit(EXIT_EXT_RESET); }   // the reset button: RTC memory kept
-    if (path == "/stop") { fflush(stderr); _exit(EXIT_STOP); }
+    if (path == "/power-cut") { fflush(stderr); simCovFlush(); _exit(EXIT_POWER_CUT); }
+    if (path == "/reset") { saveRtc(); fflush(stderr); simCovFlush(); _exit(EXIT_EXT_RESET); }   // the reset button: RTC memory kept
+    if (path == "/stop") { fflush(stderr); simCovFlush(); _exit(EXIT_STOP); }
+    if (path == "/coverage") {   // the coverage build: counts so far under a test's name (sim_coverage.cpp)
+        size_t n = query.find("name=");
+        std::string name = n == std::string::npos ? "" : query.substr(n + 5, query.find('&', n) - n - 5);
+        if (!simCovDump(name)) { code = 400; return "not a coverage build, or no JC_COV_DIR / name"; }
+        return "ok";
+    }
     code = 404; return "unknown";
 }
 static void controlServer() {
@@ -237,6 +275,10 @@ static int runClock() {
     // No PC time: the system clock counts from 1970 until the clock's own
     // NTPManager.cpp sets it from a real time server (sim_ntp.cpp).
     Sim::internetUp = Sim::wifiInternet;
+    Sim::urlBlocked    = [](const std::string& url) { return Sim::serviceBlocked(url); };
+    Sim::urlFake       = [](const std::string& url, std::string& body) { return Sim::fakeAnswer(url, body); };
+    Sim::urlFakeStatus = [](const std::string& url) { return Sim::fakeStatus(url); };
+    Sim::urlFakeHdr    = [](const std::string& url, const std::string& name, std::string& val) { return Sim::fakeHdr(url, name, val); };
     Sim::liveNetwork = true;   // downloads go out for real, at their real speed
     Sim::fsFull = true;        // LittleFS's 4 MB can run full
     Sim::startTiming((uint32_t)std::random_device{}());
@@ -255,7 +297,7 @@ static int runClock() {
     std::thread(watchdogThread).detach();
     fprintf(stderr, "[sim] JewishClock %s (slot %d, reset reason %d)\n", Sim::firmwareVersion.c_str(), atoi(getenv("JC_SLOT") ? getenv("JC_SLOT") : "0"), (int)g_resetReason);
     // Its window says which simulator it is (the user, 2026-11-07): JC_TITLE
-    // from the script that started it ("Released", "Work", "Test (ui_tests)"),
+    // from the script that started it ("Released", "Work", "Test (web-ui)"),
     // then the version running now - set on every start, so it follows updates.
     if (const char* t = getenv("JC_TITLE")) {
         std::string s = std::string(t) + " v" + Sim::firmwareVersion + " - 127.0.0.1:" + std::to_string(Sim::homePort);
@@ -263,7 +305,10 @@ static int runClock() {
         if (MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w, 512) > 0) SetConsoleTitleW(w);
     }
 
+    // run_all_tests.py --uptime-start: the clock's uptime starts late (sim_platform.cpp)
+    if (const char* m = getenv("JC_UPTIME_START_MS")) Sim::setUptimeStart(strtoull(m, nullptr, 10));
     const long long start = realMs();
+    Sim::followRealTime();   // its uptime continuous, as the ESP32's timer (sim_platform.cpp)
     {
         std::lock_guard<std::recursive_mutex> lk(Sim::clockLock());
         setup();
@@ -277,7 +322,8 @@ static int runClock() {
         // Real time: millis() follows the PC's clock (a delay() in the clock's
         // code may have run it ahead - then it waits for the PC to catch up).
         long long target = realMs() - start;
-        if (target > (long long)millis()) Sim::advanceMillis((unsigned long)(target - (long long)millis()));
+        long long ran = (long long)Sim::uptimeMs();   // the simulator's own, from 0 (JC_UPTIME_START_MS doesn't move it)
+        if (target > ran) Sim::advanceMillis((unsigned long)(target - ran));
         else std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }
@@ -344,11 +390,22 @@ static int supervise(int argc, char** argv) {
 
 int main(int argc, char** argv) {
     SetConsoleOutputCP(CP_UTF8);   // the log is UTF-8 (Hebrew): without this a console shows it as code page 437
+    // JC_PRIORITY=above (resilience's time-sync drill, 2026-11-18): its main loop as quick as the
+    // board's while a full run loads the PC - a reply read late counts half as clock error.
+    // Inherited by the supervisor's child through the environment (a priority class is not).
+    if (const char* pr = getenv("JC_PRIORITY")) if (!strcmp(pr, "above")) SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
     std::string fsDir = "C:/pio3/jc_clean/sim/clock/fs", stateDir;
     Sim::quiet = true;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         auto next = [&]() -> std::string { if (i + 1 >= argc) { fprintf(stderr, "%s needs a value\n", a.c_str()); std::exit(2); } return argv[++i]; };
+        // --texts / --tunables: this build's words and numbers (Texts.h, Tunables.h), as /api/texts and
+        // /api/tunables give them - for tests that need them while an older version runs (2026-11-20)
+        if (a == "--texts" || a == "--tunables") {
+            JsonDocument d;
+            if (a == "--texts") Texts::toJson(d); else Tunables::toJson(d);
+            std::vector<char> buf(measureJson(d) + 1); serializeJson(d, buf.data(), buf.size()); puts(buf.data()); return 0;   // sized to the answer: a fixed buffer cut the growing list off
+        }
         if (a == "--fs") fsDir = next();
         else if (a == "--state") stateDir = next();
         else if (a == "--home-port") Sim::homePort = atoi(next().c_str());

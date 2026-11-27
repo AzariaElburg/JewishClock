@@ -41,13 +41,18 @@ button:active:not(:disabled){background:var(--accent-dark)}
   <a class="back" href="/">&larr; Back</a>
   <h1>Update the clock</h1>
   <div class="sub">Choose the update file you received (its name ends in <b>.jcupdate</b>), then tap Update.
-    The clock restarts by itself, once or twice. It takes about 2 minutes - keep this page open until it says <b>Done</b>.
+    The clock restarts by itself, once. It takes about 2 minutes - keep this page open until it says <b>Done</b>.
     Settings and events stay as they are.</div>
   <div class="ver">Current version: <b id="curVer">checking...</b></div>
 
   <label id="filePick" for="fileInput">Tap to choose the update file</label>
-  <input type="file" id="fileInput" accept=".jcupdate,.bin">
+  <input type="file" id="fileInput" accept=".jcupdate">
 
+  <div id="nokey" style="display:none;border:2px solid #c62828;border-radius:8px;padding:10px;margin:10px 0;color:#c62828">
+    <b>The clock has no update key - it can't check an update without one.</b> Paste the key in Settings &gt; Clock software &gt; Update key first.
+  </div>
+  <label id="olderBox" style="display:none;margin:10px 0;color:#c62828"><input type="checkbox" id="eraseOk">
+    <b>Install the older version and erase everything</b> - settings, events and pictures (Wi-Fi stays). Export them to Excel first.</label>
   <button id="goBtn" disabled onclick="startUpdate()">Update</button>
 
   <div class="bar-wrap" id="barWrap"><div class="bar" id="bar"></div></div>
@@ -61,25 +66,41 @@ let oldVersion = null;   // version before the update
 let newVersion = null;   // version the clock said it is installing (package only)
 let finished = false;
 let apName = '', homeName = '';   // the clock's own Wi-Fi, and the one it is on
+let viaAp = false;                // this page came over the clock's own Wi-Fi
+let loadUptime = null;            // the clock's uptime when this page opened - lower later = it restarted
 
+// No update key (none usable in the settings - the firmware writes its own at every start, so
+// only a safety net): nothing is installed (the user, 2026-11-17: no key = a wrong key).
+let noKey = false;
+function refreshGo() { el('goBtn').disabled = !el('fileInput').files[0] || noKey; }
 fetch('/api/status').then(r=>r.json()).then(s=>{
+  noKey = s.updateKeyId === '';
+  el('nokey').style.display = noKey ? 'block' : 'none'; refreshGo();
   oldVersion = s.firmware; el('curVer').textContent = s.firmware || 'unknown';
-  apName = s.apSsid || ''; homeName = s.ssid || '';
+  apName = s.apSsid || ''; homeName = s.ssid || ''; viaAp = !!s.viaAp; loadUptime = s.uptimeMs;
 }).catch(()=>{ el('curVer').textContent = 'unknown'; });
 
-// While the clock restarts its Wi-Fi is gone, and the phone or computer
-// usually moves to its home network - and stays there (the user, 2026-11-03).
+// While the clock answers: only "received, keep this page open". The moment it
+// stops answering (it restarted), and only over its own Wi-Fi - which goes away
+// with it, and the phone or computer moves to another network and stays there
+// (the user, 2026-11-03) - "choose it again" (the user, 2026-11-09).
+const RECEIVED_MSG = 'Update received - the clock now installs it and restarts. About 2 minutes; keep this page open.';
+// All sent, but the clock's answer never came (the connection broke): we don't
+// KNOW it got the file - say "sent" until it shows (the user, 2026-11-09).
+const SENT_MSG = 'Update sent - waiting for the clock to confirm it. Keep this page open.';
+// One restart: the new page files go in place after the trial without another
+// one (Updater.cpp installPendingWebFiles(), 2026-11-10).
 function restartingMsg(){
-  let t = 'Update received - the clock is restarting. About 2 minutes; keep this page open.';
-  if (apName) t += ' When the clock is back, choose the Wi-Fi "' + apName + '" again: your phone or computer will probably switch to ' +
-    (homeName ? '"' + homeName + '"' : 'another network') + ' while the clock restarts.';
-  return t;
+  const lead = 'The clock is restarting';
+  if (viaAp && apName) return lead + ', so its Wi-Fi "' + apName + '" is gone for a moment and your phone or computer has probably switched to ' +
+    (homeName ? '"' + homeName + '"' : 'another network') + '. Choose the Wi-Fi "' + apName + '" again now - this page carries on by itself.';
+  return lead + ' - this page carries on by itself when it is back.';
 }
 
 el('fileInput').addEventListener('change', function(){
   const f = this.files[0];
   const pick = el('filePick');
-  if (f) { pick.textContent = f.name; pick.classList.add('has-file'); el('goBtn').disabled = false; }
+  if (f) { pick.textContent = f.name; pick.classList.add('has-file'); refreshGo(); }
   else { pick.textContent = 'Tap to choose the update file'; pick.classList.remove('has-file'); el('goBtn').disabled = true; }
 });
 
@@ -89,9 +110,10 @@ function showMsg(text, cls){
   m.className = cls;
 }
 
-function fail(text){
+function fail(text, older){
   finished = true;
   showMsg(text || 'The update failed. Nothing was changed on the clock.', 'err');
+  if (older) el('olderBox').style.display = 'block';   // offer it: with erase (the clock says so in a header, not its words)
   el('goBtn').disabled = false;
   el('fileInput').disabled = false;
 }
@@ -114,24 +136,24 @@ function startUpdate(){
   xhr.upload.addEventListener('progress', function(e){
     if (e.lengthComputable) el('bar').style.width = Math.round(e.loaded / e.total * 100) + '%';
   });
-  xhr.upload.addEventListener('load', function(){ sent = true; showMsg('Checking the update file...', 'wait'); });
+  xhr.upload.addEventListener('load', function(){ sent = true; showMsg('Update sent - the clock is checking it...', 'wait'); });
   xhr.addEventListener('load', function(){
-    if (xhr.status !== 200) { fail(xhr.responseText); return; }
-    // The whole version, "2.0.1-3-g1a2b3c4" too (Updater.cpp's message) - not
-    // the sentence's own full stop. Until 2026-11-02 only "2.0.1" was taken,
-    // so the page never said "Done!" for a build between releases.
-    const m = xhr.responseText.match(/Installing version (\S+)\. /);
-    newVersion = m ? m[1] : null;
-    showMsg(restartingMsg(), 'wait');
-    watch();
+    if (xhr.status !== 200) { fail(xhr.responseText, xhr.getResponseHeader('X-Update-Refused') === 'older'); return; }
+    // The whole version, "2.0.1-3-g1a2b3c4" too - from the clock's header, never its sentence
+    // (2026-11-20: the compliance run changed the words and the page never said "Done!").
+    newVersion = xhr.getResponseHeader('X-Update-Version') || null;
+    showMsg(RECEIVED_MSG, 'wait');
+    watch(true);
   });
   xhr.addEventListener('error', function(){
     // The clock restarting can cut the connection right after a successful
     // upload - then follow it; a failure before the file was sent is real.
-    if (sent) { showMsg(restartingMsg(), 'wait'); watch(); }
+    if (sent) { showMsg(SENT_MSG, 'wait'); watch(false); }
     else fail('Could not reach the clock. Check this phone/computer is on the same Wi-Fi as the clock, and try again.');
   });
-  xhr.open('POST', '/update');
+  const q = [];
+  if (el('eraseOk').checked) q.push('erase=1');
+  xhr.open('POST', '/update' + (q.length ? '?' + q.join('&') : ''));
   xhr.send(data);
 }
 
@@ -144,9 +166,19 @@ function startUpdate(){
 // the clock was long done). Each request also gets STATUS_TIMEOUT_MS, so a
 // hanging one counts as "unreachable" instead of freezing the page.
 const POLL_MS = 2000, STATUS_TIMEOUT_MS = 4000, GIVE_UP_MS = 10 * 60 * 1000;
-function watch(){
+// Unconfirmed upload (SENT_MSG): if the clock keeps answering this long without
+// having restarted, it didn't take the file (a taken one restarts it within
+// seconds of its answer - WebUI.cpp RESTART_AFTER_REPLY_MS).
+const NOT_TAKEN_MS = 20000;
+// confirmed: the clock answered "Installing version ..." (newVersion). Not
+// confirmed, a request that fails or hangs is no proof of a restart - while
+// the clock checks the file its answers can be held up - so then only an
+// uptime lower than at page load counts (loadUptime).
+function watch(confirmed){
   const startedAt = Date.now();
-  let lastUptime = null, restarted = false;
+  let lastUptime = loadUptime, restarted = false, away = false;   // away: the "restarting" message is up
+  let firstAnswerAt = null;
+  let trialVersion = null;                     // the version seen on trial (unconfirmed uploads)
   const again = () => setTimeout(tick, POLL_MS);
   function tick(){
     if (finished) return;
@@ -160,21 +192,43 @@ function watch(){
       clearTimeout(timer);
       if (lastUptime !== null && s.uptimeMs < lastUptime) restarted = true;
       lastUptime = s.uptimeMs;
+      if (firstAnswerAt === null) firstAnswerAt = Date.now();
       const v = s.firmware;
       const settled = s.updateState === 'ok';
-      const newIsRunning = newVersion && v === newVersion && (restarted || v !== oldVersion);
+      // Unconfirmed, which version was on trial tells what was installed: a trial
+      // happens only after a firmware install (Updater.cpp), whatever its number.
+      if (s.updateState === 'trial') trialVersion = v;
+      const done = () => { finished = true; el('bar').style.width = '100%'; showMsg('Done! The clock now runs version ' + v + '.', 'ok'); };
+      const wentBack = () => { finished = true;
+        showMsg("The update didn't take, so the clock went back to the version it had before (" + v + "). Nothing is lost - please let us know.", 'err'); };
+      const newIsRunning = confirmed ? newVersion && v === newVersion && (restarted || v !== oldVersion)
+                                     : restarted && (trialVersion ? v === trialVersion : v !== oldVersion);
       if (newIsRunning) {
-        if (settled) { finished = true; el('bar').style.width = '100%'; showMsg('Done! The clock now runs version ' + v + '.', 'ok'); return; }
-        showMsg('The new version has started. The clock now checks that it works properly - about a minute. If anything is wrong, it goes back to the previous version by itself.', 'wait');
-      } else if (newVersion && restarted && v === oldVersion && settled) {
+        if (settled) { done(); return; }
+        showMsg('The new version has started. The clock now checks that it works properly - about a minute, then it finishes by itself. ' +
+                'If anything is wrong, it goes back to the previous version by itself.', 'wait');
+      } else if (confirmed && newVersion && restarted && v === oldVersion && settled) {
+        wentBack(); return;
+      } else if (!confirmed && restarted && settled && trialVersion && v !== trialVersion) {
+        wentBack(); return;
+      } else if (!confirmed && restarted && settled && !trialVersion && v === oldVersion) {
         finished = true;
-        showMsg("The update didn't take, so the clock went back to the version it had before (" + v + "). Nothing is lost - please let us know.", 'err');
+        showMsg("The clock restarted but still runs version " + v + " - the update didn't take. Nothing is lost; please try again.", 'err');
         return;
-      } else if (!newVersion && restarted && settled) {   // plain firmware file
-        finished = true; el('bar').style.width = '100%'; showMsg('Done! The clock now runs version ' + v + '.', 'ok'); return;
+      } else if (!confirmed && !restarted && Date.now() - firstAnswerAt > NOT_TAKEN_MS) {
+        fail("The clock didn't take the update - it still runs version " + v + " and didn't restart. Nothing was changed; please try again.");
+        return;
+      } else if (away) {   // back, still busy: "choose the Wi-Fi" no longer applies
+        showMsg('The clock is back and finishing the update - keep this page open.', 'wait');
       }
+      away = false;
       again();
-    }).catch(() => { clearTimeout(timer); restarted = true; again(); });
+    }).catch(() => {
+      clearTimeout(timer);
+      if (confirmed) restarted = true;
+      if (!away) { away = true; showMsg(restartingMsg(), 'wait'); }
+      again();
+    });
   }
   again();
 }

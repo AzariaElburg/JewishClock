@@ -182,6 +182,11 @@ h1,h2,h3{font-weight:600}
    row a finger scrolls the page as usual */
 .content-row .drag-handle{cursor:grab;color:var(--ink-faint);font-size:15px;padding:4px 6px;margin:-4px -4px -4px -6px;flex-shrink:0;touch-action:none}
 .content-row .drag-handle:active{cursor:grabbing}
+.ntp-row .drag-handle{cursor:grab;color:var(--ink-faint);font-size:15px;padding:0 6px 0 0;flex-shrink:0;touch-action:none}
+.ntp-row .drag-handle:active{cursor:grabbing}
+.ntp-row.dragging{opacity:.5}
+.ntp-row{flex-wrap:wrap}
+.ntp-note{flex-basis:100%;font-size:12px;color:var(--danger);padding:2px 0 0 22px}
 .content-row .content-icon{flex-shrink:0;width:18px;text-align:center}
 .content-row .content-label{flex:1 1 auto;min-width:72px;font-size:12px;color:var(--ink)}
 .content-row .content-extra{max-width:260px;min-width:0;flex:0 1 auto}
@@ -282,7 +287,7 @@ input.txtfield:focus,select.txtfield:focus{outline:none;border-color:var(--accen
 /* Messages: a bubble next to what you were doing, pointing at it, until you
    click it or anywhere else (2026-11-07: at the bottom, gone after a few
    seconds, they were easy to miss altogether). No anchor: bottom centre. */
-#toast{position:fixed;z-index:1000;display:none;max-width:min(380px,calc(100vw - 16px));background:var(--toast-bg);color:var(--on-accent);
+#toast{white-space:pre-line;position:fixed;z-index:1000;display:none;max-width:min(380px,calc(100vw - 16px));background:var(--toast-bg);color:var(--on-accent);
   padding:9px 30px 9px 14px;border-radius:8px;font-size:12.5px;line-height:1.4;box-shadow:var(--shadow-pop);cursor:pointer}
 #toast.show{display:block;animation:toast-in .15s ease-out}
 @keyframes toast-in{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:none}}
@@ -578,6 +583,8 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
     <section id="view-settings" class="view">
       <div class="inner">
         <div class="settings-head"><h2>Settings</h2><div class="cal-search-wrap"><input type="search" class="cal-search" id="settings-search" placeholder="Search settings..." autocomplete="off" title="Type a word - only the settings that match stay visible, and you can change them right here"></div><span class="settings-search-none hidden" id="settings-search-none">No setting matches</span></div>
+        <div id="clock-problems" class="hidden" style="margin:0 0 12px;color:var(--danger)"></div>
+        <div id="kept-texts" class="hidden" style="margin:0 0 12px;color:var(--danger)"></div>
 
         <div class="grp">
           <div class="glabel"><div class="t">Display</div><div class="d">Brightness, scrolling</div></div>
@@ -643,7 +650,9 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
         <div class="grp">
           <div class="glabel"><div class="t">Wi-Fi</div><div class="d">Name, network, region, language</div></div>
           <div class="gbody">
-            <div class="frow"><span class="k">Clock name</span><input type="text" class="txtfield" id="cfg-name"></div>
+            <div class="frow"><span class="k">Clock name</span><input type="text" class="txtfield" id="cfg-name" data-limit-bytes="projectName"></div>
+            <div class="frow hidden" id="cfg-ap-row"><span class="k">Clock's own Wi-Fi</span><span class="staticfield" id="cfg-ap"></span>
+              <button class="mbtn mbtn-ghost" id="cfg-ap-change" onclick="changeApPassword()">Change</button></div>
             <div class="subcluster" id="wifi-networks" title="Up to three Wi-Fi networks. The clock joins whichever of them it hears strongest - at power-up, after losing the connection, and when the signal stays weak.">
               <div class="subcap subhead">Wi-Fi networks<span class="subinfo">the clock joins the strongest one it hears</span></div>
               <!-- one block per network, filled in by wifiSlotsHtml() below -->
@@ -690,7 +699,7 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
           <div class="glabel"><div class="t">Clock software</div><div class="d">Version, updates and problem reports</div></div>
           <div class="gbody">
             <div class="iorow">
-              <div class="txt"><b>Version</b><div id="fwupd-version" style="font-family:var(--mono)">—</div></div>
+              <div class="txt"><b>Version</b><div id="fwupd-version" style="font-family:var(--mono)">—</div><div id="fwupd-failed-row" class="hidden"><span id="fwupd-failed" style="color:var(--danger)"></span> <button class="mbtn mbtn-ghost" id="fwupd-failed-ok" onclick="failedUpdateSeen()">OK, seen</button></div></div>
               <div class="btns"><a href="/start.html" target="_blank" class="mbtn mbtn-ghost">Quick start guide</a><a href="/manual.html" target="_blank" class="mbtn mbtn-ghost">Manual</a><a href="/licenses.txt" target="_blank" class="mbtn mbtn-ghost">Licenses</a></div>
             </div>
             <div class="iorow">
@@ -698,8 +707,21 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
               <div class="btns"><a href="/update.html" class="mbtn mbtn-ghost">Update the clock</a></div>
             </div>
             <div class="iorow">
+              <div class="txt"><b>Updates from the internet</b><div id="online-state">—</div></div>
+              <div class="btns"><button class="mbtn mbtn-ghost" id="online-check" onclick="onlineUpdate('check')">Check now</button><button class="mbtn mbtn-ghost hidden" id="online-install" onclick="onlineUpdate('install')">Install now</button></div>
+            </div>
+            <div class="iorow">
+              <div class="txt"><b>Update key</b><div id="upd-key" style="font-family:var(--mono)">—</div></div>
+              <div class="btns"><button class="mbtn mbtn-ghost" id="upd-key-paste" onclick="pasteUpdateKey()">Paste a key</button></div>
+            </div>
+            <div class="frow"><span class="k">Install new versions at night by themselves</span><label class="tgl"><input type="checkbox" id="cfg-autoupdate"><span class="sl"></span></label></div>
+            <div class="iorow">
               <div class="txt"><b>Problem report</b><div>The clock's log and settings (no passwords), as a text file.</div></div>
               <div class="btns"><button class="mbtn mbtn-ghost" onclick="downloadProblemReport()">Get log</button></div>
+            </div>
+            <div class="iorow">
+              <div class="txt"><b>Web answers</b><div>A recording of the clock's answers, for checking the simulator (settings and events included).</div></div>
+              <div class="btns"><button class="mbtn mbtn-ghost" id="rec-btn" onclick="recordAnswers()">Record</button></div>
             </div>
           </div>
         </div>
@@ -707,7 +729,11 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
         <div class="grp advanced">
           <div class="glabel"><div class="t">Advanced</div><div class="d">Calibration, debug tools</div></div>
           <div class="gbody">
-            <div class="frow"><span class="k">NTP server</span><input type="text" class="txtfield" id="cfg-ntp0"></div>
+            <div id="ntp-list" title="Where the clock gets its time. It uses the first one that answers and moves on to the next when it doesn't. A server that fails while the internet works is marked Not recommended and asked last, until it has answered well for enough days. Drag ⠿ to change the order. A server you type in is checked before it's saved; at least one is needed">
+            <div class="frow ntp-row" data-i="0"><span class="drag-handle">⠿</span><span class="k">NTP server 1</span><input type="text" class="txtfield" id="cfg-ntp0" onchange="ntpChanged(0)"><span class="ntp-note hidden" id="cfg-ntp0-note"></span></div>
+            <div class="frow ntp-row" data-i="1"><span class="drag-handle">⠿</span><span class="k">NTP server 2</span><input type="text" class="txtfield" id="cfg-ntp1" onchange="ntpChanged(1)"><span class="ntp-note hidden" id="cfg-ntp1-note"></span></div>
+            <div class="frow ntp-row" data-i="2"><span class="drag-handle">⠿</span><span class="k">NTP server 3</span><input type="text" class="txtfield" id="cfg-ntp2" onchange="ntpChanged(2)"><span class="ntp-note hidden" id="cfg-ntp2-note"></span></div>
+            </div>
             <div class="subcluster" style="margin-top:8px" title="Test the clock at another date and time: it shows what it would show then, and runs on from there. One at a time - a shift, or a date to start from; each Apply replaces the last.">
               <div class="subcap subhead">Debug time<span class="subinfo">test the clock at another date</span></div>
               <div class="frow"><span class="k">The clock's time</span><span class="v" id="dbg-state">—</span></div>
@@ -739,7 +765,7 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
               </div>
               <div class="frow"><span class="k" title="Moves the two lines where scrolling text can tear - place them above and below the letters">Tear lines</span><span class="sl-row"><input type="range" id="cfg-cal-tear-s" data-limit="calibTearUs" data-limit-scale="0.01" style="width:120px"><span class="v" id="cfg-cal-tear-lbl"></span></span></div>
               <div class="frow"><span class="k" title="The clock draws a moving frame where it thinks its visible window is - on its normal content, or on a test pattern with numbered edges (read which numbers show through the slit)">Calibrate</span><div class="seg2"><button id="cal-off" class="active" onclick="setCalib('off')">Off</button><button id="cal-content" onclick="setCalib('content')">Content</button><button id="cal-pattern" onclick="setCalib('pattern')">Pattern</button></div></div>
-              <img id="cal-mirror" class="cal-mirror hidden" alt="The clock's screen, live" title="The clock's screen, live (about once a second)">
+              <img id="cal-mirror" class="cal-mirror hidden" alt="The clock's screen, live" title="The clock's screen, live (4 times a second while something moves, else once a second)">
             </div>
             <div class="frow" style="margin-top:8px"><span class="k" title="Shows samples of everything the clock can display - dates, Shabbat, holidays, fasts, Omer, your events - once, in the current mode and speed, then returns to normal">Demo</span><span><button class="mbtn mbtn-ghost mbtn-sm" id="demo-btn" onclick="toggleDemo()">Start demo</button></span></div>
             <div class="subcluster" style="margin-top:8px">
@@ -806,11 +832,11 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
           <button type="button" class="ev-pic-btn ev-pic-change hidden" id="ev-photo-change" onclick="el('ev-photo-file').click()" title="Replace picture">✎</button>
           <button type="button" class="ev-pic-btn ev-pic-x hidden" id="ev-photo-remove" onclick="removePhoto()" title="Remove picture">✕</button>
         </div>
-        <input type="range" id="ev-photo-zoom" class="ev-zoom hidden" min="0.3" max="4" step="0.02" value="1" title="Zoom" oninput="photo.zoom = +this.value; drawPhoto()">
+        <input type="range" id="ev-photo-zoom" class="ev-zoom hidden" min="0.3" max="4" step="0.02" value="1" title="Zoom" oninput="photo.zoom = +this.value; photo.changed = true; drawPhoto()">
         <button type="button" class="mbtn mbtn-ghost mbtn-sm" onclick="openImageGallery()" title="Pictures already on the clock">Library</button>
       </div>
       <div class="ev-fields">
-        <input type="text" id="ev-name" placeholder="Name" oninput="this.classList.remove('field-missing')">
+        <input type="text" id="ev-name" placeholder="Name" data-limit-bytes="name" oninput="this.classList.remove('field-missing')">
         <div class="ev-line">
           <select id="ev-type" onchange="updateIconBasedOnType()" title="Event type">
             <option value="birthday" selected>Birthday</option>
@@ -821,7 +847,7 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
           <span class="ev-remind" title="Also remind this many days before the day itself">Remind <input type="number" id="ev-warn" value="0" data-limit="warn"> days before</span>
         </div>
         <div id="icon-quick-picker" class="ev-icons" title="Icon - shown when there's no picture">
-          <span class="icon-option" data-icon="🎂">🎂</span><span class="icon-option" data-icon="💍">💍</span><span class="icon-option" data-icon="🕯️">🕯️</span><span class="icon-option" data-icon="✡️">✡️</span><span class="icon-option" data-icon="🕍">🕍</span><span class="icon-option" data-icon="🎉">🎉</span><span class="icon-option" data-icon="👶">👶</span><input type="text" id="ev-icon-custom" class="icon-custom" placeholder="✎" title="Your own: any emoji or short text" oninput="el('ev-icon').value = this.value.trim(); markIcon()"><input type="hidden" id="ev-icon">
+          <span class="icon-option" data-icon="🎂">🎂</span><span class="icon-option" data-icon="💍">💍</span><span class="icon-option" data-icon="🕯️">🕯️</span><span class="icon-option" data-icon="✡️">✡️</span><span class="icon-option" data-icon="🕍">🕍</span><span class="icon-option" data-icon="🎉">🎉</span><span class="icon-option" data-icon="👶">👶</span><input type="text" id="ev-icon-custom" class="icon-custom" placeholder="✎" title="Your own: one emoji, or a few letters - shown as a picture" oninput="this.value = fitOwnIcon(this.value); el('ev-icon').value = this.value.trim(); markIcon()"><input type="hidden" id="ev-icon">
         </div>
       </div>
     </div>
@@ -838,11 +864,11 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
     <div class="ev-date">
       <label class="ev-cal"><input type="checkbox" id="ev-has-j" onchange="handleCalendarToggle('h')"> Hebrew</label>
       <div class="row3" id="sect-j">
-        <input type="text" id="ev-j-d" placeholder="Day" title="1, כג or י״ח" oninput="handleHebrewDayInput(this)" onblur="normalizeHebrewDayDisplay(this)">
+        <input type="text" id="ev-j-d" placeholder="Day" title="כג, י״ח or 1" oninput="handleHebrewDayInput(this)" onblur="normalizeHebrewDayDisplay(this)">
         <select id="ev-j-m" onchange="handleFieldInput('h')"><option value="">Month</option><option value="תשרי">תשרי</option><option value="חשוון">חשוון</option><option value="כסלו">כסלו</option><option value="טבת">טבת</option><option value="שבט">שבט</option><option value="אדר">אדר</option><option value="ניסן">ניסן</option><option value="אייר">אייר</option><option value="סיון">סיון</option><option value="תמוז">תמוז</option><option value="אב">אב</option><option value="אלול">אלול</option></select>
-        <input type="text" id="ev-j-y" placeholder="Year" title="748, 5748 or תשמ״ח" oninput="handleHebrewYearInput(this)" onblur="normalizeHebrewYearDisplay(this)">
+        <input type="text" id="ev-j-y" placeholder="Year" title="תשמ״ח, 5748 or 748" oninput="handleHebrewYearInput(this)" onblur="normalizeHebrewYearDisplay(this)">
       </div>
-      <label id="row-adar2" class="ev-extra hidden"><input type="checkbox" id="ev-is-adar2"> Adar II</label>
+      <label id="row-adar2" class="ev-extra hidden"><input type="checkbox" id="ev-is-adar2" onchange="handleFieldInput('h')"> Adar II</label>
     </div>
 
     <input type="file" id="ev-photo-file" accept="image/*,video/*" class="hidden" onchange="loadPhotoFile(this.files[0]); this.value = ''">
@@ -906,6 +932,44 @@ body.restore-mode #topbar, body.restore-mode #shell{display:none}
      this page keeps working with no internet access - see CLAUDE.md. -->
 <script src="/sortable.min.js"></script>
 <script>
+// The page's own messages that tests check - defined once, here (the user, 2026-11-20: tests ask,
+// never copy). The page uses them by name through pt(); the tests read PAGE_TEXTS from the page
+// itself (sim/web_ui.py PW()); scripts/check_rules.py stops a build on a test's copy of one.
+// {} = what pt() fills in, in order. The clock's own words are the clock's list (/api/texts).
+const PAGE_TEXTS = {
+  notSaved: 'Not saved: {}',
+  remindAtMost: 'remind at most {} days before.',
+  clockAnsweredError: 'the clock answered with error {}.',
+  ntpNotSaved: 'Could not connect to {}: {}. Not saved.',
+  ntpOrderSaved: 'Time server order saved.',
+  ntpNotRecommended: 'Not recommended: {}, since {} ({} of {} good days)',
+  ntpRefused: 'Refused by server ({}, since {}) - remove and re-add to clear',
+  ntpBeforeTime: 'before the clock had the time',
+  ntpAnswersSaved: '{} answers - saved.',
+  removed: 'Removed.',
+  debugTimeSet: "The clock now thinks it is {} - it fetches that date's calendar",
+  debugTimeBack: 'Back to real time',
+  notHebrewYear: '"{}" is not a Hebrew year - e.g. 5787, 787 or תשפ״ז',
+  looksGregorian: ' ({} looks like a Gregorian year).',
+  dateMismatch: 'Date mismatch: {}',
+  notMonthName: '{} is not a Hebrew month name (pick one from the dropdown).',
+  notOneOf: '{} is not one of {}.',
+  nothingChanged: 'Nothing was changed.',
+  notExported: '"{}" is not a file exported from this clock ({}).',
+  notUpdateKey: 'Not an update key',
+  restoredAll: 'Restored: {} events, settings, pictures.',
+  notRestored: 'Not restored: {}',
+  limitLetters: 'at most {} letters and digits',
+  limitChars: 'at most {} characters',
+  limitCharsHeb: 'at most {} characters ({} in Hebrew)',
+  limitToast: '{}: {}.',
+  cellTooLong: '{} is too long: {}.',
+  settingsRowTooLong: 'Settings row {} ({}): "{}" is too long - {}.',
+};
+function pt(name, ...parts) {
+  let i = 0;
+  return PAGE_TEXTS[name].replace(/\{\}/g, () => String(parts.length > i ? parts[i++] : ''));
+}
 let events = [];
 let state = { mode: 'g', monthIdx: new Date().getMonth(), editingId: null, rotMode: 0 };
 const G_MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
@@ -1005,18 +1069,22 @@ el('toast').addEventListener('click', e => { if (!e.target.closest('button')) hi
 // the clock's reply on success; on an HTTP error status (fetch() itself
 // only rejects on a network failure) the clock's own error text, or a
 // plain line if it sent none; on a network failure a plain line too.
-async function apiPost(url, obj) {
+// POST: { ok, text } - ok = the clock did it (its status code), text = what it said. Whether it
+// worked is never read from the wording (2026-11-20: the compliance run, every clock text changed,
+// found "Saved" / "Backup restored" compared here - setup, restore and Detect stopped working).
+async function apiSend(url, obj) {
   try {
     const r = await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: 'body=' + encodeURIComponent(JSON.stringify(obj)) });
     const text = await r.text();
-    if (r.ok) return text;
+    if (r.ok) return { ok: true, text, headers: r.headers };
     console.error('apiPost failed:', url, r.status, text);
-    return text.trim() || `The clock could not do that (error ${r.status}).`;
+    return { ok: false, text: text.trim() || `The clock could not do that (error ${r.status}).`, headers: r.headers };
   } catch (e) {
     console.error('apiPost failed:', url, e);
-    return 'Could not reach the device - check your connection.';
+    return { ok: false, text: 'Could not reach the device - check your connection.' };
   }
 }
+async function apiPost(url, obj) { return (await apiSend(url, obj)).text; }
 // fetch() + JSON for requests that return data. Throws an Error whose
 // message is plain language, ready to append to a toast: network failure,
 // an HTTP error status (the clock's own text when it sent one), or a reply
@@ -1032,7 +1100,9 @@ async function apiJson(url, opts) {
   if (!r.ok) {
     const text = (await r.text().catch(() => '')).trim();
     console.error('Request failed:', url, r.status, text);
-    throw new Error(text || `the clock answered with error ${r.status}.`);
+    const err = new Error(text || `the clock answered with error ${r.status}.`);
+    err.status = r.status;   // what the clock decided - callers go by this, never by its wording
+    throw err;
   }
   try {
     return await r.json();
@@ -1343,7 +1413,7 @@ function renderDayRow(parent, num, heb) {
     ? dayEvents.map((ev,i) => {
         const age = ev._age != null ? ` (${ev._age})` : '';
         return (i > 0 ? '<span class="pill-sep">,</span>' : '') +
-          `<span class="pill" onclick="event.stopPropagation(); editEvent(${ev._idx})">${ev.icon || '🗓️'} ${(ev.name || '').trim() ? ev.name : '<i>(no name)</i>'}${age}</span>`;
+          `<span class="pill" onclick="event.stopPropagation(); editEvent(${ev._idx})">${htmlEsc(ev.icon || '🗓️')} ${(ev.name || '').trim() ? '<bdi>' + htmlEsc(ev.name) + '</bdi>' : '<i>(no name)</i>'}${age}</span>`;
       }).join('')
     : '';
 
@@ -1439,7 +1509,7 @@ function hebYearProblem(text) {
     if (5000 + y < lo || 5000 + y > hi) return '"' + t + '" - a Hebrew year from ' + hebNum(lo - 5000) + ' (' + lo + ') to ' + hebNum(hi - 5000) + ' (' + hi + '), please.';
   }
   if (y) return '';
-  return '"' + t + '" is not a Hebrew year - e.g. 5787, 787 or תשפ״ז' + (gregorianLikeYear(t) ? ' (' + t + ' looks like a Gregorian year).' : '.');
+  return pt('notHebrewYear', t) + (gregorianLikeYear(t) ? pt('looksGregorian', t) : '.');
 }
 
 // Keeps the Hebrew day field's true numeric value in dataset.num (same
@@ -1497,6 +1567,19 @@ function addHebSpin(id, kind, onChange) {
     onChange(input);
   };
   wrap.querySelectorAll('button').forEach(b => b.addEventListener('click', () => step(+b.dataset.step)));
+  // Its tooltip: what the box holds now, in numbers, then how to type it - made
+  // when the pointer comes, so it is never a value from before (the user,
+  // 2026-11-10: a fixed example looked like the event's old date).
+  const hint = input.title;
+  input.addEventListener('mouseenter', () => {
+    let now = '';
+    if (kind === 'day') { const d = parseHebrewDay(input.value); if (d) now = input.value.trim() + ' = ' + d; }
+    else {
+      const y = parseHebrewYear(input.value);
+      if (y) now = input.value.trim() + ' = ' + (5000 + y) + ' (' + (1240 + y - 1) + '/' + (1240 + y) + ')';   // Rosh Hashana is in the first one's autumn
+    }
+    input.title = [now, hint].filter(Boolean).join(' - ');
+  });
   input.addEventListener('keydown', e => {
     if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); step(e.key === 'ArrowUp' ? 1 : -1); }
   });
@@ -1600,9 +1683,41 @@ async function loadStatus() {
     el('wifi-ssid').textContent = s.ssid || '(none)';
     if (connectedSsid !== (s.ssid || '')) { connectedSsid = s.ssid || ''; markConnectedWifi(); }
     clockApSsid = s.apSsid || clockApSsid;
+    clockViaAp = !!s.viaAp;
     updateWifiGauge(s.rssi, !!s.ssid);
+    showNtpTrouble(s.ntpTrouble);
     const fwupd = el('fwupd-version');
     if (fwupd) fwupd.textContent = 'v' + (s.firmware || '?') + ' — built ' + (s.beBuild || '?');
+    // An update that went back by itself (Updater::failedUpdate()): said here and on the clock until "OK, seen"
+    // Updates from the internet (OnlineUpdate.h): what the clock last heard, and Install when there is a newer one
+    if (s.online) {
+      const o = s.online, busy = o.state && o.state !== 'idle';
+      const word = { checking: 'Checking...', downloading: 'Downloading...', installing: 'Installing...', restarting: 'Installed - restarting...' }[o.state];
+      el('online-state').textContent = word || ((o.message || 'Not checked yet') + (o.lastCheck ? ' (checked ' + o.lastCheck + ')' : ''));
+      el('online-state').style.color = o.feedMissingSince ? 'var(--danger)' : '';
+      // What the clock found wrong by itself, at the top of Settings at once (the screen says
+      // "Error - see Settings" after some days) - the user, 2026-11-15
+      const probs = o.feedMissingSince
+        ? ['The update feed is not there since ' + o.feedMissingSince + ' - the clock can get no updates from the internet. ' +
+           'Tell whoever maintains the clock. (' + (o.message || '') + ')'] : [];
+      el('clock-problems').innerHTML = probs.length ? '<b>Something is wrong:</b><br>' + probs.map(htmlEsc).join('<br>') + seenLine('feed', o.feedMissingSeen) : '';
+      el('clock-problems').classList.toggle('hidden', !probs.length);
+      el('online-install').classList.toggle('hidden', !o.available || busy);
+      if (o.available) el('online-install').textContent = 'Install ' + o.available;
+      el('online-check').disabled = busy;
+    }
+    // The update key (UpdateKeyState.h): its short id, or - none - in red what that means
+    if (s.updateKeyId !== undefined) {
+      const k = el('upd-key');
+      k.textContent = s.updateKeyId ? s.updateKeyId : 'No key - updates are refused until one is pasted';
+      k.style.color = s.updateKeyId ? '' : 'var(--danger)';
+      updateKeyId = s.updateKeyId;
+    }
+    const failedRow = el('fwupd-failed-row');
+    if (failedRow) {
+      failedRow.classList.toggle('hidden', !s.updateFailed);
+      el('fwupd-failed').textContent = s.updateFailed ? 'The update to ' + s.updateFailed + ' failed - the clock went back to this version by itself.' : '';
+    }
     // Brightness and room light now (the sliders' thin lines); learning moves the room's ends.
     if (s.brightnessPct != null) {
       brightRange.now(s.brightnessPct);
@@ -1706,10 +1821,64 @@ function applyLimits() {
     const k = +(inp.dataset.limitScale || 1);
     inp.min = r[0] * k; inp.max = r[1] * k;
   });
+  NTP_IDS.forEach(id => el(id).maxLength = LIMITS.ntpServerMaxChars);
   const [y0, y1] = LIMITS.ranges.debugYear;
   el('dbg-g').min = y0 + '-01-01T00:00'; el('dbg-g').max = y1 + '-12-31T23:59';
   setPictureSize();
 }
+// Texts (data-limit-bytes="key" -> LIMITS.textBytes): the clock counts bytes of
+// UTF-8 - a Hebrew letter 2, an emoji 4 - and refuses a longer text (2026-11-13).
+// Typing stops at its limit, whole letters only; boxes made later count too.
+const utf8Len = s => new TextEncoder().encode(s).length;
+function utf8Fit(s, max) {
+  if (utf8Len(s) <= max) return s;
+  let out = '';
+  for (const ch of s) { if (utf8Len(out + ch) > max) break; out += ch; }
+  return out;
+}
+// How a text limit is said, everywhere (typing, Excel import, kept texts).
+const TEXT_LIMIT_LABEL = { name: 'Event name', projectName: 'Clock name', wifiSSID: 'Network name', wifiPassword: 'Wi-Fi password', separator: 'Separator' };
+function textLimitText(key) {
+  const max = LIMITS.textBytes[key];
+  if (key === 'projectName') return pt('limitLetters', max);
+  if (key === 'wifiPassword' || key === 'wifiSSID') return pt('limitChars', max);   // plain characters only (the clock refuses others)
+  return pt('limitCharsHeb', max, Math.floor(max / 2));
+}
+document.addEventListener('input', e => {
+  const inp = e.target, key = inp.dataset && inp.dataset.limitBytes;
+  if (!key || !LIMITS || !LIMITS.textBytes) return;
+  const fit = utf8Fit(inp.value, LIMITS.textBytes[key]);
+  if (fit !== inp.value) { inp.value = fit; toast(pt('limitToast', TEXT_LIMIT_LABEL[key], textLimitText(key))); }
+  inp.classList.remove('field-missing');
+}, true);
+// Texts too long in the clock's own files - an older version's, or edited by
+// hand (2026-11-13). The clock keeps what fits and says so (/api/config
+// "textNotes", Storage.h); listed at the top of Settings, their fields marked,
+// until each is saved again.
+function checkKeptTexts(cfg) {
+  const notes = cfg.textNotes || [];
+  const has = key => notes.some(n => n.key === key);
+  el('cfg-name').classList.toggle('field-missing', has('projectName'));
+  for (let n = 1; n <= WIFI_SLOTS; n++) el('cfg-ssid-display-' + n).classList.toggle('field-missing', has(wifiKey('wifiSSID', n)));
+  el('kept-texts').innerHTML = notes.length
+    ? '<b>Too long for this version - please change:</b><br>' + notes.map(n => htmlEsc(n.text)).join('<br>') + seenLine('texts', cfg.textNotesSeen) : '';
+  el('kept-texts').classList.toggle('hidden', !notes.length);
+}
+// Under each problem the clock found by itself (the user, 2026-11-15): "OK, seen" takes it off the
+// clock's screen ("Error - see Settings" goes when every one is seen or put right); it stays listed
+// here until put right.
+function seenLine(which, seen) {
+  return '<div style="margin-top:6px">' + (seen
+    ? '<span style="color:var(--muted)">Seen - not on the clock\'s screen</span>'
+    : '<button class="mbtn mbtn-ghost" id="seen-' + which + '" onclick="problemSeen(\'' + which + '\')">OK, seen</button>') + '</div>';
+}
+async function problemSeen(which) {
+  const reply = await apiPost('/api/problems/seen', { which });
+  if (reply !== 'OK') { toast(reply); return; }
+  if (which === 'texts') refreshTextNotes(); else loadStatus();
+}
+// Only the notes (an event saved or deleted may have fixed one) - not the fields.
+function refreshTextNotes() { apiJson('/api/config').then(checkKeptTexts).catch(() => {}); }
 // The window's height changed: how tall pictures are made follows it.
 let limitsTimer = null;
 function refreshLimitsSoon() {
@@ -1731,15 +1900,24 @@ async function loadConfig() {
   // them (defaults live in Config.h, nowhere else) - no fallbacks here, so
   // the page can never show a default that differs from the clock's.
   el('cfg-name').value = cfg.projectName;
+  el('cfg-name').classList.remove('field-missing');
+  // A clock that made its own Wi-Fi password (the clean copy) says it here - the
+  // only other place is its setup screen.
+  el('cfg-ap-row').classList.toggle('hidden', !cfg.apPassword);
+  if (cfg.apPassword) el('cfg-ap').textContent = (cfg.projectName || '').slice(0, 32) + ' · password ' + cfg.apPassword;
   showWifiNetworks(cfg);
+  checkKeptTexts(cfg);
 
   el('cfg-24h').checked = cfg.use24Hour;
-  el('cfg-ntp0').value = (cfg.ntpServers && cfg.ntpServers[0]) || '';
+  el('cfg-autoupdate').checked = cfg.autoUpdate !== false;
+  ntpSaved = NTP_IDS.map((id, i) => cfg.ntpServers[i] || '');
+  NTP_IDS.forEach((id, i) => { if (document.activeElement !== el(id)) el(id).value = ntpSaved[i]; });
+  showNtpTrouble(ntpTrouble);
 
   el('cfg-bright-n').value = cfg.brightPct;
   el('cfg-bright-s').value = cfg.brightPct;
   el('cfg-scroll-s').value = cfg.scrollSpeed;
-  el('cfg-scroll-lbl').textContent = cfg.scrollSpeed + '/10';
+  el('cfg-scroll-lbl').textContent = cfg.scrollSpeed + '/' + el('cfg-scroll-s').max;   // the clock's own top (data-limit)
 
   el('cfg-use-sensor').checked = cfg.useLightSensor;
   brightRange.set(cfg.nightPct, cfg.dayPct, true);
@@ -1775,7 +1953,18 @@ async function loadConfig() {
 async function saveWifi() {
   const obj = { projectName: v('cfg-name') };
   Object.assign(obj, wifiChanges());
-  toast(await apiPost('/api/config', obj));
+  const viaAp = clockViaAp, home = connectedSsid;
+  let uptimeBefore = null;
+  try { uptimeBefore = (await apiJson('/api/status')).uptimeMs; } catch (e) {}
+  const { ok, text: reply, headers } = await apiSend('/api/config', obj);
+  if (ok && headers && headers.get('X-Clock-Restarts')) {   // a new name: its own Wi-Fi and .local are renamed by a restart (WebUI.cpp)
+    const ap = (await apiJson('/api/config').catch(() => ({}))).projectName || obj.projectName;
+    showDataBox('<b>Saved</b> - the clock restarts with its new name.', 'ask');
+    await followRestart('/api/status', () => showDataBox(htmlEsc(restartingText(viaAp, ap, home)), 'ask'), uptimeBefore);
+    location.reload();
+    return;
+  }
+  toast(reply);
   loadConfig();
 }
 
@@ -1794,13 +1983,24 @@ function liveSave(obj) {
   Object.assign(liveSavePending, obj);
   if (!liveSaveTimer) liveSaveTimer = setTimeout(flushLiveSave, LIVE_SAVE_MS);
 }
+// One save on its way at a time: two at once can reach the clock in either order
+// (each its own connection), and an older slider position arrived last - saved,
+// shown and used (2026-11-16, a test under load: 42 saved, then 19). What moved
+// meanwhile goes in the next one, sent when this one is answered.
+let liveSaveBusy = false;
 async function flushLiveSave() {
   liveSaveTimer = null;
+  if (liveSaveBusy || !Object.keys(liveSavePending).length) return;
   const body = liveSavePending;
   liveSavePending = {};
-  if (!Object.keys(body).length) return;
-  const reply = await apiPost('/api/config', body);
-  if (reply !== 'Saved') toast(reply);
+  liveSaveBusy = true;
+  try {
+    const { ok, text: reply } = await apiSend('/api/config', body);
+    if (!ok) toast(reply);
+  } finally {
+    liveSaveBusy = false;
+    if (Object.keys(liveSavePending).length && !liveSaveTimer) liveSaveTimer = setTimeout(flushLiveSave, 0);
+  }
 }
 const onLive = (id, evt, build) => el(id).addEventListener(evt, () => liveSave(build()));
 onLive('cfg-use-sensor', 'change', () => ({ useLightSensor: b('cfg-use-sensor') }));
@@ -1809,7 +2009,7 @@ el('cfg-dwell-s').addEventListener('input', () => {
   liveSave({ messageDwellSec: n('cfg-dwell-s') });
 });
 el('cfg-scroll-s').addEventListener('input', () => {
-  el('cfg-scroll-lbl').textContent = el('cfg-scroll-s').value + '/10';
+  el('cfg-scroll-lbl').textContent = el('cfg-scroll-s').value + '/' + el('cfg-scroll-s').max;
   liveSave({ scrollSpeed: n('cfg-scroll-s') });
 });
 // Light sensor: Night / Day (the clock shows the level while it moves) and Sensitivity.
@@ -1851,7 +2051,74 @@ const roomRange = dualRange('dr-room', (a, b) => pctLabel(a) + '–' + pctLabel(
 onLive('cfg-learn-room', 'change', () => ({ learnRoomLight: b('cfg-learn-room') }));
 onLive('t-heb-year', 'change', () => ({ showHebrewYear: b('t-heb-year') }));
 onLive('cfg-24h', 'change', () => ({ use24Hour: b('cfg-24h') }));
-onLive('cfg-ntp0', 'change', () => ({ ntpServers: [v('cfg-ntp0')] }));
+onLive('cfg-autoupdate', 'change', () => ({ autoUpdate: b('cfg-autoupdate') }));
+/* Time servers (2026-11-13). One typed in is checked by the clock before it is
+   saved (the user: junk, or a server the clock can't reach, is refused at once -
+   a message beside the box, the box back as it was). Emptying a box needs no
+   check, but at least one must stay. Servers saved earlier that stopped
+   answering stay until changed - the clock moves on to the next by itself. */
+const NTP_IDS = ['cfg-ntp0', 'cfg-ntp1', 'cfg-ntp2'];
+// Drag ⠿ to change the order (the user, 2026-11-14) - like the content order. The order is
+// the preference: the clock uses the first that answers (a new first at once). The rows go
+// back to their places right away - box 1 stays "NTP server 1" - and the servers move.
+Sortable.create(el('ntp-list'), {
+  handle: '.drag-handle', animation: 150, chosenClass: 'dragging',
+  onEnd: async () => {
+    const box = el('ntp-list'), rows = Array.from(box.children);
+    const list = rows.map(r => ntpSaved[+r.dataset.i]);
+    rows.sort((a, b) => a.dataset.i - b.dataset.i).forEach(r => box.appendChild(r));
+    if (list.every((s, k) => s === ntpSaved[k])) return;
+    NTP_IDS.forEach((id, k) => { el(id).value = list[k]; });
+    const { ok, text: reply } = await apiSend('/api/config', { ntpServers: list });
+    if (!ok) { toast(reply); NTP_IDS.forEach((id, k) => { el(id).value = ntpSaved[k]; }); return; }
+    ntpSaved = list;
+    toast(pt('ntpOrderSaved'));
+  }
+});
+// A server the clock marked "not recommended" (it failed while the internet worked; /api/status
+// ntpTrouble): said under its box - the clock asks it last, once a day, until enough good days.
+let ntpTrouble = [];
+function showNtpTrouble(list) {
+  ntpTrouble = list || [];
+  NTP_IDS.forEach((id, i) => {
+    const name = (ntpSaved[i] || '').toLowerCase();
+    const t = name && ntpTrouble.find(x => (x.server || '').toLowerCase() === name);
+    const note = el(id + '-note');
+    const since = t && (t.since ? new Date(t.since * 1000).toLocaleDateString() : pt('ntpBeforeTime'));
+    note.textContent = t ? (t.refused ? pt('ntpRefused', t.why, since)
+                                      : pt('ntpNotRecommended', t.why, since, t.goodDays, t.needDays)) : '';
+    note.classList.toggle('hidden', !t);
+  });
+}
+const NTP_CHECK_POLL_MS = 500, NTP_CHECK_MAX_MS = 20000;   // the clock gives up on a server well before this
+let ntpSaved = ['', '', ''];
+async function ntpChanged(i) {
+  const box = el(NTP_IDS[i]), val = box.value.trim();
+  box.value = val;
+  if (val === ntpSaved[i]) return;
+  const list = ntpSaved.map((s, k) => k === i ? val : s);
+  if (!list.some(s => s)) { toast('At least one time server is needed.'); box.value = ntpSaved[i]; return; }
+  if (val) {
+    box.disabled = true;
+    toast('Checking ' + val + ' ...');
+    const started = await apiSend('/api/ntp/test', { server: val });
+    let why = started.text, res = null;
+    if (started.ok) {
+      for (let t = 0; t < NTP_CHECK_MAX_MS; t += NTP_CHECK_POLL_MS) {
+        await new Promise(r => setTimeout(r, NTP_CHECK_POLL_MS));
+        try { res = await apiJson('/api/ntp/test'); } catch (e) { res = null; }
+        if (res && res.server === val && res.state !== 'running') break;
+      }
+      why = !res ? 'the clock did not say' : res.state === 'answered' ? '' : res.detail || 'no answer';
+    }
+    box.disabled = false;
+    if (why) { box.focus(); toast(pt('ntpNotSaved', val, why)); box.value = ntpSaved[i]; return; }
+  }
+  const { ok, text: reply } = await apiSend('/api/config', { ntpServers: list });
+  if (!ok) { toast(reply); box.value = ntpSaved[i]; return; }
+  ntpSaved = list;
+  toast(val ? pt('ntpAnswersSaved', val) : pt('removed'));
+}
 [['cfg-cal-x', 'calibX'], ['cfg-cal-y', 'calibY'], ['cfg-cal-w', 'calibW'], ['cfg-cal-h', 'calibH']].forEach(([id, key]) => {
   el(id).addEventListener('input', () => { const val = n(id); if (Number.isFinite(val)) { liveSave({ [key]: val }); if (key === 'calibH') refreshLimitsSoon(); } });
 });
@@ -1862,21 +2129,43 @@ el('cfg-cal-tear-s').addEventListener('input', () => {
 });
 // Calibration: Off | Content (the frame on the clock's slides) | Pattern (the
 // frame on numbered edges). While on, a live picture of the screen below -
-// the next one asked for a second after the last arrived (the clock sends it
-// from memory, ~180 KB).
-let calibOn = false, calibTimer = null;
+// the next one asked for a while after the last arrived (the clock sends it from
+// memory, ~180 KB; one at a time, so a slow link just goes slower): soon while
+// something on the screen moves (the picture's X-Screen-Moving), else once a
+// second (the user, 2026-11-13: fast only for scrolling and animations).
+const MIRROR_MOVING_MS = 250, MIRROR_STILL_MS = 1000;
+let calibOn = false, calibTimer = null, calibRun = 0;
 async function setCalib(mode) {
   ['off', 'content', 'pattern'].forEach(m => el('cal-' + m).classList.toggle('active', m === mode));
-  const reply = await apiPost(mode === 'off' ? '/api/calibration/stop' : '/api/calibration/start', { pattern: mode === 'pattern' });
-  if (!/^Calibration/.test(reply)) toast(reply);
-  calibOn = mode !== 'off';
+  // The running picture loop ends now, not once the clock answers (it went on at the
+  // old mode's pace meanwhile - over a second under load, 2026-11-16).
+  const run = ++calibRun;
   clearTimeout(calibTimer);
+  const { ok, text: reply } = await apiSend(mode === 'off' ? '/api/calibration/stop' : '/api/calibration/start', { pattern: mode === 'pattern' });
+  if (!ok) toast(reply);
+  if (run !== calibRun) return;   // pressed again meanwhile: that press decides
+  calibOn = mode !== 'off';
   const img = el('cal-mirror');
   img.classList.toggle('hidden', !calibOn);
   if (!calibOn) return;
-  const next = () => { if (calibOn) calibTimer = setTimeout(() => { img.src = '/api/debug/screenshot?t=' + Date.now(); }, 1000); };
-  img.onload = next; img.onerror = next;
-  img.src = '/api/debug/screenshot?t=' + Date.now();
+  const shot = async () => {
+    let gap = MIRROR_STILL_MS;
+    if (!document.hidden) {   // nothing asked while the page isn't seen
+      try {
+        const r = await fetch('/api/debug/screenshot?t=' + Date.now());
+        if (r.ok) {
+          if (r.headers.get('X-Screen-Moving') === '1') gap = MIRROR_MOVING_MS;
+          const url = URL.createObjectURL(await r.blob());
+          if (run !== calibRun) { URL.revokeObjectURL(url); return; }
+          const old = img.src;
+          img.src = url;
+          if (old.startsWith('blob:')) URL.revokeObjectURL(old);
+        }
+      } catch (e) { /* the clock busy or away: try again later */ }
+    }
+    if (calibOn && run === calibRun) calibTimer = setTimeout(shot, gap);
+  };
+  shot();
 }
 
 function syncBrightnessBlocks() {
@@ -1921,7 +2210,7 @@ async function debugTime(body) {
   if (!r.ok) { toast(text || 'Error ' + r.status); return; }
   const res = JSON.parse(text);
   showDebugTime(res.offset);
-  toast(res.offset ? 'The clock now thinks it is ' + res.now + " - it fetches that date's calendar" : 'Back to real time');
+  toast(res.offset ? pt('debugTimeSet', res.now) : pt('debugTimeBack'));
 }
 async function debugShift() {
   const s = (n('dbg-d') || 0) * 86400 + (n('dbg-h') || 0) * 3600 + (n('dbg-m') || 0) * 60;
@@ -1944,7 +2233,13 @@ async function debugSetHebrew() {
   try {
     g = await convertDate({ from: 'h', y: 5000 + yShort, month: isAdarII ? 'אדר' : month, isAdarII, d: day });
     back = await convertDate({ from: 'g', y: g.y, m: g.m, d: g.d });
-  } catch (e) { toast('Could not convert the date: ' + e.message); return; }
+  } catch (e) {
+    // The clock refuses a date that doesn't exist itself since 2026-11-14 (DateRules.h),
+    // saying exactly what: no Adar II that year, or the month has no such day (400 - its words shown as they are).
+    if (e.status === 400) toast(e.message + '.');
+    else toast('Could not convert the date: ' + e.message);
+    return;
+  }
   // A day the month doesn't have (30 in a 29-day month, Adar II in a plain
   // year) comes back as another date: say so instead of going there.
   if (back.d !== day || back.month !== (isAdarII ? 'אדר' : month) || !!back.isAdarII !== isAdarII) {
@@ -1984,14 +2279,42 @@ const WIFI_SLOTS = 3;
 const wifiKey = (base, n) => n === 1 ? base : base + n;
 let connectedSsid = '';
 let clockApSsid = '';   // the clock's own Wi-Fi (status "apSsid")
-// After a restart: the clock's own Wi-Fi is gone for a while, and the phone
+let clockViaAp = false; // this page came over the clock's own Wi-Fi (status "viaAp")
+// While the clock restarts, its own Wi-Fi is gone for a while, and the phone
 // or computer usually moves to its home network and stays there (the user,
-// 2026-11-03). ap = the clock's Wi-Fi after the restart, home = the network
-// the device will probably switch to ('' = unknown).
-function wifiBackText(ap, home) {
-  if (!ap) return '';
-  return 'When the clock is back, choose the Wi-Fi "' + ap + '" again: your phone or computer will probably switch to ' +
-    (home ? '"' + home + '"' : 'another network') + ' while the clock restarts.';
+// 2026-11-03). Said only once the clock has stopped answering, and only when
+// the page came over that Wi-Fi (the user, 2026-11-09; update.html the same).
+// ap = the clock's Wi-Fi after the restart, home = the network the device will
+// probably switch to ('' = unknown).
+function restartingText(viaAp, ap, home) {
+  if (!viaAp || !ap) return 'The clock is restarting - this page carries on by itself when it is back.';
+  return 'The clock is restarting, so its Wi-Fi "' + ap + '" is gone for a moment and your phone or computer has probably switched to ' +
+    (home ? '"' + home + '"' : 'another network') + '. Choose the Wi-Fi "' + ap + '" again now - this page carries on by itself.';
+}
+// Follows the clock through the restart it just announced: onAway() the moment
+// it stops answering (a request failing, or hanging 4 s - browsers quietly
+// retry a broken one, update.html), true once it answers again after having
+// restarted (stopped answering, or a lower uptime than before). path: a route
+// that answers in setup mode too where needed. Gives up after RESTART_FOLLOW_MS.
+const RESTART_POLL_MS = 2000, RESTART_PROBE_MS = 4000, RESTART_FOLLOW_MS = 180000;
+async function followRestart(path, onAway, uptimeBefore) {
+  let away = false, lastUptime = uptimeBefore;
+  const t0 = Date.now();
+  while (Date.now() - t0 < RESTART_FOLLOW_MS) {
+    await new Promise(r => setTimeout(r, RESTART_POLL_MS));
+    const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), RESTART_PROBE_MS);
+    try {
+      const s = await (await fetch(path, { cache: 'no-store', signal: ctl.signal })).json();
+      clearTimeout(timer);
+      const up = typeof s.uptimeMs === 'number' ? s.uptimeMs : null;
+      if (away || (up !== null && lastUptime != null && up < lastUptime)) return true;
+      if (up !== null) lastUptime = up;
+    } catch (e) {
+      clearTimeout(timer);
+      if (!away) { away = true; onAway(); }
+    }
+  }
+  return false;
 }
 (function wifiSlotsHtml() {
   let html = '';
@@ -2023,9 +2346,9 @@ function wifiBackText(ap, home) {
         '<div class="frow"><span class="k">Network name</span><span class="sl-row">' +
           '<select class="txtfield" id="cfg-ssid-pick-' + n + '" onchange="pickWifi(' + n + ')"></select>' +
           '<button class="mbtn mbtn-ghost mbtn-sm" id="cfg-ssid-rescan-' + n + '" onclick="scanWifi(' + n + ', true)" title="Search again">↻</button></span></div>' +
-        '<div class="frow hidden" id="cfg-ssid-row-' + n + '"><span class="k"></span><input type="text" class="txtfield" id="cfg-ssid-' + n + '" placeholder="Network name" autocomplete="off"></div>' +
+        '<div class="frow hidden" id="cfg-ssid-row-' + n + '"><span class="k"></span><input type="text" class="txtfield" id="cfg-ssid-' + n + '" placeholder="Network name" data-limit-bytes="wifiSSID" autocomplete="off"></div>' +
         '<div class="frow"><span class="k">Password</span><span class="sl-row">' +
-          '<input type="password" class="txtfield" id="cfg-pass-' + n + '" placeholder="••••••••" autocomplete="new-password">' +
+          '<input type="password" class="txtfield" id="cfg-pass-' + n + '" placeholder="••••••••" data-limit-bytes="wifiPassword" autocomplete="new-password">' +
           '<button type="button" class="mbtn mbtn-ghost mbtn-sm" id="cfg-pass-show-' + n + '" onclick="showWifiPass(' + n + ')">Show</button></span></div>' +
       '</div>';
   }
@@ -2258,6 +2581,8 @@ function updateDayMax(type) {
 // geresh/gershayim. Returns the short form (748) - persistEvent() adds the
 // 5000 back. Used to accept digits only, so a year typed in letters was
 // silently saved as 0 and the event never showed an age.
+// Every Hebrew year is taken to be in the ה׳ thousand (5000-5999), so events
+// end at 5999 = 2239 - why that's fine: Config.h, EVENT_HEB_YEAR_RANGE.
 function parseHebrewYear(text) {
   const trimmed = (text || '').trim();
   if (!trimmed) return null;
@@ -2373,10 +2698,10 @@ async function persistEvent() {
   }
   for (const [id, problem] of [['ev-j-d', hebDayProblem], ['ev-j-y', hebYearProblem]]) {
     const p = el('ev-has-j').checked ? problem(v(id)) : '';
-    if (p) { el(id).classList.add('field-missing'); el(id).focus(); toast('Not saved: ' + p); return; }
+    if (p) { el(id).classList.add('field-missing'); el(id).focus(); toast(pt('notSaved', p)); return; }
   }
   const [w0, w1] = LIMITS.ranges.warn;
-  if (ev.warn < w0 || ev.warn > w1) { el('ev-warn').focus(); toast('Not saved: remind at most ' + w1 + ' days before.'); return; }
+  if (ev.warn < w0 || ev.warn > w1) { el('ev-warn').focus(); toast(pt('notSaved', pt('remindAtMost', w1))); return; }
   // The ticks say which calendar(s) the event follows (the dates start filled
   // in with today since 2026-11-07, so "no date" means nothing ticked).
   if (!ev.hasG && !ev.hasJ) { toast("Tick Gregorian, Hebrew or both - the calendar the event follows."); return; }
@@ -2419,7 +2744,7 @@ async function persistEvent() {
       return;
     }
     if (!ok) {
-      const mismatchMsg = 'Date mismatch: ' + expected;
+      const mismatchMsg = pt('dateMismatch', expected);
       if (okAS && confirm("Dates match if 'After Sunset' is enabled. Turn it on?")) { ev.afterSunset = true; el('ev-as').checked = true; }
       else { toast(mismatchMsg); return; }
     }
@@ -2430,6 +2755,9 @@ async function persistEvent() {
   const pic = await savePicture();
   if (pic.error) { toast('Not saved - the picture: ' + pic.error); return; }
   ev.image = pic.id || '';
+  const iconPic = await saveIconPicture(ev.icon);
+  if (iconPic.error) { toast('Not saved - the icon: ' + iconPic.error); return; }
+  ev.iconImage = iconPic.id || '';
   // Every way the clock can refuse a save keeps the dialog open with the
   // reason shown, so nothing typed is lost and nothing fails silently:
   // network error, an HTTP error (e.g. a missing name), or a 200 that says
@@ -2442,11 +2770,12 @@ async function persistEvent() {
     toast('Not saved - could not reach the clock. Check the connection and try again.');
     return;
   }
-  if (!r.ok) { toast("Not saved: " + ((await r.text().catch(() => '')).trim() || `the clock answered with error ${r.status}.`)); return; }
+  if (!r.ok) { toast(pt('notSaved', (await r.text().catch(() => '')).trim() || pt('clockAnsweredError', r.status))); return; }
   const resp = await r.json().catch(() => ({}));
   if (resp.saved === false) { reportEventWarnings(resp.warnings, 'Not saved.'); return; }
   closeModal();
   await loadEvents();
+  refreshTextNotes();
   // A picture the clock already had is just used - said, not asked, and
   // shown as the clock has it: it's the same picture either way (decided
   // 2026-10-21).
@@ -2530,6 +2859,7 @@ async function deleteCurrentEvent() {
   if (!r.ok) { toast("Not deleted: " + ((await r.text().catch(() => '')).trim() || `the clock answered with error ${r.status}.`)); return; }
   el('modal-event').classList.remove('open');
   await loadEvents();
+  refreshTextNotes();
   const id = state.editingId;
   toastAction('Deleted "' + '⁨' + ev.name + '⁩' + '".', 'Undo', () => restoreEvent(id));
   loadBin();
@@ -2548,7 +2878,7 @@ async function restoreEvent(id) {
   let msg;
   try {
     const r = await fetch('/api/events/restore', { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: 'id=' + encodeURIComponent(id) });
-    msg = r.ok ? (await r.text()).trim() + '.' : 'Not restored: ' + ((await r.text()).trim() || 'error ' + r.status);
+    msg = r.ok ? (await r.text()).trim() + '.' : pt('notRestored', (await r.text()).trim() || 'error ' + r.status);
   } catch (e) { msg = 'Could not reach the device - check your connection.'; }
   toast(msg);
   await loadEvents();
@@ -2838,7 +3168,14 @@ async function useLibraryImage(id, chosen) {
   if (photo.changed && !chosen) return;   // a new picture was chosen meanwhile
   if (chosen) clearPhotoVideo();
   photo = blankPhoto();
-  photo.imageId = id; photo.libFrames = bmp.frames; photo.frameMs = bmp.frameMs;
+  photo.imageId = id;
+  if (bmp.frames.length === 1) {
+    // A still: zoom and move it like a picture from a file (2026-11-10). Shown at
+    // its own size until then; only an edited one is saved as a new picture. It
+    // is the small picture the clock keeps - zooming far in looks blocky.
+    photo.img = bmp.frames[0];
+    photo.zoom = 1 / Math.max(PHOTO_W / bmp.w, PHOTO_H / bmp.h);
+  } else { photo.libFrames = bmp.frames; photo.frameMs = bmp.frameMs; }   // an old animation plays as it is
   el('ev-gallery').classList.add('hidden');
   showPhotoControls(); startPhotoAnimation();
 }
@@ -2917,7 +3254,7 @@ function drawPhotoGhost() {
   c.addEventListener('pointermove', e => {
     if (!last) return;
     const k = PHOTO_W / c.clientWidth;   // screen pixels -> picture pixels
-    photo.ox += (e.clientX - last[0]) * k; photo.oy += (e.clientY - last[1]) * k;
+    photo.ox += (e.clientX - last[0]) * k; photo.oy += (e.clientY - last[1]) * k; photo.changed = true;
     last = [e.clientX, e.clientY];
     drawPhoto();
   });
@@ -3008,6 +3345,55 @@ async function savePicture() {
   if (!photo.changed) return { id: photo.imageId };   // unchanged, chosen from the clock, or none
   return uploadImageOnce(photoBmp());
 }
+/* "Your own" icon - one emoji, or a few letters (LIMITS.iconMaxChars): drawn
+   here into a picture as tall as the clock's icons and shown on the clock as
+   one, like an event picture (2026-11-10, the user: it was meant as a picture
+   from the start - an emoji showed as a blank, the clock's font has none).
+   Kept in the picture library; the event points at it (iconImage, Config.h
+   PersonalEvent). The icons the clock has its own pictures of are
+   MessageAggregator.cpp's eventIconPath(). */
+const CLOCK_ICON_PICTURES = ['🎂', '🕯', '💍', '✡', '🕍', '🎉', '👶', '🎓', '🏠', '🗓'];
+function iconNeedsPicture(icon) {
+  const s = String(icon || '').replace(/️/g, '').trim();
+  return !!s && !CLOCK_ICON_PICTURES.includes(s);
+}
+// What the "your own" box keeps of what was typed or pasted: one emoji (the
+// first), else the first few letters.
+function fitOwnIcon(text) {
+  const parts = [...new Intl.Segmenter().segment(text)].map(x => x.segment);
+  const emoji = parts.find(p => /\p{Extended_Pictographic}/u.test(p));
+  if (emoji) return emoji;
+  return LIMITS ? parts.slice(0, LIMITS.iconMaxChars).join('') : text;   // before the clock's limits came: as typed
+}
+function iconBmp(icon) {
+  // As tall as the clock's icons; at most a little wider than tall (its own
+  // icons are 48-112 px wide at 96 tall), the ink centred.
+  const h = PICTURE_H, maxW = Math.round(h * 1.2), pad = 2;
+  const face = 'px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",sans-serif';
+  const c = document.createElement('canvas'), g = c.getContext('2d');
+  const setup = size => {
+    g.font = size + face;
+    g.direction = /[֐-׿]/.test(icon) ? 'rtl' : 'ltr';   // Hebrew letters in their order
+    g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+    return g.measureText(icon);
+  };
+  let m = setup(100);
+  const inkH = Math.max(1, m.actualBoundingBoxAscent + m.actualBoundingBoxDescent);
+  const inkW = Math.max(1, m.actualBoundingBoxLeft + m.actualBoundingBoxRight);
+  const size = Math.max(8, Math.floor(100 * Math.min((h * 0.85) / inkH, (maxW - 2 * pad) / inkW)));
+  m = setup(size);
+  const w = Math.max(1, Math.min(maxW, Math.ceil(m.actualBoundingBoxLeft + m.actualBoundingBoxRight) + 2 * pad));
+  c.width = w; c.height = h;   // resets the context - set up again
+  g.fillStyle = PICTURE_BG; g.fillRect(0, 0, w, h);
+  m = setup(size);
+  g.fillStyle = '#ffffff';   // the ink of letters (emoji bring their own colours)
+  g.fillText(icon, pad + m.actualBoundingBoxLeft, (h + m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2);
+  return encodeBmp([g.getImageData(0, 0, w, h).data], w, h, 0);
+}
+// Resolves to { id } ('' = the clock draws the icon itself) or { error }.
+async function saveIconPicture(icon) {
+  return iconNeedsPicture(icon) ? uploadImageOnce(iconBmp(icon)) : { id: '' };
+}
 // "From the clock...": the pictures already on it, to reuse one.
 // A library picture onto its tile, the tile its size (pictures made before
 // 2026-11-07 are 72x96, newer ones the window's height).
@@ -3074,7 +3460,7 @@ async function loadBuiltinGrid() {
     grid.append(item);
     // One picture at a time, in order - small requests, the clock stays responsive.
     try {
-      const bmp = decodeBmp(await (await fetch('/api/builtin/get?name=' + p.name + '&which=' + (p.custom ? 'custom' : 'default'))).arrayBuffer());
+      const bmp = decodeBmp(await (await fetch('/api/builtin/get?name=' + encodeURIComponent(p.name) + '&which=' + (p.custom ? 'custom' : 'default'))).arrayBuffer());
       c.width = bmp.w; c.height = bmp.h;
       c.getContext('2d').drawImage(bmp.frames[0], 0, 0);
       if (bmp.frames.length > 1) builtinFrames.push({ canvas: c, frames: bmp.frames, frameMs: bmp.frameMs || 90 });
@@ -3125,8 +3511,9 @@ async function loadEventPictures() {
   grid.textContent = list.length ? '' : 'None';
   for (const im of list) {
     const icon = e => htmlEsc(e.icon || getIconForEventType(e.type)) + ' ';
-    const names = events.filter(e => e.image === im.id).map(e => icon(e) + '<a href="#" data-open-event="' + htmlEsc(e.id) + '" title="Open this event"><bdi>' + htmlEsc(e.name) + '</bdi></a>')
-      .concat(bin.filter(e => e.image === im.id).map(e => icon(e) + '<bdi>' + htmlEsc(e.name) + '</bdi> (deleted)'));
+    const uses = e => e.image === im.id || e.iconImage === im.id;   // its picture, or its own icon drawn as one
+    const names = events.filter(uses).map(e => icon(e) + '<a href="#" data-open-event="' + htmlEsc(e.id) + '" title="Open this event"><bdi>' + htmlEsc(e.name) + '</bdi></a>')
+      .concat(bin.filter(uses).map(e => icon(e) + '<bdi>' + htmlEsc(e.name) + '</bdi> (deleted)'));
     const item = document.createElement('div');
     item.className = 'builtin-item';
     const c = document.createElement('canvas'); c.width = PHOTO_W; c.height = PHOTO_H;
@@ -3345,7 +3732,7 @@ async function biSave() {
   const g = c.getContext('2d'), frames = [];
   for (let i = 0; i < biFrameCount(); i++) { biDrawFrame(g, i); frames.push(g.getImageData(0, 0, bi.w, bi.h).data); }
   const problem = await uploadBuiltin(bi.name, encodeBmp(frames, bi.w, bi.h, bi.frameMs));
-  if (problem) { toast('Not saved: ' + problem); return; }
+  if (problem) { toast(pt('notSaved', problem)); return; }
   closeBuiltinEditor();
   toast('Saved - the clock shows the new picture from its next slide on.');
   loadBuiltinGrid();
@@ -3369,7 +3756,7 @@ function handleSearch() {
     // day in the strip in the first place, so that navigation would be a dead
     // end for exactly the events search is most needed for.
     const warn = isBrokenEvent(e) ? '<span class="search-warn">⚠️ incomplete Hebrew date</span>' : '';
-    return `<div class="search-item" onclick="pickSearchResult(${events.indexOf(e)})"><b>${e.icon||''} ${e.name}</b><span class="sd">${datePart}</span>${warn}</div>`;
+    return `<div class="search-item" onclick="pickSearchResult(${events.indexOf(e)})"><b>${htmlEsc(e.icon || '')} <bdi>${htmlEsc(e.name)}</bdi></b><span class="sd">${datePart}</span>${warn}</div>`;
   }).join('') || '<div class="search-item">No matches</div>';
 }
 // Briefly highlights fields that were just set by code rather than typed,
@@ -3391,7 +3778,11 @@ function flashFields(ids) {
 // happen is exactly the "mode error" risk Norman describes, so the
 // flash isn't decorative, it's what keeps this auto-fill from being a
 // silent surprise.
+let autoConvertAsked = 0;
 async function handleAutoConvert(source) {
+  // Every date edit makes earlier answers stale - also one that asks nothing itself (a Hebrew
+  // day typed without a Hebrew year): a late answer overwrote the day just typed (2026-11-16).
+  const asked = ++autoConvertAsked;
   const gd = n('ev-g-d'), gm = n('ev-g-m'), gy = n('ev-g-y'), as = b('ev-as'), jd = jDayNum(), jm = v('ev-j-m');
   let body = {};
   if (source === 'g') {
@@ -3401,12 +3792,16 @@ async function handleAutoConvert(source) {
     // dataset.num, not the visible text: the field shows gematria letters,
     // and parseInt() of letters is NaN - so this conversion never ran.
     const yNum = parseInt(el('ev-j-y').dataset.num || '', 10);
-    if (!isNaN(yNum) && yNum > 0 && jm && jd > 0) body = { from: 'h', y: yNum < 1000 ? yNum + 5000 : yNum, month: jm, d: jd, afterSunset: as };
+    if (!isNaN(yNum) && yNum > 0 && jm && jd > 0) body = { from: 'h', y: yNum < 1000 ? yNum + 5000 : yNum, month: jm, isAdarII: jm === 'אדר' && b('ev-is-adar2'), d: jd, afterSunset: as };
     else return;
   } else return;
 
   try {
     const d = await convertDate(body);
+    // Only the answer to the latest question: one per keystroke, and they can come
+    // back in any order - an earlier date's answer arriving last overwrote the right
+    // one (2026-11-16, under load: 14 Mar 1990 showed 25 Adar 5786 = 14 Mar 2026).
+    if (asked !== autoConvertAsked) return;
     if (source === 'g') {
       setHebDay(d.d); el('ev-j-m').value = d.month; el('ev-is-adar2').checked = d.isAdarII;
       const displayY = (d.y >= 5000 && d.y < 6000) ? (d.y - 5000) : d.y;
@@ -3526,12 +3921,23 @@ function zoneOffsetSec(tz) {
     day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' }).formatToParts(d)) p[x.type] = x.value;
   return Math.round((Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second) - Math.floor(d / 1000) * 1000) / 1000);
 }
+// A change the clock carries out on its own loop (a place, a lookup): its settings asked every
+// half second until `done(settings)`, at most `maxMs`, then the page shows them - never one
+// reload after a fixed wait, which a busier clock missed (2026-11-20: Detect after 6 s, a
+// confirmed place after 1.5 s - the row went on saying "detected").
+async function untilConfig(done, maxMs) {
+  for (const end = Date.now() + maxMs; Date.now() < end; ) {
+    await new Promise(r => setTimeout(r, 500));
+    try { if (done(await apiJson('/api/config'))) break; } catch (e) { /* asked again */ }
+  }
+  loadConfig();
+}
 async function savePlace(n, p) {
   let off = 0;
   try { off = zoneOffsetSec(p.tzid); } catch (e) { /* unknown to this browser: the clock's table decides */ }
-  const reply = await apiPost('/api/location/place', { slot: n - 1, city: p.city, country: p.country, lat: p.lat, lon: p.lon, tzid: p.tzid, offsetSec: off });
-  if (reply !== 'Saved') { toast(reply); return; }
-  setTimeout(loadConfig, 1500);   // the clock applies it on its next pass
+  const { ok, text: reply } = await apiSend('/api/location/place', { slot: n - 1, city: p.city, country: p.country, lat: p.lat, lon: p.lon, tzid: p.tzid, offsetSec: off });
+  if (!ok) { toast(reply); return; }
+  await untilConfig(c => { const q = (c.places || [])[n - 1] || {}; return q.confirmed && q.city === p.city; }, 20000);
 }
 function confirmPlace(n) { savePlace(n, placesCfg[n - 1]); }
 function editPlace(n) {
@@ -3544,16 +3950,21 @@ function editPlace(n) {
   el('place-results-' + n).textContent = '';
   if (!box.classList.contains('hidden')) el('place-q-' + n).focus();
 }
+// The clock looks it up in the background: until this network's place changes, up to 40 s
+// (untilConfig()).
 async function detectPlace(n) {
+  const before = JSON.stringify(placesCfg[n - 1] || {});
   const d = await apiJson('/api/location/detect').catch(e => ({ started: false }));
   if (!d.started) { toast('The clock is not on this network'); return; }
-  el('place-results-' + n).textContent = 'Detecting...';
-  setTimeout(loadConfig, 6000);
+  const out = el('place-results-' + n);
+  out.textContent = 'Detecting...';
+  await untilConfig(c => JSON.stringify((c.places || [])[n - 1] || {}) !== before, 40000);
+  out.textContent = '';
 }
 async function searchPlace(n) {
   const q = v('place-q-' + n).trim(), out = el('place-results-' + n);
-  const reply = await apiPost('/api/location/search', { q });
-  if (reply !== 'Searching') { out.textContent = reply; return; }
+  const { ok, text: reply } = await apiSend('/api/location/search', { q });
+  if (!ok) { out.textContent = reply; return; }
   out.textContent = 'Searching...';
   for (let i = 0; i < 40; i++) {   // the clock looks it up in the background: up to ~20 s
     await new Promise(r => setTimeout(r, 500));
@@ -3613,7 +4024,7 @@ function showDataBox(html, kind) {
 function closeDataBox() { excelUndoList = null; pendingImport = null; el('data-result').className = 'hidden'; }
 const dataBtn = (label, fn, primary) => '<button class="mbtn ' + (primary ? 'mbtn-primary' : 'mbtn-ghost') + ' mbtn-sm" onclick="' + fn + '">' + label + '</button>';
 const dataBtns = (...b) => '<div class="data-result-btns">' + b.join('') + '</div>';
-const notChanged = why => showDataBox('<b>Nothing was changed.</b><br>' + why + dataBtns(dataBtn('Close', 'closeDataBox()')), 'err');
+const notChanged = why => showDataBox('<b>' + pt('nothingChanged') + '</b><br>' + why + dataBtns(dataBtn('Close', 'closeDataBox()')), 'err');
 const today = () => new Date().toISOString().slice(0, 10);
 function saveBlob(blob, name) {
   const url = URL.createObjectURL(blob);
@@ -3626,6 +4037,156 @@ function saveBlob(blob, name) {
 // Everything useful for finding a problem from afar, as one text file the
 // user can email: status, settings (the clock already masks passwords as
 // ********) and the diagnostic log.
+// The requests the recording makes - defined here only: sim/record_clock_web.py reads this
+// list from this file (between the markers, as JSON). Nothing is changed on the clock: the
+// GETs read, the POSTs are all ones the clock refuses (no body, or only a conversion).
+/* RECORD_REQUESTS_BEGIN */
+const RECORD_REQUESTS = {
+  "gets": ["/", "/update.html", "/sortable.min.js", "/licenses.txt", "/start.html", "/manual.html", "/restore",
+           "/update-safe", "/api/status", "/api/config", "/api/calendar", "/api/preview", "/api/events/list",
+           "/api/events/excel-template", "/api/images/list", "/api/builtin/list", "/api/wifi/networks",
+           "/api/backup", "/api/debug/diagnostic-log", "/api/debug/flash", "/api/debug/screenshot",
+           "/api/location/search-result",
+           "/api/events", "/api/events/blahblah", "/no/such/page", "/api/images/get?id=nosuchid",
+           "/api/builtin/get?which=custom&name=nosuch"],
+  "posts": [["/api/events/upsert", ""], ["/api/events/delete", ""], ["/api/events", ""], ["/api/config", ""],
+            ["/api/calendar/convert", "body={\"from\":\"gregorian\",\"d\":5,\"m\":11,\"y\":2026}"],
+            ["/api/debug/time", ""], ["/api/restore", ""]]
+};
+/* RECORD_REQUESTS_END */
+
+// Advanced > Web answers > Record (2026-11-14, "recording option B"): the clock's answers to
+// RECORD_REQUESTS, made by this page - at the family's, where there is only a browser - as one
+// file to email. sim/import_answers.py turns it into reference/clock-<date>/web/, which
+// sim/compare_web.py checks the simulator against. A browser always asks for gzip and gives the
+// body unpacked and the headers as a set: the comparison takes them so (compare_web.py).
+async function recordAnswers() {
+  const btn = el('rec-btn'), label = btn.textContent, out = [];
+  const b64 = buf => {
+    const u = new Uint8Array(buf);
+    let s = '';
+    for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
+    return btoa(s);
+  };
+  const one = async (path, init, accept) => {
+    const t0 = performance.now();
+    try {
+      const r = await fetch(path, Object.assign({ cache: 'no-store' }, init));
+      const body = await r.arrayBuffer();
+      const headers = {};
+      r.headers.forEach((v, k) => { headers[k] = v; });
+      out.push({ path, method: (init && init.method) || 'GET', accept, status: r.status, headers, bytes: body.byteLength,
+                 ms: Math.round(performance.now() - t0), body: b64(body) });
+      return headers;
+    } catch (e) {
+      out.push({ path, method: (init && init.method) || 'GET', accept, error: String(e) });
+      return {};
+    }
+  };
+  btn.disabled = true;
+  try {
+    const total = RECORD_REQUESTS.gets.length + RECORD_REQUESTS.posts.length;
+    let n = 0;
+    for (const path of RECORD_REQUESTS.gets) {
+      btn.textContent = 'Recording ' + (++n) + '/' + total;
+      const h = await one(path, {}, 'browser');
+      if (h.etag) await one(path, { headers: { 'If-None-Match': h.etag } }, 'browser+If-None-Match');   // the page files' quick 304
+    }
+    for (const [path, body] of RECORD_REQUESTS.posts) {
+      btn.textContent = 'Recording ' + (++n) + '/' + total;
+      await one(path, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body }, 'browser');
+    }
+    const file = { recorded: new Date().toISOString(), via: 'browser', page: location.origin, userAgent: navigator.userAgent, requests: out };
+    saveBlob(new Blob([JSON.stringify(file)], { type: 'application/json' }), 'JewishClock-answers-' + today() + '.json');
+    toast('Recorded: ' + out.length + ' answers' + (out.some(x => x.error) ? ' (' + out.filter(x => x.error).length + ' failed)' : '') + '.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+let updateKeyId = '';   // the clock's key's short id ('' = none), from /api/status
+
+// The clock's own Wi-Fi password: Change (2026-11-15). The clock checks it (/api/ap-password),
+// saves it and restarts with it; the page follows the restart.
+async function changeApPassword() {
+  const lim = LIMITS || await apiJson('/api/limits');
+  const min = lim.apPasswordMinChars, max = lim.apPasswordMaxChars;
+  const box = document.createElement('input');
+  box.type = 'text'; box.id = 'ap-pw-box'; box.className = 'txtfield'; box.maxLength = max; box.autocomplete = 'off';
+  box.style.cssText = 'width:100%;font-family:var(--mono)';
+  const said = document.createElement('div');
+  said.id = 'ap-pw-said'; said.style.marginTop = '6px';
+  const note = document.createTextNode('Phones and computers that know the clock\'s Wi-Fi need the new password. The clock restarts with it (about 20 seconds).');
+  box.oninput = () => {
+    const n = box.value.length, ok = n >= min && n <= max;
+    said.textContent = n ? n + ' characters' + (ok ? '' : ' - ' + min + ' to ' + max) : min + ' to ' + max + ' characters';
+    said.style.color = ok || !n ? '' : 'var(--danger)';
+    el('cf-buttons').firstChild.disabled = !ok;
+  };
+  const ask = askBox('New password for the clock\'s own Wi-Fi', [box, said, note], [{ label: 'Change and restart', value: true }]);
+  box.oninput();
+  box.focus();
+  if (!await ask) return;
+  const pw = box.value, viaAp = clockViaAp, ap = clockApSsid, home = connectedSsid;
+  let uptimeBefore = null;
+  try { uptimeBefore = (await apiJson('/api/status')).uptimeMs; } catch (e) {}
+  const reply = await apiPost('/api/ap-password', { password: pw });
+  if (reply !== 'OK') { toast(reply); return; }
+  showDataBox('<b>Password changed</b> - the clock restarts with it.', 'ask');
+  await followRestart('/api/status', () => showDataBox(htmlEsc(viaAp && ap
+    ? 'The clock is restarting with its new Wi-Fi password. Join the Wi-Fi "' + ap + '" again with the password ' + pw + ' - this page carries on by itself.'
+    : restartingText(viaAp, ap, home)), 'ask'), uptimeBefore);
+  location.reload();
+}
+
+// "Paste a key": a new signing key (sent by whoever maintains the clock) replaces the one there -
+// the clock names the pasted key's id before it is used
+async function pasteUpdateKey() {
+  const box = document.createElement('textarea');
+  box.id = 'upd-key-box'; box.rows = 4; box.style.cssText = 'width:100%;font-family:var(--mono);font-size:12px';
+  box.placeholder = 'The update key (letters and digits)';
+  const said = document.createElement('div');
+  said.id = 'upd-key-said'; said.style.marginTop = '6px';
+  let good = '';
+  box.oninput = async () => {
+    const hex = box.value.trim();
+    const use = el('cf-buttons').firstChild;
+    good = '';
+    use.disabled = true;
+    if (!hex) { said.textContent = ''; return; }
+    let id = await apiPost('/api/update/key-id', { key: hex });
+    if (!/^[0-9a-f]{16}$/.test(id)) id = '';   // "" = not a key; an error text is not an id either
+    if (box.value.trim() !== hex) return;   // typed on meanwhile
+    good = id ? hex : '';
+    said.textContent = id ? 'Key ' + id : pt('notUpdateKey');
+    said.style.color = id ? '' : 'var(--danger)';
+    use.disabled = !id;
+  };
+  const now = document.createElement('div');
+  now.style.marginTop = '6px';
+  now.textContent = updateKeyId ? 'It replaces key ' + updateKeyId + '. Updates signed with the old key are then refused.' : 'The clock has no key now: updates are refused until one is pasted.';
+  const ask = askBox('Paste the update key', [box, said, now], [{ label: 'Use this key', value: true }]);
+  el('cf-buttons').firstChild.disabled = true;
+  box.focus();
+  if (!await ask || !good) return;
+  const reply = await apiPost('/api/update/key-set', { key: good });
+  toast(reply === 'OK' ? 'Update key set - updates are checked with it.' : reply);
+}
+
+async function onlineUpdate(what) {   // Settings: Check now / Install now (OnlineUpdate.h)
+  const reply = await apiPost('/api/update/' + what, {});
+  if (reply !== 'OK') toast(reply);
+  else if (what === 'install') toast('Installing - the clock restarts by itself; the page comes back in a few minutes.');
+}
+
+async function failedUpdateSeen() {
+  const reply = await apiPost('/api/update/failed-seen', {});
+  if (reply !== 'OK') { toast(reply); return; }
+  el('fwupd-failed-row').classList.add('hidden');
+  toast('The clock stops showing it.');
+}
+
 async function downloadProblemReport() {
   try {
     const [status, config, log] = await Promise.all([
@@ -3712,6 +4273,8 @@ function zipBlob(files) {
 const xmlDoc = bytes => new DOMParser().parseFromString(new TextDecoder().decode(bytes), 'application/xml');
 const xmlEsc = v => String(v ?? '').replace(/[<>&"']/g, ch => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[ch]));
 const htmlEsc = xmlEsc;
+// The clock's plain-text answers may have several lines (every problem at once).
+const htmlLines = v => htmlEsc(v).replace(/\n/g, '<br>');
 // A sheet's display name -> its part path, via workbook.xml + its rels.
 function sheetPath(files, sheetName) {
   if (!files['xl/workbook.xml'] || !files['xl/_rels/workbook.xml.rels']) throw new Error('it is not an Excel (.xlsx) file');
@@ -3741,68 +4304,98 @@ function normHebMonth(text) {
 // with a problem block the whole import (it replaces the full list), so
 // nothing is half-applied.
 function checkExcelRows(rows) {
-  const problems = [], out = [];
+  const problems = [], out = [], raw = [];   // raw: each event's cells (clockEventProblems())
   const intOf = v => (v == null || v === '') ? 0 : Math.round(parseFloat(v));
+  // Columns are named as the file's own header row names them (readSheetRows) -
+  // whatever a later template calls them; the column letter only if it has none.
+  const H = col => (rows.headers && rows.headers[col]) || ('column ' + col);
+  const cell = (col, v) => H(col) + ' "' + v + '"';
   for (const { num, cells } of rows) {
     const name = cells.A || '';
     if (name.includes('[EXAMPLE')) continue;
     const where = 'Row ' + num + (name ? ' (' + name + ')' : '') + ': ';
-    if (!name) { problems.push(where + 'has no name.'); continue; }
+    if (!name) { problems.push(where + H('A') + ' is empty.'); continue; }
+    if (utf8Len(name) > LIMITS.textBytes.name) problems.push(pt('cellTooLong', where + H('A'), textLimitText('name')));
     const g = { m: cells.C, d: cells.D, y: cells.E }, h = { m: cells.G, d: cells.H, y: cells.I };
     const gFilled = !!(g.m || g.d), gComplete = !!(g.m && g.d);
     const hFilled = !!(h.m || h.d), hComplete = !!(h.m && h.d);
     const type = (cells.B || '').toLowerCase();
-    if (type && !eventTypes().includes(type)) problems.push(where + 'Event Type "' + cells.B + '" is not one of birthday, wedding, yahrzeit or other.');
-    const display = (cells.L || '').trim();
+    if (type && !eventTypes().includes(type)) problems.push(pt('notOneOf', where + cell('B', cells.B), eventTypes().join(', ')));
+    const display = (cells.L || '').trim(), D = H('L');
+    const gMD = H('C') + ' and ' + H('D'), hMD = H('G') + ' and ' + H('H');
     let effective = null;
     if (display === '') {
       if (gComplete && hComplete) effective = 'Both';
       else if (gComplete) effective = 'Greg';
       else if (hComplete) effective = 'Heb';
-      else if (gFilled || hFilled) problems.push(where + 'the date is only partly filled in (a month without a day, or the other way round).');
-      else problems.push(where + 'no date filled in.');
+      else if (gFilled || hFilled) problems.push(where + 'the date is only partly filled in (' + gMD + ', or ' + hMD + ': a month without a day, or the other way round).');
+      else problems.push(where + 'no date filled in (' + gMD + ', or ' + hMD + ').');
     } else if (display === 'Greg') {
-      if (!gComplete) problems.push(where + 'Display on is Greg, but Greg. Month and Day are not both filled in.');
-      if (hFilled) problems.push(where + 'Display on is Greg, but Hebrew fields are filled in too - clear them or set Display on to Both.');
+      if (!gComplete) problems.push(where + D + ' is Greg, but ' + gMD + ' are not both filled in.');
+      if (hFilled) problems.push(where + D + ' is Greg, but ' + hMD + ' are filled in too - clear them or set ' + D + ' to Both.');
       if (gComplete && !hFilled) effective = 'Greg';
     } else if (display === 'Heb') {
-      if (!hComplete) problems.push(where + 'Display on is Heb, but Heb. Month and Day are not both filled in.');
-      if (gFilled) problems.push(where + 'Display on is Heb, but Gregorian fields are filled in too - clear them or set Display on to Both.');
+      if (!hComplete) problems.push(where + D + ' is Heb, but ' + hMD + ' are not both filled in.');
+      if (gFilled) problems.push(where + D + ' is Heb, but ' + gMD + ' are filled in too - clear them or set ' + D + ' to Both.');
       if (hComplete && !gFilled) effective = 'Heb';
     } else if (display === 'Both') {
       if (gComplete && hComplete) effective = 'Both';
-      else if (gComplete && !hFilled) { if (g.y) effective = 'Both'; else problems.push(where + 'Display on is Both with only the Gregorian date - add the Greg. Year so the clock can work out the Hebrew date.'); }
-      else if (hComplete && !gFilled) { if (h.y) effective = 'Both'; else problems.push(where + 'Display on is Both with only the Hebrew date - add the Heb. Year so the clock can work out the Gregorian date.'); }
+      else if (gComplete && !hFilled) { if (g.y) effective = 'Both'; else problems.push(where + D + ' is Both with only the Gregorian date - add ' + H('E') + ' so the clock can work out the Hebrew date.'); }
+      else if (hComplete && !gFilled) { if (h.y) effective = 'Both'; else problems.push(where + D + ' is Both with only the Hebrew date - add ' + H('I') + ' so the clock can work out the Gregorian date.'); }
       else {
-        if (!gComplete) problems.push(where + 'Display on is Both, but Greg. Month and Day are not both filled in.');
-        if (!hComplete) problems.push(where + 'Display on is Both, but Heb. Month and Day are not both filled in.');
+        if (!gComplete) problems.push(where + D + ' is Both, but ' + gMD + ' are not both filled in.');
+        if (!hComplete) problems.push(where + D + ' is Both, but ' + hMD + ' are not both filled in.');
       }
     } else {
-      problems.push(where + 'Display on is "' + cells.L + '" - it must be Greg, Heb, Both, or left empty.');
+      problems.push(where + cell('L', cells.L) + ' - it must be Greg, Heb, Both, or left empty.');
     }
     if (!effective) continue;
     const ev = { row: num, name, type: type || 'birthday', hasG: effective !== 'Heb', hasJ: effective !== 'Greg',
                  gD: 0, gM: 0, gY: 0, afterSunset: /^yes$/i.test(cells.F || ''), jD: 0, jMonth: '', isAdarII: /^yes$/i.test(cells.J || ''), jYNum: 0,
-                 warn: intOf(cells.K), image: /^[0-9a-f]{8}$/.test(cells.M || '') ? cells.M : '' };
+                 warn: intOf(cells.K), image: /^[0-9a-f]{8}$/.test(cells.M || '') ? cells.M : '',
+                 icon: String(cells.N || '').trim() };
+    if (LIMITS && ev.icon && iconNeedsPicture(ev.icon) && fitOwnIcon(ev.icon) !== ev.icon)
+      problems.push(where + cell('N', ev.icon) + ' - an own icon is one emoji, or at most ' + LIMITS.iconMaxChars + ' letters.');
     if (g.m) {
       ev.gM = G_MONTH_NUM[String(g.m).toLowerCase()] || (/^\d+$/.test(g.m) && +g.m >= 1 && +g.m <= 12 ? +g.m : 0);
-      if (!ev.gM) problems.push(where + 'Greg. Month "' + g.m + '" is not a month name (try e.g. Mar or March).');
+      if (!ev.gM) problems.push(where + cell('C', g.m) + ' is not a month name (try e.g. Mar or March).');
     }
-    if (g.d) { ev.gD = intOf(g.d); if (!(ev.gD >= 1 && ev.gD <= 31)) problems.push(where + 'Greg. Day "' + g.d + '" should be a number from 1 to 31.'); }
+    if (g.d) { ev.gD = intOf(g.d); if (!(ev.gD >= 1 && ev.gD <= 31)) problems.push(where + cell('D', g.d) + ' should be a number from 1 to 31.'); }
     const [gy0, gy1] = LIMITS.ranges.gYear, [hy0, hy1] = LIMITS.ranges.hYear, [w0, w1] = LIMITS.ranges.warn;
-    if (g.y) { ev.gY = intOf(g.y); if (!(ev.gY >= gy0 && ev.gY <= gy1)) problems.push(where + 'Greg. Year "' + g.y + '" should be a year from ' + gy0 + ' to ' + gy1 + '.'); }
+    if (g.y) { ev.gY = intOf(g.y); if (!(ev.gY >= gy0 && ev.gY <= gy1)) problems.push(where + cell('E', g.y) + ' should be a year from ' + gy0 + ' to ' + gy1 + '.'); }
     if (h.m) {
       const [m, adar2] = normHebMonth(h.m);
-      if (!m) problems.push(where + 'Heb. Month "' + h.m + '" is not a Hebrew month name (pick one from the dropdown).');
+      if (!m) problems.push(pt('notMonthName', where + cell('G', h.m)));
       ev.jMonth = m || '';
       if (adar2 !== null) ev.isAdarII = adar2;
     }
-    if (h.d) { ev.jD = intOf(h.d); if (!(ev.jD >= 1 && ev.jD <= 30)) problems.push(where + 'Heb. Day "' + h.d + '" should be a number from 1 to 30.'); }
-    if (h.y) { ev.jYNum = intOf(h.y); if (!(ev.jYNum >= hy0 && ev.jYNum <= hy1)) problems.push(where + 'Heb. Year "' + h.y + '" should be a year from ' + hy0 + ' to ' + hy1 + ', like 5785.'); }
-    if (cells.K && !(ev.warn >= w0 && ev.warn <= w1)) problems.push(where + '"Remind me" should be a number of days from ' + w0 + ' to ' + w1 + '.');
+    if (h.d) { ev.jD = intOf(h.d); if (!(ev.jD >= 1 && ev.jD <= 30)) problems.push(where + cell('H', h.d) + ' should be a number from 1 to 30.'); }
+    if (h.y) { ev.jYNum = intOf(h.y); if (!(ev.jYNum >= hy0 && ev.jYNum <= hy1)) problems.push(where + cell('I', h.y) + ' should be a year from ' + hy0 + ' to ' + hy1 + ', like 5785.'); }
+    if (cells.K && !(ev.warn >= w0 && ev.warn <= w1)) problems.push(where + cell('K', cells.K) + ' should be a number of days from ' + w0 + ' to ' + w1 + '.');
     out.push(ev);
+    raw.push(cells);
   }
-  return { events: out, problems };
+  return { events: out, problems, headers: rows.headers || {}, raw };
+}
+
+// The clock's own checks of the events (Storage::eventProblems - its DateRules:
+// 30 February, Adar II or 30 Cheshvan in a year without it, years out of range ...),
+// asked before anything is imported (2026-11-14). Each problem with its Excel row
+// and the cells it is about, named by the file's own headings. [] if all is well
+// (or the clock can't be asked: the import then checks again).
+const EVENT_FIELD_COL = { gM: 'C', gD: 'D', gY: 'E', jM: 'G', jD: 'H', jY: 'I' };
+async function clockEventProblems(ev) {
+  if (!ev.events.length) return [];
+  let res;
+  try { res = JSON.parse(await apiPost('/api/events/check', ev.events)); } catch (e) { return []; }
+  return (res.problems || []).map(p => {
+    const row = ev.events[p.index] ? ev.events[p.index].row : p.index + 1, cells = ev.raw[p.index] || {};
+    const name = ev.events[p.index] ? ev.events[p.index].name : '';
+    const cols = String(p.field || '').split(' ').filter(f => EVENT_FIELD_COL[f]).map(f => EVENT_FIELD_COL[f]);
+    const where = 'Row ' + row + (name ? ' (' + name + ')' : '');
+    if (!cols.length || !p.detail) return where + ': ' + p.text;
+    return where + ', ' + cols.map(c => ((ev.headers && ev.headers[c]) || 'column ' + c) + ' "' + (cells[c] == null ? '' : cells[c]) + '"').join(', ') + ': ' + p.detail + '.';
+  });
 }
 
 // What the upload would change, compared with the events on the clock now
@@ -3812,6 +4405,7 @@ function diffExcelEvents(incoming) {
   const same = (cur, ev) => {
     if (!!cur.hasG !== ev.hasG || !!cur.hasJ !== ev.hasJ || (cur.type || '') !== ev.type || (cur.warn || 0) !== ev.warn) return false;
     if ((cur.image || '') !== (ev.image || '')) return false;
+    if (ev.icon && (cur.icon || '').replace(/️/g, '') !== ev.icon.replace(/️/g, '')) return false;
     // A side the clock filled in itself (Both from one date + year) isn't a change.
     if (ev.hasG && ev.gD && (cur.gD !== ev.gD || cur.gM !== ev.gM || (cur.gY || 0) !== ev.gY || !!cur.afterSunset !== ev.afterSunset)) return false;
     if (ev.hasJ && ev.jD && (cur.jD !== ev.jD || normHebMonth(cur.jMonth)[0] !== ev.jMonth || !!cur.isAdarII !== ev.isAdarII || (cur.jYNum || 0) !== ev.jYNum)) return false;
@@ -3820,7 +4414,7 @@ function diffExcelEvents(incoming) {
   const res = { added: [], changed: [], unchanged: [], removed: [] };
   for (const ev of incoming) {
     const cur = events.find(c => key(c.name) === key(ev.name));
-    if (cur && cur.icon) ev.icon = cur.icon;
+    if (!ev.icon && cur && cur.icon) ev.icon = cur.icon;   // a file from before icons were in it: the clock's own
     (!cur ? res.added : same(cur, ev) ? res.unchanged : res.changed).push(ev.name);
   }
   res.removed = events.filter(c => !incoming.some(ev => key(ev.name) === key(c.name))).map(c => c.name);
@@ -3841,9 +4435,9 @@ function readSheetRows(files, sheetName, keepSpaces) {   // keepSpaces: values e
     : [];
   const doc = xmlDoc(files[sheetPath(files, sheetName)]);
   const rows = [];
+  rows.headers = {};   // row 1: column letter -> its heading, for messages
   for (const row of doc.getElementsByTagName('row')) {
     const num = parseInt(row.getAttribute('r'), 10);
-    if (num === 1) continue;
     const cells = {};
     for (const c of row.getElementsByTagName('c')) {
       const col = (c.getAttribute('r') || '').replace(/[0-9]+$/, '');
@@ -3856,7 +4450,8 @@ function readSheetRows(files, sheetName, keepSpaces) {   // keepSpaces: values e
       else text = v ? v.textContent : null;
       if (text != null && String(text).trim() !== '') cells[col] = keepSpaces ? String(text) : String(text).trim();
     }
-    if (Object.keys(cells).length) rows.push({ num, cells });
+    if (num === 1) rows.headers = cells;
+    else if (Object.keys(cells).length) rows.push({ num, cells });
   }
   return rows;
 }
@@ -3876,6 +4471,7 @@ function fillEventsSheet(sheet, list, keepExamples) {
     if (e.warn) x += num('K', e.warn);
     x += txt('L', e.hasG && e.hasJ ? 'Both' : (e.hasG ? 'Greg' : 'Heb'));
     if (e.image) x += txt('M', e.image);   // the picture's id - the picture itself is on the Pictures sheet
+    if (e.icon) x += txt('N', e.icon);     // its icon (one of the clock's, or an own emoji / letters - drawn again on import)
     rows += '<row r="' + r + '">' + x + '</row>';
     r++;
   }
@@ -3887,6 +4483,12 @@ function fillEventsSheet(sheet, list, keepExamples) {
   if (!sheet.includes('r="M1"')) {
     sheet = sheet.slice(0, headerEnd) + '<c r="M1" s="5" t="inlineStr"><is><t>Picture</t></is></c>' + sheet.slice(headerEnd);
     sheet = sheet.replace('</cols>', '<col width="11" customWidth="1" min="13" max="13" /></cols>');
+    headerEnd = sheet.indexOf('</row>', sheet.indexOf('<sheetData'));
+  }
+  // Column N "Icon" (2026-11-10: icons were not in the file - a restore gave every event its type's icon).
+  if (!sheet.includes('r="N1"')) {
+    sheet = sheet.slice(0, headerEnd) + '<c r="N1" s="5" t="inlineStr"><is><t>Icon</t></is></c>' + sheet.slice(headerEnd);
+    sheet = sheet.replace('</cols>', '<col width="8" customWidth="1" min="14" max="14" /></cols>');
     headerEnd = sheet.indexOf('</row>', sheet.indexOf('<sheetData'));
   }
   headerEnd += '</row>'.length;
@@ -3925,6 +4527,32 @@ function addSettingsSheet(files, config) {
     '<Override PartName="/xl/worksheets/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>'));
 }
 
+// The clock software version that made the file (2026-11-15): a defined name in the
+// workbook, which Excel keeps when the file is saved again. The clock decides whether
+// it can read a file of that version (/api/data/readable, VersionRule.h) - one without
+// (exported before) too: read for now, refused from a later release (ACCEPT_UNSTAMPED).
+const MADE_BY_NAME = 'JewishClockVersion';
+function stampMadeBy(files, version) {
+  const wb = new TextDecoder().decode(files['xl/workbook.xml']).replace(/<definedName name="JewishClockVersion"[^>]*>[^<]*<\/definedName>/, '');
+  const def = '<definedName name="' + MADE_BY_NAME + '">"' + xmlEsc(version) + '"</definedName>';
+  let out;
+  if (/<definedNames\s*\/>/.test(wb)) out = wb.replace(/<definedNames\s*\/>/, '<definedNames>' + def + '</definedNames>');
+  else if (wb.includes('</definedNames>')) out = wb.replace('</definedNames>', def + '</definedNames>');
+  else out = wb.replace(/(<calcPr|<\/workbook>)/, '<definedNames>' + def + '</definedNames>$1');
+  files['xl/workbook.xml'] = new TextEncoder().encode(out);
+}
+function readMadeBy(files) {
+  for (const d of xmlDoc(files['xl/workbook.xml']).getElementsByTagName('definedName'))
+    if (d.getAttribute('name') === MADE_BY_NAME) return d.textContent.replace(/^"|"$/g, '').trim();
+  return '';
+}
+// The clock's answer for a file's version ('' = none named - the clock decides that too):
+// '' = it can read it, else why not.
+async function madeByProblem(madeBy) {
+  try { return (await apiJson('/api/data/readable?madeBy=' + encodeURIComponent(madeBy || ''))).problem || ''; }
+  catch (e) { return ''; }   // the import/restore itself still refuses (the clock checks there too)
+}
+
 // The Settings sheet back into a config object (as /api/restore expects).
 function readSettingsSheet(files) {
   const config = {}, problems = [];
@@ -3934,7 +4562,14 @@ function readSettingsSheet(files) {
     if (kind === 'number') { const n = Number(raw); if (raw === '' || isNaN(n)) problems.push('Settings row ' + num + ' (' + key + '): "' + raw + '" is not a number.'); else config[key] = n; }
     else if (kind === 'true/false') { const t = String(raw).toLowerCase(); if (!['true', 'false', '1', '0', 'yes', 'no'].includes(t)) problems.push('Settings row ' + num + ' (' + key + '): should be true or false.'); else config[key] = ['true', '1', 'yes'].includes(t); }
     else if (kind === 'list') { try { config[key] = JSON.parse(raw); } catch (e) { problems.push('Settings row ' + num + ' (' + key + '): the list is damaged.'); } }
-    else config[key] = String(raw);
+    else {
+      config[key] = String(raw);
+      // Texts typed in Excel: too long -> named here, never cut (the passwords are
+      // kept encrypted in the sheet - the clock checks those).
+      const tk = key === 'projectName' ? 'projectName' : /^wifiSSID[23]?$/.test(key) ? 'wifiSSID' : key === 'separator' ? 'separator' : null;
+      if (tk && utf8Len(config[key]) > LIMITS.textBytes[tk])
+        problems.push(pt('settingsRowTooLong', num, key, config[key], textLimitText(tk)));
+    }
   }
   return { config, problems };
 }
@@ -4067,6 +4702,21 @@ async function uploadImportPictures(incoming, pics) {
     }
     ev.image = newId[ev.image];
   }
+  // Own icons (one emoji / a few letters) are drawn into their pictures again -
+  // the file keeps only the icon itself; the same icon makes the same picture.
+  for (const ev of incoming) {
+    ev.iconImage = '';
+    if (!ev.icon) {   // a file from before icons were in it: the clock's current one (as diffExcelEvents())
+      const cur = events.find(c => String(c.name || '').trim() === String(ev.name || '').trim());
+      if (cur && cur.icon) ev.icon = cur.icon;
+    }
+    if (!iconNeedsPicture(ev.icon)) continue;
+    try {
+      const r = await saveIconPicture(ev.icon);
+      if (r.error) problems.push('The icon of "' + ev.name + '": ' + r.error);
+      else ev.iconImage = r.id;
+    } catch (e) { problems.push('The icon of "' + ev.name + '" could not be drawn.'); }
+  }
   // The clock's own pictures the family had replaced. One the file doesn't
   // have stays as it is on the clock.
   for (const p of Object.values(pics)) {
@@ -4084,11 +4734,13 @@ async function downloadData() {
   if (!dataScope) { notChanged('Choose <b>Events</b>, <b>Settings</b> or <b>Both</b> first - then press Export.'); return; }
   const scope = dataScope, wantE = scope !== 'settings', wantS = scope !== 'events';
   try {
-    const [tpl, list, backup] = await Promise.all([
+    const [tpl, list, backup, me] = await Promise.all([
       fetch('/api/events/excel-template').then(r => { if (!r.ok) throw new Error('the clock has no Excel template'); return r.arrayBuffer(); }),
       wantE ? apiJson('/api/events/list') : null,
-      wantS ? apiJson('/api/backup') : null]);
+      wantS ? apiJson('/api/backup') : null,
+      apiJson('/api/data/readable')]);
     const files = await unzip(tpl);
+    stampMadeBy(files, me.version);
     const path = sheetPath(files, 'Events');
     const evs = wantE ? (Array.isArray(list) ? list : (list.events || [])) : [];
     files[path] = new TextEncoder().encode(fillEventsSheet(new TextDecoder().decode(files[path]), evs, wantE));
@@ -4117,17 +4769,20 @@ async function downloadData() {
 let excelUndoList = null;
 const nameList = names => names.map(n => '<li>' + htmlEsc(n) + '</li>').join('');
 
-async function postExcelImport(list) {
-  const reply = await apiPost('/api/events/import', list);
+async function postExcelImport(list, madeBy) {   // madeBy: the file's version (readMadeBy) - the clock refuses one it can't read
+  const reply = await apiPost('/api/events/import' + (madeBy ? '?madeBy=' + encodeURIComponent(madeBy) : ''), list);
   try { return { res: JSON.parse(reply) }; } catch (e) { return { error: reply }; }   // plain text = the clock's error
 }
 
-async function importEventsNow(incoming, pics) {
+async function importEventsNow(incoming, pics, madeBy) {
   const before = events.slice();
   const picProblems = await uploadImportPictures(incoming, pics || {});   // first: the events refer to them
   const d = diffExcelEvents(incoming);
-  const { res, error } = await postExcelImport(incoming);
-  if (error || !res || !res.saved) { notChanged(htmlEsc(error || 'The clock did not save the import.')); return; }
+  const { res, error } = await postExcelImport(incoming, madeBy);
+  if (error || !res || !res.saved) {
+    const why = res && res.problems ? [res.error || 'Not imported.'].concat(res.problems.map(p => p.text)).join('\n') : error;
+    notChanged(htmlLines(why || 'The clock did not save the import.')); return;
+  }
   excelUndoList = before;
   let html = '<b>Imported - ' + res.count + ' event(s) are now on the clock</b> (' + d.added.length + ' new, ' + d.changed.length + ' changed, ' + d.removed.length + ' removed, ' + d.unchanged.length + ' unchanged).';
   if (picProblems.length) html += '<div style="margin-top:6px;color:var(--danger)">These pictures could not be put on the clock (an event shows its icon instead):</div><ul style="color:var(--danger)">' + nameList(picProblems) + '</ul>';
@@ -4168,9 +4823,12 @@ async function handleDataUpload(e) {
   if (!f) return;
   let files;
   try { files = await unzip(await f.arrayBuffer()); sheetPath(files, 'Events'); }
-  catch (err) { notChanged('"' + htmlEsc(f.name) + '" is not a file exported from this clock (' + htmlEsc(err.message) + ').'); return; }
+  catch (err) { notChanged(pt('notExported', htmlEsc(f.name), htmlEsc(err.message))); return; }
+  const madeBy = readMadeBy(files), tooNew = await madeByProblem(madeBy);
+  if (tooNew) { notChanged('"' + htmlEsc(f.name) + '": ' + htmlEsc(tooNew) + '.'); return; }
 
   const ev = checkExcelRows(readSheetRows(files, 'Events'));
+  if (!ev.problems.length) ev.problems.push(...await clockEventProblems(ev));
   const st = hasSheet(files, 'Settings') ? readSettingsSheet(files) : null;
   const hasEvents = ev.events.length > 0 || ev.problems.length > 0;
   const eventsOk = ev.events.length > 0 && !ev.problems.length;
@@ -4179,7 +4837,7 @@ async function handleDataUpload(e) {
   const settingsOk = !!st && !st.problems.length && nets.length > 0;
   if (!hasEvents && !st) { notChanged('"' + htmlEsc(f.name) + '" has no events and no settings in it.'); return; }
 
-  pendingImport = { incoming: ev.events, config: st ? st.config : null, name: f.name, pics: readPictures(files) };
+  pendingImport = { incoming: ev.events, config: st ? st.config : null, name: f.name, pics: readPictures(files), madeBy };
   const parts = [];
   if (hasEvents) parts.push(ev.problems.length ? '<b>events</b> (some rows have problems)' : '<b>' + ev.events.length + ' event(s)</b>');
   if (st) parts.push('<b>settings</b>' + (nets.length ? ' (Wi-Fi: ' + nets.map(s => '"' + htmlEsc(s) + '"').join(', ') + ')' : ''));
@@ -4200,29 +4858,28 @@ async function handleDataUpload(e) {
 
 async function runImport(what) {
   if (!pendingImport) return;
-  const { incoming, config, pics } = pendingImport;
+  const { incoming, config, pics, madeBy } = pendingImport;
   pendingImport = null;
-  if (what === 'events') { await importEventsNow(incoming, pics); return; }
-  // The imported settings may rename the clock - and with it its Wi-Fi.
-  showDataBox('<b>Importing…</b> The clock restarts; this page reloads by itself when it is back (about 20 seconds). ' +
-    htmlEsc(wifiBackText((config && config.projectName) || clockApSsid, connectedSsid)), 'ask');
+  if (what === 'events') { await importEventsNow(incoming, pics, madeBy); return; }
+  showDataBox('<b>Importing…</b> Keep this page open.', 'ask');
   if (what === 'both') {   // events first: if that fails, nothing has restarted yet
     await uploadImportPictures(incoming, pics || {});
-    const { res, error } = await postExcelImport(incoming);
-    if (error || !res || !res.saved) { notChanged(htmlEsc(error || 'The clock did not save the events.')); return; }
+    const { res, error } = await postExcelImport(incoming, madeBy);
+    if (error || !res || !res.saved) { notChanged(htmlLines(error || 'The clock did not save the events.')); return; }
   }
-  const reply = await apiPost('/api/restore', { config });
-  if (!reply.startsWith('Backup restored')) {
-    showDataBox('<b>The settings were not imported.</b>' + (what === 'both' ? ' (The events were already imported.)' : '') + '<br>' + htmlEsc(reply) + dataBtns(dataBtn('Close', 'closeDataBox()')), 'err');
+  let uptimeBefore = null;
+  try { uptimeBefore = (await apiJson('/api/status')).uptimeMs; } catch (e) {}
+  const { ok, text: reply } = await apiSend('/api/restore', madeBy ? { version: madeBy, config } : { config });
+  if (!ok) {
+    showDataBox('<b>The settings were not imported.</b>' + (what === 'both' ? ' (The events were already imported.)' : '') + '<br>' + htmlLines(reply) + dataBtns(dataBtn('Close', 'closeDataBox()')), 'err');
     return;
   }
-  // Reload only once the clock answers again - a fixed delay often
-  // reloaded mid-restart and showed an unreachable page.
-  await new Promise(r => setTimeout(r, 4000));
-  for (let i = 0; i < 30; i++) {
-    try { if ((await fetch('/api/status', { cache: 'no-store' })).ok) break; } catch (err) {}
-    await new Promise(r => setTimeout(r, 2000));
-  }
+  showDataBox('<b>Settings received</b> - the clock restarts with them. This page reloads by itself when it is back (about 20 seconds).', 'ask');
+  // The imported settings may rename the clock - and with it its Wi-Fi.
+  const ap = (config && config.projectName) || clockApSsid, viaAp = clockViaAp, home = connectedSsid;
+  // Reload only once the clock is back - a fixed delay often reloaded
+  // mid-restart and showed an unreachable page.
+  await followRestart('/api/status', () => showDataBox(htmlEsc(restartingText(viaAp, ap, home)), 'ask'), uptimeBefore);
   location.reload();
 }
 
@@ -4257,21 +4914,27 @@ async function restoreFromBackup(file) {
   let files;
   try { files = await unzip(await file.arrayBuffer()); sheetPath(files, 'Events'); }
   catch (e) { say('"' + file.name + '" is not a backup from this clock.'); return; }
+  const madeBy = readMadeBy(files), tooNew = await madeByProblem(madeBy);
+  if (tooNew) { say('"' + file.name + '": ' + tooNew + '. ' + pt('nothingChanged')); return; }
   const ev = checkExcelRows(readSheetRows(files, 'Events'));
+  if (!ev.problems.length) ev.problems.push(...await clockEventProblems(ev));
   const st = hasSheet(files, 'Settings') ? readSettingsSheet(files) : null;
   if (!st || st.problems.length) { say('This file has no usable settings - export with "Both".'); return; }
   if (ev.problems.length) { say('Damaged event rows:\n' + ev.problems.join('\n')); return; }
   say('Restoring pictures...');
   const picProblems = await uploadImportPictures(ev.events, readPictures(files));
   say('Restoring ' + ev.events.length + ' events...');
-  const { res, error } = await postExcelImport(ev.events);
+  const { res, error } = await postExcelImport(ev.events, madeBy);
   if (error || !res || !res.saved) { say('Events not restored: ' + (error || 'the clock did not save them')); return; }
   say('Restoring settings...');
-  const reply = await apiPost('/api/restore', { config: st.config });
-  if (!reply.startsWith('Backup restored')) { say('Settings not restored: ' + reply); return; }
-  say('Restored: ' + res.count + ' events, settings, pictures.' + (picProblems.length ? '\nNot restored: ' + picProblems.join('; ') : '') +
-      '\nThe clock restarts and joins its Wi-Fi.' +
-      (st.config.projectName ? '\n' + wifiBackText(st.config.projectName, '') : ''));
+  const { ok, text: reply } = await apiSend('/api/restore', madeBy ? { version: madeBy, config: st.config } : { config: st.config });
+  if (!ok) { say('Settings not restored: ' + reply); return; }
+  const done = pt('restoredAll', res.count) + (picProblems.length ? '\n' + pt('notRestored', picProblems.join('; ')) : '');
+  say(done + '\nThe clock restarts and joins its Wi-Fi - keep this page open.');
+  // The setup page is always on the clock's own Wi-Fi; afterwards that Wi-Fi
+  // is named as in the backup. /api/limits answers in setup mode too.
+  const back = await followRestart('/api/limits', () => say(done + '\n' + restartingText(true, st.config.projectName, '')));
+  if (back) location.href = '/';   // the clock's page, with everything restored
 }
 
 const RESTORE_MODE = location.pathname === '/restore';
@@ -4293,7 +4956,12 @@ if (!RESTORE_MODE) (() => {
   loadEvents();
   setInterval(loadStatus, 1000);
 
-  el('modal-event').addEventListener('click', (e) => { if (e.target === el('modal-event')) closeModal(); });
+  // A click beside the dialog closes it - only one that also STARTED there: a drag
+  // (moving the picture, selecting text) let go beside it counts as a click on
+  // the backdrop too, and closed the dialog with everything typed (2026-11-10).
+  let downBeside = false;
+  el('modal-event').addEventListener('pointerdown', (e) => { downBeside = e.target === el('modal-event'); });
+  el('modal-event').addEventListener('click', (e) => { if (e.target === el('modal-event') && downBeside) closeModal(); });
   window.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
 })();
 </script>

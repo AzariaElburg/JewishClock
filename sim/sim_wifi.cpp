@@ -9,12 +9,18 @@
 //     "internet": true, "up": true, "rssi": -62, "channel": 9, "bssid": "..."}]}
 // One entry = one access point; several with the same name = a mesh. "ip" is
 // the address the clock gets there; "up": false = switched off.
+// "blocked": ["ntp", "hebcal.com", ...] (2026-11-09) - internet services out of
+// reach while the network itself works: "ntp" = NTP's packets get no answer (a
+// router blocking port 123, the servers gone); "ntp:NAME" = only that time
+// server's (2026-11-13, sim_net.cpp); anything else = downloads whose address
+// contains it fail (the service down).
 // =============================================================================
 
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <ArduinoJson.h>
 #include <deque>
+#include <cstring>
 #include <vector>
 #include <string>
 #include <fstream>
@@ -22,8 +28,11 @@
 #include "sim_clock.h"
 
 namespace {
-struct Ap { std::string ssid, password, ip, bssid; bool internet = true, up = true; int rssi = -60, channel = 6; };
+// dhcp false (2026-11-18): the network takes the clock but gives no address (no DHCP, or its pool
+// full); turned off while the clock is on it, the address goes ("IP loss").
+struct Ap { std::string ssid, password, ip, bssid; bool internet = true, up = true, dhcp = true; int rssi = -60, channel = 6; };
 std::vector<Ap> g_world;
+std::vector<std::string> g_blocked;   // see "blocked" above
 std::string g_worldPath;
 
 struct Pending { WiFiEvent_t ev; WiFiEventInfo_t info; unsigned long at; };
@@ -35,7 +44,7 @@ int g_joined = -1;                 // index into g_world while connected
 bool g_ipUp = false;
 // A connect under way: its outcome is decided when it is due.
 bool g_connecting = false; unsigned long g_connectDueMs = 0; std::string g_wantSsid, g_wantPass;
-bool g_apOn = false; std::string g_apSsid;
+bool g_apOn = false; std::string g_apSsid, g_apPass;
 // The one shared scan result list (as the driver has).
 bool g_scanRunning = false; unsigned long g_scanDueMs = 0; std::string g_scanOnly;
 std::vector<int> g_scan; bool g_scanHave = false;
@@ -84,6 +93,7 @@ void decideConnect() {
     parseBssid(a.bssid, info.wifi_sta_connected.bssid);
     info.wifi_sta_connected.channel = (uint8_t)a.channel;
     queue(ARDUINO_EVENT_WIFI_STA_CONNECTED, info, millis());
+    if (!a.dhcp) return;   // associated, but no address comes
     WiFiEventInfo_t ipInfo{};
     ipInfo.got_ip.ip_info.ip.addr = IPAddress::parse(a.ip.c_str()).addr();
     queue(ARDUINO_EVENT_WIFI_STA_GOT_IP, ipInfo, millis() + LINK_TO_IP_MS);
@@ -93,16 +103,18 @@ std::string defaultBssid(int i) { char b[24]; snprintf(b, sizeof(b), "5A:1E:00:0
 } // namespace
 
 // ── The world ─────────────────────────────────────────────────────────────────
-static bool parseWorld(const std::string& json, std::vector<Ap>& out, std::string& err) {
+static bool parseWorld(const std::string& json, std::vector<Ap>& out, std::vector<std::string>& blocked, std::string& err) {
     JsonDocument doc;
     if (deserializeJson(doc, json)) { err = "not JSON"; return false; }
     out.clear();
+    blocked.clear();
+    for (JsonVariant b : doc["blocked"].as<JsonArray>()) if (b.is<const char*>() && *b.as<const char*>()) blocked.push_back(b.as<const char*>());
     int i = 0;
     for (JsonObject n : doc["networks"].as<JsonArray>()) {
         Ap a;
         char defIp[20]; snprintf(defIp, sizeof(defIp), "192.168.%d.240", 31 + i * 10);   // as simDefaultWorld() makes them
         a.ssid = n["ssid"] | ""; a.password = n["password"] | ""; a.ip = n["ip"] | (const char*)defIp;
-        a.internet = n["internet"] | true; a.up = n["up"] | true; a.rssi = n["rssi"] | -60; a.channel = n["channel"] | 6;
+        a.internet = n["internet"] | true; a.up = n["up"] | true; a.dhcp = n["dhcp"] | true; a.rssi = n["rssi"] | -60; a.channel = n["channel"] | 6;
         a.bssid = n["bssid"] | defaultBssid(i).c_str();
         if (!a.ssid.empty()) out.push_back(a);
         i++;
@@ -115,23 +127,32 @@ std::string Sim::worldJson() {
     for (auto& a : g_world) {
         JsonObject n = arr.add<JsonObject>();
         n["ssid"] = a.ssid; n["password"] = a.password; n["ip"] = a.ip; n["internet"] = a.internet;
-        n["up"] = a.up; n["rssi"] = a.rssi; n["channel"] = a.channel; n["bssid"] = a.bssid;
+        n["up"] = a.up; n["dhcp"] = a.dhcp; n["rssi"] = a.rssi; n["channel"] = a.channel; n["bssid"] = a.bssid;
     }
+    JsonArray bl = doc["blocked"].to<JsonArray>();
+    for (auto& b : g_blocked) bl.add(b);
     std::string s; serializeJsonPretty(doc, s);
     return s;
 }
 bool Sim::setWorldJson(const std::string& json, std::string& err) {
     std::vector<Ap> w;
-    if (!parseWorld(json, w, err)) return false;
+    std::vector<std::string> blocked;
+    if (!parseWorld(json, w, blocked, err)) return false;
     std::string joinedBssid = g_joined >= 0 ? g_world[g_joined].bssid : "";
     g_world = w;
+    g_blocked = blocked;
     if (!g_worldPath.empty()) { std::ofstream f(g_worldPath, std::ios::binary); f << worldJson(); }
     // The access point we're on: still there, else the connection drops.
     if (g_joined >= 0) {
         int again = -1;
         for (size_t i = 0; i < g_world.size(); i++) if (g_world[i].bssid == joinedBssid && g_world[i].up) again = (int)i;
         if (again < 0) dropConnection(200);   // BEACON_TIMEOUT, as when an access point disappears
-        else g_joined = again;
+        else {
+            g_joined = again;
+            // its address taken back: still associated, address 0.0.0.0 (the clock looks at that in its
+            // loop - WiFiManager STA_CONNECTED - not at an event; none is sent)
+            if (!g_world[again].dhcp && g_ipUp) g_ipUp = false;
+        }
     }
     return true;
 }
@@ -141,23 +162,78 @@ void Sim::loadWorld(const std::string& path) {
     if (!f) return;
     std::stringstream ss; ss << f.rdbuf();
     std::string err;
-    if (!parseWorld(ss.str(), g_world, err)) fprintf(stderr, "[sim] %s: %s\n", path.c_str(), err.c_str());
+    if (!parseWorld(ss.str(), g_world, g_blocked, err)) fprintf(stderr, "[sim] %s: %s\n", path.c_str(), err.c_str());
+}
+// Fake-answer keywords in the world's blocked list (the full simulator only):
+//   "garbage:TEXT"   - 200 with a captive-portal HTML page (not a JSON answer)
+//   "cut:TEXT"       - 200 with a JSON reply cut off in the middle
+//   "emptyjson:TEXT" - 200 with "{}"
+//   "ratelimit:TEXT" - 200 with "{}" + X-Rl: 0, X-Ttl: 30 (ip-api quota used up)
+//   "retry429:TEXT"  - 429 with Retry-After: 60 (server rate-limiting)
+// "TEXT" is matched as a substring of the request URL.
+bool Sim::fakeAnswer(const std::string& url, std::string& body) {
+    for (auto& b : g_blocked) {
+        for (const char* kind : { "garbage:", "cut:", "emptyjson:", "ratelimit:", "retry429:" }) {
+            size_t n = strlen(kind);
+            if (b.compare(0, n, kind) == 0 && url.find(b.substr(n)) != std::string::npos) {
+                if (strcmp(kind, "garbage:") == 0)
+                    body = "<html><body>Service temporarily replaced by a captive portal</body></html>";
+                else if (strcmp(kind, "cut:") == 0)
+                    body = "{\"times\":{\"sunset\":{\"2026-01-01\":\"2026-01-01T16:4";
+                else
+                    body = "{}";   // emptyjson, ratelimit, retry429: all return {}
+                return true;
+            }
+        }
+    }
+    return false;
+}
+// Status code for a fake answer (200 unless "retry429:" matches).
+int Sim::fakeStatus(const std::string& url) {
+    for (auto& b : g_blocked)
+        if (b.compare(0, 9, "retry429:") == 0 && url.find(b.substr(9)) != std::string::npos)
+            return 429;
+    return 200;
+}
+// Headers for a fake answer: "ratelimit:" -> X-Rl: 0, X-Ttl: 30; "retry429:" -> Retry-After: 60.
+bool Sim::fakeHdr(const std::string& url, const std::string& name, std::string& value) {
+    for (auto& b : g_blocked) {
+        if (b.compare(0, 10, "ratelimit:") == 0 && url.find(b.substr(10)) != std::string::npos) {
+            if (_stricmp(name.c_str(), "X-Rl")  == 0) { value = "0";  return true; }
+            if (_stricmp(name.c_str(), "X-Ttl") == 0) { value = "30"; return true; }
+        }
+        if (b.compare(0, 9, "retry429:") == 0 && url.find(b.substr(9)) != std::string::npos) {
+            if (_stricmp(name.c_str(), "Retry-After") == 0) { value = "60"; return true; }
+        }
+    }
+    return false;
+}
+bool Sim::serviceBlocked(const std::string& what) {
+    for (auto& b : g_blocked) {
+        if (b.compare(0, 8, "garbage:") == 0 || b.compare(0, 4, "cut:") == 0 || b.compare(0, 10, "emptyjson:") == 0
+            || b.compare(0, 10, "ratelimit:") == 0 || b.compare(0, 9, "retry429:") == 0) continue;   // fake answers, not blocked
+        if (what == "ntp" ? b == "ntp" : (b != "ntp" && what.find(b) != std::string::npos)) return true;
+    }
+    return false;
 }
 
 bool Sim::staUp() { return g_status == WL_CONNECTED && g_ipUp; }
 bool Sim::apUp() { return g_apOn; }
+std::string Sim::apSsid() { return g_apSsid; }
+std::string Sim::apPass() { return g_apPass; }
 bool Sim::wifiInternet() { return staUp() && g_joined >= 0 && g_world[g_joined].internet; }
 std::string Sim::staIpString() { return staUp() ? g_world[g_joined].ip : std::string("0.0.0.0"); }
 
 void Sim::wifiPumpEvents() {
     unsigned long now = millis();
-    if (g_connecting && now >= g_connectDueMs) decideConnect();
-    if (g_scanRunning && now >= g_scanDueMs) {
+    // wrap-safe, as the clock's own timers (millis() wraps after 49.7 days)
+    if (g_connecting && (long)(now - g_connectDueMs) >= 0) decideConnect();
+    if (g_scanRunning && (long)(now - g_scanDueMs) >= 0) {
         g_scanRunning = false; g_scanHave = true; g_scan.clear();
         for (size_t i = 0; i < g_world.size(); i++)
             if (g_world[i].up && (g_scanOnly.empty() || g_world[i].ssid == g_scanOnly)) g_scan.push_back((int)i);
     }
-    while (!g_events.empty() && g_events.front().at <= now) {
+    while (!g_events.empty() && (long)(now - g_events.front().at) >= 0) {
         Pending p = g_events.front(); g_events.pop_front();
         if (p.ev == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
             if (g_joined < 0) continue;   // dropped meanwhile
@@ -197,9 +273,12 @@ bool WiFiClass::mode(wifi_mode_t m) {
     return true;
 }
 wifi_mode_t WiFiClass::getMode() { return g_mode; }
-bool WiFiClass::softAP(const char* ssid, const char*, int, int, int) {
+bool WiFiClass::softAP(const char* ssid, const char* pass, int, int, int) {
+    // As the real one (AP.cpp create() + esp_wifi_set_config): no name, a name
+    // over 32 bytes or a password of 1-7 characters -> no access point.
+    if (!ssid || !*ssid || strlen(ssid) > 32 || (pass && *pass && strlen(pass) < 8)) return false;
     g_mode = (wifi_mode_t)(g_mode | WIFI_AP);
-    g_apOn = true; g_apSsid = ssid ? ssid : "";
+    g_apOn = true; g_apSsid = ssid ? ssid : ""; g_apPass = pass ? pass : "";
     return true;
 }
 bool WiFiClass::softAPdisconnect(bool) { g_apOn = false; g_mode = (wifi_mode_t)(g_mode & ~WIFI_AP); return true; }

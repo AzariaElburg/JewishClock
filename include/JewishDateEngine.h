@@ -39,6 +39,9 @@ public:
     // Month Name Helpers (Pure)
     static const char* getMonthName(int month);
     static int getMonthFromName(const char* name);
+    // Hebcal's own date, "20 Tevet 5787" / "1 Adar II 5787" (its "hdate" field):
+    // false unless it is a real Hebrew date (DateRules).
+    static bool parseHebcalDate(const char* s, HebrewDate& out);
 
     // Low-level Math (Pure - Based on Dershowitz & Reingold)
     static bool isHebrewLeapYear(int year);

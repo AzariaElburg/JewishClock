@@ -20,17 +20,18 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-GETS = ["/", "/update.html", "/sortable.min.js", "/licenses.txt", "/start.html", "/manual.html", "/restore",
-        "/update-safe", "/api/status", "/api/config", "/api/calendar", "/api/preview", "/api/events/list",
-        "/api/events/excel-template", "/api/images/list", "/api/builtin/list", "/api/wifi/networks",
-        "/api/backup", "/api/debug/diagnostic-log", "/api/debug/flash", "/api/debug/screenshot",
-        "/api/location/search-result",
-        # refused / odd ones
-        "/api/events", "/api/events/blahblah", "/no/such/page", "/api/images/get?id=nosuchid",
-        "/api/builtin/get?which=custom&name=nosuch"]
-POSTS = [("/api/events/upsert", None), ("/api/events/delete", b""), ("/api/events", b""),
-         ("/api/config", None), ("/api/calendar/convert", b'body={"from":"gregorian","d":5,"m":11,"y":2026}'),
-         ("/api/debug/time", None), ("/api/restore", None)]
+
+
+def recorded_requests():
+    """The list the page's Advanced > Web answers > Record uses (Data/index.html, between
+    RECORD_REQUESTS_BEGIN/END) - defined there only (2026-11-14)."""
+    html = (ROOT / "Data" / "index.html").read_text(encoding="utf-8")
+    js = html[html.index("/* RECORD_REQUESTS_BEGIN */"):html.index("/* RECORD_REQUESTS_END */")]
+    lst = json.loads(js[js.index("{"):js.rindex("}") + 1])
+    return lst["gets"], [(p, b.encode()) for p, b in lst["posts"]]
+
+
+GETS, POSTS = recorded_requests()
 
 
 def fetch(base, path, data=None, headers=None):

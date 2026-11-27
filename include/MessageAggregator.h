@@ -8,6 +8,11 @@
 
 class MessageAggregator {
 public:
+    // TUNABLE: the minutes after a start in which loop()'s showOverlay holds (setup info, the status
+    // line every round). Decided by main.cpp - and by the simulator's sim_main.cpp, which kept its own
+    // copy until 2026-11-19; one value here since (moved from main.cpp: a second file needed it).
+    static constexpr int64_t BOOT_OVERLAY_MS = 3LL * 60 * 1000;
+
     static void begin(const AppConfig& cfg, const EventList& events);
     static void loop(const AppConfig& cfg, bool showOverlay);
 
@@ -26,6 +31,15 @@ public:
     static const std::vector<OnScreenElement>& getMessageElements();
     static uint32_t                   getCurrentMessageId();
     static uint16_t                   getCurrentColor();
+
+    // Rounds begun since startup (Alternating: batches, Single Scroll: laps) -
+    // read only, for tests (the simulator's /state "rounds": "not shown in two
+    // whole rounds" instead of a guessed wait).
+    static uint32_t                   roundsDone();
+    // The next n rounds as the clock would show them now (rounds -> slides -> elements): the
+    // screen's own round-building code with the settings loop() runs with, nothing changed by
+    // asking (tests: sim /state "nextRounds"). Empty before the first loop().
+    static std::vector<std::vector<std::vector<OnScreenElement>>> upcomingRounds(int n);
 
 private:
     static void buildElements(const AppConfig& cfg);

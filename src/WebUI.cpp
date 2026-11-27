@@ -8,11 +8,18 @@
 // Wi-Fi credentials + settings without typing anything.
 // =============================================================================
 
+#include "FileTools.h"
 #include "WebUI.h"
+#include "Uptime.h"
+#include "DateRules.h"
+#include "OnlineUpdate.h"
+#include "UpdateKeyState.h"
+#include "Tunables.h"
 #include <algorithm>
 #include <vector>
 #include "Config.h"
 #include "Version.h"
+#include "VersionRule.h"
 #include "Storage.h"
 #include "Display.h"
 #include "JewishDateEngine.h"
@@ -21,6 +28,7 @@
 #include "GeolocationService.h"
 #include "NTPManager.h"
 #include "WiFiManager.h"
+#include <esp_timer.h>
 #include "Location.h"
 #include "MessageAggregator.h"
 #include "StringTools.h"
@@ -32,6 +40,8 @@
 #include "EventsLock.h"
 #include "Updater.h"
 #include "ImageLibrary.h"
+#include "Texts.h"
+#include "Restart.h"
 #include <esp_heap_caps.h>
 #include <map>
 
@@ -50,30 +60,32 @@
 // === TUNABLES ===  (rule: see Config.h header)
 
 // mDNS tiered upkeep - see the Tier 1 / Tier 2 blocks in WebUI::loop().
-static const unsigned long MDNS_REFRESH_MS        = 20UL * 60UL * 1000UL;  // Tier 1 keep-alive
-static const unsigned long MDNS_STALE_GRACE_MS    = 6UL * 60UL * 1000UL;
-static const unsigned long MDNS_STALE_MS          = MDNS_REFRESH_MS + MDNS_STALE_GRACE_MS; // Tier 1 presumed failed -> Tier 2
-static const unsigned long MDNS_WATCHDOG_CHECK_MS = 60UL * 1000UL;         // Tier 2 health check
+static const int64_t MDNS_REFRESH_MS        = 20UL * 60UL * 1000UL;  // Tier 1 keep-alive
+static const int64_t MDNS_STALE_GRACE_MS    = 6UL * 60UL * 1000UL;
+static const int64_t MDNS_STALE_MS          = MDNS_REFRESH_MS + MDNS_STALE_GRACE_MS; // Tier 1 presumed failed -> Tier 2
+static const int64_t MDNS_WATCHDOG_CHECK_MS = 60UL * 1000UL;         // Tier 2 health check
 static const uint8_t       MDNS_FORCE_RETRY_ATTEMPTS = 3;                  // see g_mdnsInitAttempts
-static const unsigned long MDNS_RESTART_PAUSE_MS  = 250;                   // MDNS.end() -> begin(), see performMdnsInit()
+static const int64_t MDNS_RESTART_PAUSE_MS  = 250;                   // MDNS.end() -> begin(), see performMdnsInit()
 
 // The recycle bin keeps the last this many deleted events (oldest dropped).
 static const int MAX_DELETED_EVENTS = 200;
 static_assert(MAX_DELETED_EVENTS <= MAX_EVENTS, "the recycle bin may not hold more than the event list");
 
 // Diagnostic heartbeat line in the DiagnosticLog.
-static const unsigned long HEARTBEAT_LOG_MS = 30UL * 60UL * 1000UL;
+static const int64_t HEARTBEAT_LOG_MS = 30UL * 60UL * 1000UL;
 
 // Weak-signal episodes - see that block in WebUI::loop().
 static const int           WIFI_RSSI_WEAK_DBM      = -85;
 static const int           WIFI_RSSI_RECOVERED_DBM = -80;
-static const unsigned long WIFI_RSSI_SAMPLE_MS     = 5000;
+static const int64_t WIFI_RSSI_SAMPLE_MS     = 5000;
+TUNABLE_SHARED(WIFI_RSSI_WEAK_DBM) TUNABLE_SHARED(WIFI_RSSI_RECOVERED_DBM) TUNABLE_SHARED(WIFI_RSSI_SAMPLE_MS)
+static_assert(WIFI_RSSI_RECOVERED_DBM > WIFI_RSSI_WEAK_DBM, "recovered must be a stronger signal than weak - else an episode never ends");
 
 // /api/status's own serial summary line, at most this often.
-static const unsigned long STATUS_LOG_INTERVAL_MS = 60UL * 1000UL;
+static const int64_t STATUS_LOG_INTERVAL_MS = 60UL * 1000UL;
 
 // Dev helper: re-read the front end's build time this often.
-static const unsigned long FE_BUILD_TIME_REFRESH_MS = 60UL * 1000UL;
+static const int64_t FE_BUILD_TIME_REFRESH_MS = 60UL * 1000UL;
 
 // Delay between a handler's reply and the restart it requested, so the
 // reply is actually sent first (see scheduleRestart()).
@@ -82,6 +94,7 @@ static const uint32_t RESTART_AFTER_REPLY_MS = 1500;
 // Settings changes apply immediately (in RAM) but are written to flash only
 // once nothing has changed for this long - see markConfigChanged().
 static const uint32_t CONFIG_SAVE_QUIET_MS = 2000;
+TUNABLE_SHARED(CONFIG_SAVE_QUIET_MS)
 
 // Free-PSRAM limits for adding events (the real operational limit - see
 // MAX_EVENTS in Config.h). PSRAM is shared with everything else on the
@@ -116,10 +129,9 @@ static String g_feBuildTime = "Unknown";
 // that sends its queued reply, so the client never got the response and the
 // Settings page reported "could not reach the device" even though the
 // restore/forget had worked. 0 = nothing pending.
-static std::atomic<uint32_t> g_restartAtMs{0};
-static void scheduleRestart(uint32_t afterMs) {
-    uint32_t at = millis() + afterMs;
-    g_restartAtMs = at ? at : 1;
+static std::atomic<int64_t>  g_restartAtMs{0};   // Uptime::ms()
+static void scheduleRestart(int64_t afterMs) {
+    g_restartAtMs = Uptime::ms() + afterMs;   // never 0 (0 = nothing pending)
 }
 
 // Settings page changes are "live": each one is applied to g_cfg at once,
@@ -129,7 +141,7 @@ static void scheduleRestart(uint32_t afterMs) {
 // the file current (a restart, a backup download) flushes first. Cost: a
 // power cut within those 2 s loses the last change.
 static std::atomic<bool>     g_cfgDirty{false};
-static std::atomic<uint32_t> g_cfgChangedAtMs{0};
+static std::atomic<int64_t>  g_cfgChangedAtMs{0};   // Uptime::ms()
 static std::atomic<uint32_t> g_cfgChangesPending{0};
 // Names of the settings changed since the last write, for the log line.
 // Written on the AsyncTCP task, read+cleared on the main loop -> spinlock.
@@ -144,7 +156,7 @@ static void markConfigChanged(JsonObjectConst changed) {
         snprintf(g_cfgChangedKeys + len, sizeof(g_cfgChangedKeys) - len, "%s%s", len ? ", " : "", k);
     }
     portEXIT_CRITICAL(&g_cfgKeysMux);
-    g_cfgChangedAtMs = millis();
+    g_cfgChangedAtMs = Uptime::ms();
     g_cfgChangesPending++;
     g_cfgDirty = true;   // last: a concurrent flush that already started re-marks nothing it hasn't seen
 }
@@ -153,7 +165,7 @@ static void flushConfigSave(const char* why) {
     uint32_t n = g_cfgChangesPending.exchange(0);
     char keys[sizeof(g_cfgChangedKeys)];
     portENTER_CRITICAL(&g_cfgKeysMux);
-    strlcpy(keys, g_cfgChangedKeys, sizeof(keys));
+    StringTools::utf8Copy(keys, g_cfgChangedKeys);
     g_cfgChangedKeys[0] = 0;
     portEXIT_CRITICAL(&g_cfgKeysMux);
     Storage::saveConfig(*g_cfg);
@@ -162,17 +174,17 @@ static void flushConfigSave(const char* why) {
 
 // mDNS Lifecycle State
 static bool g_mdnsRunning = false;
-static unsigned long g_lastMdnsAliveAt = 0;   // Timestamp of last confirmed activity
-static unsigned long g_lastTier1Refresh = 0;  // Last lightweight keep-alive
-static unsigned long g_lastMdnsHealthCheckMs = 0; // Last Tier 2 mDNS health check (every MDNS_WATCHDOG_CHECK_MS) - not the ESP task watchdog
-static unsigned long g_lastTier2At = 0;       // Timestamp of last full restart
+static int64_t g_lastMdnsAliveAt = 0;   // Timestamp of last confirmed activity
+static int64_t g_lastTier1Refresh = 0;  // Last lightweight keep-alive
+static int64_t g_lastMdnsHealthCheckMs = 0; // Last Tier 2 mDNS health check (every MDNS_WATCHDOG_CHECK_MS) - not the ESP task watchdog
+static int64_t g_lastTier2At = 0;       // Timestamp of last full restart
 
 // Deferred mDNS (re)init request - see startServer()'s comment and the
 // "Reconnect-triggered fast path" block in loop(). 0 = nothing pending.
-static unsigned long g_mdnsRecheckAtMs = 0;
+static int64_t g_mdnsRecheckAtMs = 0;
 static String        g_pendingMdnsHost;
 // performMdnsInit() stopped mDNS; MDNS.begin() is due at this time (0 = not).
-static unsigned long g_mdnsBeginAtMs = 0;
+static int64_t g_mdnsBeginAtMs = 0;
 static String        g_mdnsBeginHost;
 
 // How many times performMdnsInit() has actually run this boot. Used to force
@@ -214,8 +226,7 @@ static void performMdnsInit(const char* mdnsHost) {
     // not here: a delay() here froze the screen ~310 ms on every connect
     // (2026-10-25, "SLOW STEP: WebUI::loop").
     g_mdnsBeginHost = mdnsHost;
-    g_mdnsBeginAtMs = millis() + MDNS_RESTART_PAUSE_MS;
-    if (!g_mdnsBeginAtMs) g_mdnsBeginAtMs = 1;
+    g_mdnsBeginAtMs = Uptime::ms() + MDNS_RESTART_PAUSE_MS;   // never 0 (0 = none)
 }
 
 // The second half of performMdnsInit(), MDNS_RESTART_PAUSE_MS later.
@@ -227,8 +238,8 @@ static void finishMdnsInit() {
         MDNS.setInstanceName(mdnsHost);
         MDNS.addService("http", "tcp", 80);
         g_mdnsRunning = true;
-        g_lastMdnsAliveAt = millis();
-        g_lastTier2At = millis();
+        g_lastMdnsAliveAt = Uptime::ms();
+        g_lastTier2At = Uptime::ms();
         CLOCK_LOG("WebUI", "[MdnsDiag] MDNS.begin() OK -> http://%s.local (IP: %s)",
                   mdnsHost, WiFi.localIP().toString().c_str());
         DiagnosticLog::record("MDNS", "reinit OK host=%s attempt=%u", mdnsHost, g_mdnsInitAttempts);
@@ -253,9 +264,9 @@ static void refreshMdnsServices() {
     // Tier 1: Update the "refresh" TXT record.
     // This replaces the existing value for the key "refresh" (it does not add new ones).
     // The update forces a gratuitous mDNS announcement to the network.
-    MDNS.addServiceTxt("http", "tcp", "refresh", String(millis()).c_str()); //
+    MDNS.addServiceTxt("http", "tcp", "refresh", String((unsigned long)Uptime::ms()).c_str());   // only has to change (low 32 bits) //
     // Update the alive timestamp so Tier 2 knows the system called the daemon.
-    g_lastMdnsAliveAt = millis();
+    g_lastMdnsAliveAt = Uptime::ms();
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -274,12 +285,23 @@ static String webFilePath(const char* path)
 // library's send(LittleFS, path) for that: its 304 queued the headers
 // without sending them - they left only at the network's next flush, 40-580
 // ms later, slower than sending the whole file (measured 2026-11-04). The
-// ETag is read once per file and kept: web files change only by uploadfs or
-// an update, both of which restart the clock.
+// ETag is read once per file and kept until the files change: uploadfs
+// restarts the clock, an update calls webFilesChanged() (2026-11-10).
+static std::atomic<uint32_t> s_webFilesGen{0};
+void WebUI::webFilesChanged() { s_webFilesGen++; }
 static void sendWebFile(AsyncWebServerRequest* req, const char* path, const char* contentType)
 {
+    // An update is putting new page files in place this moment (well under a second).
+    if (Updater::movingWebFiles()) {
+        AsyncWebServerResponse* r = req->beginResponse(503, "text/plain", "The clock is updating its pages - reload in a moment.");
+        r->addHeader("Retry-After", "2");
+        req->send(r);
+        return;
+    }
     struct Known { String gz, etag; };
     static std::map<String, Known> known;   // handlers all run on the one web task
+    static uint32_t knownGen = 0;
+    if (knownGen != s_webFilesGen) { known.clear(); knownGen = s_webFilesGen; }
     auto it = known.find(path);
     if (it == known.end()) {
         Known k;
@@ -379,31 +401,42 @@ uint32_t WebUI::getJsonResponsesSent() { return g_jsonResponsesSent; }
 // an Excel import never carries one (deliberately no icon column there:
 // Excel can't preview the icons, so asking for one blind pushes a decision
 // nobody is equipped to make). It can be changed in the event's dialog.
-static const struct { const char* type; const char* icon; } EVENT_TYPES[] = {
-    { "birthday", "🎂" }, { "wedding", "💍" }, { "yahrzeit", "🕯️" }, { "other", "🗓️" },
-};
-
-static String normalizeEventType(const String& raw) {
-    String t = raw;
-    t.trim();
-    t.toLowerCase();
-    for (const auto& et : EVENT_TYPES) if (t == et.type) return t;
-    return "";
-}
-
-static const char* defaultIconForType(const char* type) {
-    for (const auto& et : EVENT_TYPES) if (!strcmp(type, et.type)) return et.icon;
-    return EVENT_TYPES[sizeof(EVENT_TYPES) / sizeof(EVENT_TYPES[0]) - 1].icon;
-}
+// The types and their icons: Storage::eventTypes().
 
 // True for "" or whitespace-only - an event with no real name shows up on
 // the clock as a reminder for nobody.
 static bool isBlankName(const char* s)
 {
     for (; s && *s; s++) {
-        if (!isspace((unsigned char)*s)) return false;
+        if (!StringTools::asciiSpace(*s)) return false;
     }
     return true;
+}
+
+
+// Every problem of a list of events (Storage::eventProblems), each with its
+// place in the list - for /api/events/import (refused, all or nothing) and
+// /api/events/check (the page asks before it imports: its Excel rows).
+static void eventListProblems(JsonArrayConst arr, int count, JsonArray problems, String& blankRows)
+{
+    // More events than the clock holds: said, on the first one that doesn't fit - never cut
+    // silently (2026-11-20, found by resilience events_many: 5001 imported as "saved", 5000 kept).
+    if ((int)arr.size() > MAX_EVENTS) {
+        JsonObject o = problems.add<JsonObject>();
+        o["index"] = MAX_EVENTS;
+        o["text"] = Texts::fill(Texts::eventsTooMany, String(MAX_EVENTS), String((int)arr.size()));
+        o["field"] = ""; o["detail"] = "";
+    }
+    for (int i = 0; i < count; i++) {
+        const char* nm = arr[i]["name"] | "";
+        if (isBlankName(nm)) blankRows += (blankRows.length() ? ", " : "") + String(i + 1);
+        std::vector<Storage::TextNote> found;
+        Storage::eventProblems(arr[i].as<JsonObjectConst>(), i + 1, Storage::TextMode::Change, found);
+        for (const auto& n : found) {
+            JsonObject o = problems.add<JsonObject>();
+            o["index"] = i; o["text"] = n.text; o["field"] = n.field; o["detail"] = n.detail;
+        }
+    }
 }
 
 // Shared by the single-event upsert and bulk-import handlers below, so the
@@ -411,28 +444,9 @@ static bool isBlankName(const char* s)
 // that separately, since the two differ on where an id comes from.
 static PersonalEvent parseEventFields(JsonObject in)
 {
-    PersonalEvent ev{};
-    strncpy(ev.name, in["name"] | "", sizeof(ev.name) - 1);
-    ev.hasGregorian = in["hasG"] | false;
-    ev.gDay         = in["gD"] | 0;
-    ev.gMonth       = in["gM"] | 0;
-    ev.gYear        = in["gY"] | 0;
-    ev.afterSunset  = in["afterSunset"] | false;
-    ev.hasJewish    = in["hasJ"] | false;
-    ev.jDay         = in["jD"] | 0;
-
-    // Robust Adar handling: "אדר א׳" → 6, "אדר ב׳" → 13, "אדר" → 6 (Standard)
-    int m = JewishDateEngine::getMonthFromName(in["jMonth"] | "תשרי");
-    bool adar2 = in["isAdarII"] | false;
-    ev.jMonth = (m == 6 && adar2) ? 13 : m;
-
-    ev.jYear = in["jYNum"].is<int>() ? in["jYNum"].as<int>() : (in["jY"] | 0);
-    strncpy(ev.type,         normalizeEventType(in["type"] | "birthday").c_str(), sizeof(ev.type) - 1);
-    strncpy(ev.icon,         in["icon"]         | "",         sizeof(ev.icon) - 1);
-    if (!ev.icon[0]) strncpy(ev.icon, defaultIconForType(ev.type), sizeof(ev.icon) - 1);
-    const char* image = in["image"] | "";   // a picture from the library (POST /api/images), or none
-    if (ImageLibrary::isValidId(image)) strlcpy(ev.image, image, sizeof(ev.image));
-    ev.warningDays = clampTo(EVENT_WARN_DAYS_RANGE, in["warn"] | 0);   // Config.h LIMITS
+    PersonalEvent ev;
+    Storage::eventFromJson(in, ev, Storage::EventJson::Page);   // its texts were checked first (Storage::eventProblems)
+    ev.id[0] = '\0';   // the callers decide the id
     return ev;
 }
 
@@ -476,16 +490,6 @@ static void autoFillMissingCalendarSide(PersonalEvent& ev)
     }
 }
 
-// An event's year outside its LIMITS (Config.h): what to say, "" = fine.
-static String eventYearProblem(const PersonalEvent& ev)
-{
-    if (ev.hasGregorian && ev.gYear > 0 && !inRange(EVENT_GREG_YEAR_RANGE, ev.gYear))
-        return "Gregorian year " + String(ev.gYear) + " - a year from " + EVENT_GREG_YEAR_RANGE.lo + " to " + EVENT_GREG_YEAR_RANGE.hi + ", please";
-    if (ev.hasJewish && ev.jYear > 0 && !inRange(EVENT_HEB_YEAR_RANGE, ev.jYear))
-        return "Hebrew year " + String(ev.jYear) + " - a year from " + EVENT_HEB_YEAR_RANGE.lo + " to " + EVENT_HEB_YEAR_RANGE.hi + ", please";
-    return "";
-}
-
 static bool validateHebrewGregorianCombination(PersonalEvent &ev, String &err)
 {
     if (!ev.hasGregorian || !ev.hasJewish) return true;
@@ -511,8 +515,8 @@ static bool validateHebrewGregorianCombination(PersonalEvent &ev, String &err)
             if (x.month == ev.jMonth && x.day == ev.jDay) return matched(as);
         }
         HebrewDate x = JewishDateEngine::calculateHebrew(g);
-        err = "Date mismatch: " + gTyped + (ev.afterSunset ? " after sunset" : "") + " is " +
-              JewishDateEngine::formatHebrewDate(x, true) + ", but the Hebrew date says " + hTyped + ".";
+        err = Texts::fill(Texts::dateMismatchG, gTyped + (ev.afterSunset ? Texts::afterSunset : ""),
+                          JewishDateEngine::formatHebrewDate(x, true), hTyped);
         return false;
     }
     if (ev.jYear > 0 && ev.gYear <= 0) {
@@ -522,8 +526,7 @@ static bool validateHebrewGregorianCombination(PersonalEvent &ev, String &err)
                 HebrewDate back = JewishDateEngine::calculateHebrew({ y, ev.gMonth, ev.gDay, as });
                 if (back.year == ev.jYear && back.month == ev.jMonth && back.day == ev.jDay) return matched(as);
             }
-        err = "Date mismatch: " + hTyped + " is " + String(x.day) + "/" + String(x.month) + "/" + String(x.year) +
-              " (after sunset: the evening before), but the Gregorian date says " + gTyped + ".";
+        err = Texts::fill(Texts::dateMismatchH, hTyped, String(x.day) + "/" + String(x.month) + "/" + String(x.year), gTyped);
         return false;
     }
 
@@ -542,14 +545,35 @@ static bool validateHebrewGregorianCombination(PersonalEvent &ev, String &err)
         if (ev.gYear <= 0 && ev.jYear <= 0) {
             // No year: the 19-year check found no year where the two meet
             // (e.g. January and Nisan).
-            err = "Date mismatch: " + gTyped + " and " + hTyped + " never fall on the same day, in any year.";
+            err = Texts::fill(Texts::dateNeverMeet, gTyped, hTyped);
             return false;
         }
         HebrewDate expected = JewishDateEngine::calculateHebrew(g);
-        err = "Date mismatch: " + gTyped + (ev.afterSunset ? " after sunset" : "") + " is " +
-              JewishDateEngine::formatHebrewDate(expected, true) + ", but the Hebrew date says " + hTyped + ".";
+        err = Texts::fill(Texts::dateMismatchG, gTyped + (ev.afterSunset ? Texts::afterSunset : ""),
+                          JewishDateEngine::formatHebrewDate(expected, true), hTyped);
         return false;
     }
+    return true;
+}
+
+// Room on the flash for `path` to be saved again, checked when asked (the user, 2026-11-18: check
+// first, then save - "storage full" instead of "Saved"): its size in 4 KB blocks plus one spare
+// (the save writes a whole temp copy first - FileTools.h). True = refused, the answer sent. The
+// save itself may come seconds later (settings are written in a batch, on a still screen); the
+// pictures' reserve and the log's cap leave nothing else that fills the flash meanwhile.
+static bool refusedForRoom(AsyncWebServerRequest* req, const char* path, const char* path2 = nullptr) {
+    size_t need = 0;
+    for (const char* p : { path, path2 }) {
+        if (!p) continue;
+        size_t now = 0;
+        File f = LittleFS.open(p, "r");
+        if (f) { now = f.size(); f.close(); }
+        need += ((now + 4095) / 4096 + 1) * 4096;
+    }
+    size_t free = Storage::freeBytes();
+    if (free >= need) return false;
+    DiagnosticLog::record("Storage", "a save refused before it began: %u bytes needed, %u free", (unsigned)need, (unsigned)free);
+    req->send(507, "text/plain", Texts::storageFull);
     return true;
 }
 
@@ -595,7 +619,7 @@ static const char* CUSTOM_UPLOAD_TMP = "/upload_custom.tmp";
 // A name of one of the clock's own pictures ("Candles" for /IMG/Candles.bmp).
 static bool isBuiltinName(const String& name) {
     if (!name.length() || name.length() > 32) return false;
-    for (size_t i = 0; i < name.length(); i++) if (!isalnum((unsigned char)name[i])) return false;
+    for (size_t i = 0; i < name.length(); i++) if (!StringTools::asciiAlnum(name[i])) return false;
     String path = String("/IMG/") + name + ".bmp";
     DisplayManager::ImageFile inMemory;   // asked first: no flash read (see imageResponse())
     return DisplayManager::imageFile(path.c_str(), inMemory) || LittleFS.exists(path);
@@ -696,7 +720,8 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
 
         if (!NTPManager::isSynced() && Calendar::getToday().hYear == 0) {
             String loadingHtml = "<html><head><meta http-equiv='refresh' content='3'></head><body style='background:#000;color:#fff;text-align:center;padding-top:100px;font-family:sans-serif;'>";
-            loadingHtml += "<h1>" + StringTools::formatProjectName(g_cfg->projectName) + " is initializing...</h1><p>Synchronizing time and calendar data. Please wait.</p></body></html>";
+            loadingHtml += "<h1>" + Texts::fill(Texts::initializing, StringTools::formatProjectName(g_cfg->projectName)) + "</h1><p>" +
+                           Texts::initializingWait + "</p></body></html>";
             req->send(200, "text/html", loadingHtml);
             return;
         }
@@ -767,7 +792,30 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         doc["projectNameText"] = StringTools::formatProjectName(g_cfg->projectName);
         // The clock's own Wi-Fi's name (WiFiManager: the AP is named projectName)
         // - the pages tell the user to choose it again after a restart.
-        doc["apSsid"] = g_cfg->projectName;
+        doc["apSsid"] = WiFiManager::ownWifiName();   // what the radio broadcasts now - not the setting (2026-11-20: it said the
+                                                      // clock's name while the radio still said "...-Setup")
+        doc["ntpRoundTripMs"] = NTPManager::lastRoundTripMs();   // the clock's time is right within half of it
+        doc["ntpServer"] = NTPManager::currentServer();   // the time server asked last
+        {   // time servers "not recommended" (failed with the internet there), shown beside each in Settings
+            NTPManager::TroubleInfo tr[NTP_SERVER_SLOTS];
+            int n = NTPManager::troubleList(tr, NTP_SERVER_SLOTS);
+            JsonArray a = doc["ntpTrouble"].to<JsonArray>();
+            for (int i = 0; i < n; i++) {
+                JsonObject o = a.add<JsonObject>();
+                o["server"] = tr[i].server;
+                o["why"] = tr[i].why;
+                o["since"] = tr[i].sinceUnix;   // UTC s, 0 = before the first sync
+                o["refused"] = tr[i].refused;
+                o["goodDays"] = tr[i].goodDays;
+                o["needDays"] = tr[i].needDays;
+            }
+        }
+        // Did THIS request come over the clock's own Wi-Fi (it arrived at the
+        // AP's address)? Only then does a restart take the page's phone or
+        // computer off its network - the pages say "choose it again" only then
+        // (2026-11-09).
+        const IPAddress apIp = WiFi.softAPIP();
+        doc["viaAp"] = apIp != IPAddress(0, 0, 0, 0) && req->client()->localIP() == apIp;
 
         // Today's Hebrew date as the CLOCK sees it (sunset/tzeit rollover
         // applied) - the page's Hebrew-view "today" highlight uses this
@@ -788,14 +836,14 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         doc["tzOffset"]   = StringTools::formatOffsetHours(utcOffsetSec);
         doc["tzRule"]     = g_cfg->tzPOSIX;
 
-        doc["msSinceMdnsAlive"] = millis() - g_lastMdnsAliveAt;
-        doc["msSinceTier2"] = millis() - g_lastTier2At;
+        doc["msSinceMdnsAlive"] = Uptime::ms() - g_lastMdnsAliveAt;
+        doc["msSinceTier2"] = Uptime::ms() - g_lastTier2At;
 
         // ── Read-only diagnostic fields (networking-reliability investigation) ──
         doc["freeHeap"]        = ESP.getFreeHeap();
         doc["maxAllocHeap"]    = ESP.getMaxAllocHeap();
         doc["minFreeHeapEver"] = ESP.getMinFreeHeap();
-        doc["uptimeMs"]        = millis();
+        doc["uptimeMs"]        = Uptime::ms();   // 64-bit (Uptime.h)
         doc["wifiDisconnects"] = WiFiManager::getDisconnectCount();
         doc["wifiReconnects"]  = WiFiManager::getReconnectCount();
         doc["apRebuilds"]      = WiFiManager::getApRebuildCount();
@@ -826,9 +874,39 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         doc["displayBlitUs"]        = DisplayManager::getLastBlitUs();
         doc["displayHitches"]       = DisplayManager::getHitches(false);
         doc["displayBigHitches"]    = DisplayManager::getHitches(true);
-        doc["screenStill"]          = DisplayManager::goodMomentToWrite(millis());   // a flash write now would be unseen
+        // The least free stack each task has had since boot, in bytes (2026-11-14):
+        // the web server's task has 8 KB (pioarduino.ini) and runs imports, Excel,
+        // JSON - an overflow reboots the clock. Read it on the real clock; the
+        // simulator can't measure it (no keys there).
+        {
+            JsonObject st = doc["stackFreeMin"].to<JsonObject>();
+            auto put = [&st](const char* key, TaskHandle_t t) { UBaseType_t n = uxTaskGetStackHighWaterMark(t); if (n) st[key] = n; };
+            put("web", nullptr);   // this handler's own task (async_tcp)
+            if (TaskHandle_t t = xTaskGetHandle("loopTask")) put("loop", t);
+            if (TaskHandle_t t = xTaskGetHandle("calFetch")) put("calFetch", t);
+        }
+        doc["screenStill"]          = DisplayManager::goodMomentToWrite(Uptime::ms());   // a flash write now would be unseen
         doc["tePeriodUs"]           = DisplayManager::getTePeriodUs();   // 0 = no TE: frames not timed
         doc["updateState"]          = Updater::stateName();   // "trial" | "installing" | "ok" - see Updater.h
+        doc["updateFailed"]         = Updater::failedUpdate();   // "" or the version that went back by itself
+        doc["updateKeyId"]          = UpdateKeyState::id();       // "" = none: no update is installed until one is pasted
+        {   // new versions from the internet (OnlineUpdate.h)
+            OnlineUpdate::Status u = OnlineUpdate::status();
+            JsonObject o = doc["online"].to<JsonObject>();
+            o["state"] = u.state.length() ? u.state : String("idle");
+            o["available"] = u.available; o["lastCheck"] = u.lastCheck; o["message"] = u.message;
+            // The feed not there since (local date) - Settings' problems box shows it at once
+            long since = OnlineUpdate::feedMissingSince();
+            if (since > 0) {
+                time_t t = (time_t)since * 86400;
+                struct tm tm;
+                gmtime_r(&t, &tm);
+                char b[12];
+                snprintf(b, sizeof(b), "%04d-%02d-%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+                o["feedMissingSince"] = b;
+                o["feedMissingSeen"] = OnlineUpdate::feedMissingSeen();
+            }
+        }
         doc["jsonResponsesSent"]    = WebUI::getJsonResponsesSent();
         {
             DiagnosticLog::WriteStats ls = DiagnosticLog::writeStats();
@@ -848,8 +926,8 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
 
         doc["hebrewDate"] = Calendar::formatUserHebrewDate(Calendar::getTodaySummary());
 
-        static unsigned long lastStatusLog = 0;
-        if (millis() - lastStatusLog > STATUS_LOG_INTERVAL_MS) {
+        static int64_t lastStatusLog = 0;
+        if (Uptime::ms() - lastStatusLog > STATUS_LOG_INTERVAL_MS) {
             const char* ssid   = doc["ssid"].as<const char*>();
             const char* offset = doc["tzOffset"].as<const char*>();
             const char* hdate  = doc["hebrewDate"].as<const char*>();
@@ -858,7 +936,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
                       doc["synced"].as<bool>() ? "YES" : "NO",
                       offset ? offset : "0",
                       hdate ? hdate : "?");
-            lastStatusLog = millis();
+            lastStatusLog = Uptime::ms();
         }
 
         sendJson(req, doc); }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
@@ -870,7 +948,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         String body;
         if (!getBody(req, body)) { req->send(400, "text/plain", "Missing body"); return; }
         JsonDocument doc;
-        if (deserializeJson(doc, body)) { req->send(400, "text/plain", "Invalid JSON"); return; }
+        if (deserializeJson(doc, body)) { req->send(400, "text/plain", Texts::invalidJson); return; }
         const char* from = doc["from"] | "g";
 
         int y = doc["y"] | 0;
@@ -882,6 +960,15 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
             if ((doc["isAdarII"] | false) || strcmp(doc["month"] | "", "אדר ב׳") == 0) m = 13;
         } else {
             m = doc["m"] | 0;
+        }
+        // Only a real date in a year the clock can convert (DateRules.h; 2026-11-14:
+        // anything went straight into the date arithmetic - month 40 read past its tables).
+        {
+            bool heb = strcmp(from, "g") != 0;   // as computed below: anything but "g" is read as Hebrew
+            static constexpr IntRange YEARS = { 1, 9999 };   // the arithmetic's own bounds, not an event's LIMITS
+            String why = !inRange(YEARS, y) ? Texts::fill(Texts::yearFrom, String(YEARS.lo), String(YEARS.hi))
+                       : heb ? DateRules::hebrewProblem(y, m, d) : DateRules::gregorianProblem(y, m, d);
+            if (why.length()) { req->send(400, "text/plain", Texts::fill(Texts::notADate, why)); return; }
         }
 
         JsonDocument resp;
@@ -914,6 +1001,18 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
 
         doc["projectName"]     = g_cfg->projectName;
         doc["projectNameText"] = StringTools::formatProjectName(g_cfg->projectName);
+        // This clock's own Wi-Fi password, when it made its own (Config.h
+        // AP_PASSWORD_DEFAULT ""): Settings shows it. A fixed one isn't sent.
+        doc["apPassword"] = WiFiManager::apPassword();   // shown in Settings, over either network (the user, 2026-11-14)
+        // Texts too long in the clock's own files (older version, edited by
+        // hand): the page lists them and marks the fields (Storage.h).
+        doc["textNotesSeen"] = Storage::textNotesSeen();   // "OK, seen" given: off the clock's screen
+        JsonArray notes = doc["textNotes"].to<JsonArray>();
+        for (const Storage::TextNote& n : Storage::textNotes()) {
+            JsonObject o = notes.add<JsonObject>();
+            o["key"] = n.key;
+            o["text"] = n.text;
+        }
 
         for (int i = 0; i < WIFI_NETWORKS; i++) {   // "wifiSSID", "wifiSSID2", ...
             doc[wifiConfigKey("wifiSSID", i)]     = wifiSsidAt(*g_cfg, i);
@@ -940,6 +1039,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         }
 
         doc["use24Hour"]      = g_cfg->use24Hour;
+        doc["autoUpdate"]     = g_cfg->autoUpdate;
         doc["ntpServerCount"] = g_cfg->ntpServerCount;
         JsonArray ntp = doc["ntpServers"].to<JsonArray>();
         for (int i = 0; i < g_cfg->ntpServerCount; i++)
@@ -997,15 +1097,53 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
 
     g_server->on("/api/config", HTTP_POST, [](AsyncWebServerRequest *req)
                  {
+        if (refusedForRoom(req, FS_CONFIG_PATH)) return;   // room first (refusedForRoom())
         String body;
         if (!getBody(req, body)) { req->send(400, "text/plain", "Missing body"); return; }
 
         JsonDocument doc;
-        if (deserializeJson(doc, body)) { req->send(400, "text/plain", "Invalid JSON"); return; }
+        if (deserializeJson(doc, body)) { req->send(400, "text/plain", Texts::invalidJson); return; }
 
+        // Time servers first: a wrong list refuses the whole change, nothing applied
+        // (the page shows the reason beside the box). Whether a server answers is the
+        // page's check before it sends (/api/ntp/test); already saved ones may stay.
+        bool ntpChanged = false;
+        if (doc["ntpServers"].is<JsonArrayConst>()) {
+            AppConfig probe = *g_cfg;
+            String why = Storage::readNtpServers(doc["ntpServers"].as<JsonArrayConst>(), probe);
+            if (why.length()) { req->send(400, "text/plain", Texts::fill(Texts::notSaved, why)); return; }
+            ntpChanged = memcmp(probe.ntpServers, g_cfg->ntpServers, sizeof(probe.ntpServers)) != 0;
+            memcpy(g_cfg->ntpServers, probe.ntpServers, sizeof(probe.ntpServers));
+            g_cfg->ntpServerCount = NTP_SERVER_SLOTS;
+        }
+        if (ntpChanged) {
+            const char* ntp[NTP_SERVER_SLOTS];
+            for (int i = 0; i < NTP_SERVER_SLOTS; i++) ntp[i] = g_cfg->ntpServers[i];
+            NTPManager::setServers(ntp, NTP_SERVER_SLOTS);   // takes NTPLock
+        }
+
+        // Texts too long (Config.h LIMITS): refused, nothing applied - never cut.
+        {
+            String why = Storage::checkTexts(doc.as<JsonObjectConst>(), *g_cfg);
+            if (why.length()) { req->send(400, "text/plain", Texts::fill(Texts::notSaved, why)); return; }
+            // A note goes when its text is saved within its limit (a long one kept
+            // from before and sent back unchanged keeps its note).
+            auto stillLong = Storage::configTextProblems(doc.as<JsonObjectConst>(), nullptr, Storage::TextMode::Change);
+            for (JsonPairConst kv : doc.as<JsonObjectConst>()) {
+                bool longNow = false;
+                for (const auto& n : stillLong) longNow |= n.key == kv.key().c_str();
+                if (!longNow) Storage::clearTextNote(kv.key().c_str());
+            }
+        }
+
+        // A new name is the name of its own Wi-Fi and .local too - the radio takes it only when it
+        // starts, so a rename restarts the clock (below; found by the clock_name chain 2026-11-15:
+        // the radio kept the old name while Settings and the screen said the new one).
+        bool renamed = false;
         if (doc["projectName"]) {
             String norm = StringTools::normalize(doc["projectName"] | "");
-            strlcpy(g_cfg->projectName, norm.c_str(), sizeof(g_cfg->projectName));
+            renamed = norm != g_cfg->projectName;
+            StringTools::utf8Copy(g_cfg->projectName, norm.c_str());
         }
 
         // Known networks: a name ("" = remove that network) and/or a password
@@ -1023,23 +1161,23 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
                     if (!newPwd) wifiPasswordAt(*g_cfg, i)[0] = '\0';
                     Location::forgetPlace(i);   // another network: its place is unknown
                 }
-                strlcpy(wifiSsidAt(*g_cfg, i), s, sizeof(g_cfg->wifiSSID));
+                StringTools::utf8Cut(wifiSsidAt(*g_cfg, i), sizeof(g_cfg->wifiSSID), s, sizeof(g_cfg->wifiSSID) - 1);
             }
-            if (newPwd) strlcpy(wifiPasswordAt(*g_cfg, i), pwd, sizeof(g_cfg->wifiPassword));
+            if (newPwd) StringTools::utf8Cut(wifiPasswordAt(*g_cfg, i), sizeof(g_cfg->wifiPassword), pwd, sizeof(g_cfg->wifiPassword) - 1);
         }
 
         // (The place isn't set here - it follows the network: /api/location/place.)
         if (doc["rolloverMode"].is<int>()) g_cfg->rolloverMode = static_cast<RolloverMode>(doc["rolloverMode"].as<int>());
 
         if (doc["use24Hour"].is<bool>()) g_cfg->use24Hour = doc["use24Hour"];
-        JsonArray ntp = doc["ntpServers"].as<JsonArray>();
-        if (ntp) {
-            g_cfg->ntpServerCount = min((int)ntp.size(), 4);
-            for (int i = 0; i < g_cfg->ntpServerCount; i++)
-                strlcpy(g_cfg->ntpServers[i], ntp[i] | "", sizeof(g_cfg->ntpServers[i]));
+        if (doc["autoUpdate"].is<bool>()) g_cfg->autoUpdate = doc["autoUpdate"];
+        if (doc["updateFeed"].is<const char*>()) {   // tests; not on the page - in use at once (a Check right after used the old one)
+            StringTools::utf8Copy(g_cfg->updateFeed, doc["updateFeed"].as<const char*>());
+            OnlineUpdate::useFeed(g_cfg->updateFeed);
         }
+        // (ntpServers: at the top)
 
-        if (doc["language"])              strlcpy(g_cfg->language, doc["language"] | "en", 4);
+        if (doc["language"])              StringTools::utf8Copy(g_cfg->language, doc["language"] | "en");
         if (doc["debugTimeOffset"].is<int64_t>()) {
             g_cfg->debugTimeOffset = doc["debugTimeOffset"];
             // Apply the offset immediately without a full re-init.
@@ -1047,7 +1185,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         }
         if (doc["rotationMode"].is<int>()) g_cfg->rotationMode = static_cast<RotationMode>(doc["rotationMode"].as<int>());
         if (doc["messageDwellSec"].is<int>()) g_cfg->messageDwellSec = doc["messageDwellSec"];
-        if (doc["separator"].is<const char*>()) strlcpy(g_cfg->messageSeparator, doc["separator"], 16);
+        if (doc["separator"].is<const char*>()) StringTools::utf8Copy(g_cfg->messageSeparator, doc["separator"]);
         if (doc["scrollSpeed"].is<int>()) g_cfg->scrollSpeed = doc["scrollSpeed"];
         if (doc["fontCharGapPx"].is<int>()) g_cfg->fontCharGapPx = doc["fontCharGapPx"];
         if (doc["fontWordGapPx"].is<int>()) g_cfg->fontWordGapPx = doc["fontWordGapPx"];
@@ -1083,24 +1221,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         if (doc["eventDayChange"].is<int>())       g_cfg->eventDayChange        = doc["eventDayChange"].as<int>() == 1 ? EventDayChange::Midnight : EventDayChange::WithHebrewDay;
         Storage::readShowWindows(doc.as<JsonVariantConst>(), *g_cfg);
 
-        if (doc["contentOrder"].is<JsonArray>()) {
-            JsonArray orderArr = doc["contentOrder"];
-            int i = 0;
-            for (JsonVariant v : orderArr) {
-                if (i >= (int)ContentType::COUNT) break;
-                const char* key = v.as<const char*>();
-                for (int t = 0; t < (int)ContentType::COUNT; t++) {
-                    if (key && strcmp(key, CONTENT_TYPE_KEYS[t]) == 0) { g_cfg->contentOrder[i] = (uint8_t)t; break; }
-                }
-                i++;
-            }
-        }
-        if (doc["contentFrequency"].is<JsonObject>()) {
-            JsonObject freqObj = doc["contentFrequency"];
-            for (int t = 0; t < (int)ContentType::COUNT; t++) {
-                if (freqObj[CONTENT_TYPE_KEYS[t]].is<int>()) g_cfg->contentFrequency[t] = freqObj[CONTENT_TYPE_KEYS[t]].as<int>();
-            }
-        }
+        Storage::readContent(doc.as<JsonVariantConst>(), *g_cfg);
 
         if (doc["pwdEnabled"].is<bool>()) g_cfg->webPasswordEnabled = doc["pwdEnabled"];
         // Whatever was sent: the clock runs only on values inside its LIMITS (Config.h)
@@ -1110,23 +1231,32 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         // with the new settings (e.g., switching rotation mode).
 
         // Written to flash after a short quiet period, not on every change -
-        // see markConfigChanged(). Some settings (TZ, NTP server) still only
-        // take full effect after a restart.
+        // see markConfigChanged(). Time servers are in use at once (setServers above).
         markConfigChanged(doc.as<JsonObjectConst>());
 
         // Apply any display changes immediately
         DisplayManager::setWindow(g_cfg->calibX, g_cfg->calibY, g_cfg->calibW, g_cfg->calibH);
         DisplayManager::setTearUs(g_cfg->calibTearUs);
 
+        if (renamed) {   // saved now, then the restart: its own Wi-Fi and .local come back with the new name
+            Storage::saveConfig(*g_cfg);
+            DiagnosticLog::record("WIFI", "the clock renamed to \"%s\" in Settings - restarting with it", g_cfg->projectName);
+            AsyncWebServerResponse* r = req->beginResponse(200, "text/plain", Texts::savedRestarting);
+            r->addHeader("X-Clock-Restarts", "1");   // the page acts on this, never on the words
+            req->send(r);
+            scheduleRestart(RESTART_AFTER_REPLY_MS);
+            return;
+        }
         req->send(200, "text/plain", "Saved"); }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
 
     // ── /api/debug/time (POST) ────────────────────────────────────────────────
 
     g_server->on("/api/debug/time", HTTP_POST, [](AsyncWebServerRequest *req) {
+        if (refusedForRoom(req, FS_CONFIG_PATH)) return;   // room first (refusedForRoom())
         String body;
         if (!getBody(req, body)) { req->send(400, "text/plain", "Missing body"); return; }
         JsonDocument doc;
-        if (deserializeJson(doc, body)) { req->send(400, "text/plain", "Invalid JSON"); return; }
+        if (deserializeJson(doc, body)) { req->send(400, "text/plain", Texts::invalidJson); return; }
 
         // The offset is "wanted time minus the clock's own time" - meaningless
         // before the first NTP sync (the clock still counts from 1970): taken
@@ -1142,14 +1272,19 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         int Y, M, D, h, mi;
         if (doc["offset"].is<int64_t>()) {
             offset = doc["offset"].as<int64_t>();
-        } else if (doc["local"].is<const char*>() && sscanf(doc["local"].as<const char*>(), "%d-%d-%dT%d:%d", &Y, &M, &D, &h, &mi) == 5) {
+        } else if (doc["local"].is<const char*>()) {
+            int sec;
+            if (!DateRules::parseIsoDateTime(doc["local"].as<const char*>(), Y, M, D, h, mi, sec)) {   // 31 Feb: not 3 Mar
+                req->send(400, "text/plain", Texts::fill(Texts::notDateTime, String(doc["local"].as<const char*>())));
+                return;
+            }
             struct tm t = {};
             t.tm_year = Y - 1900; t.tm_mon = M - 1; t.tm_mday = D; t.tm_hour = h; t.tm_min = mi; t.tm_isdst = -1;
             offset = (int64_t)mktime(&t) - realNow;   // mktime: the clock's time zone (TZ, set by NTPManager)
         } else if (doc["timestamp"].is<int64_t>()) {
             offset = doc["timestamp"].as<int64_t>() - realNow;
         } else {
-            req->send(400, "text/plain", "Expected offset, local or timestamp");
+            req->send(400, "text/plain", Texts::debugTimeExpected);
             return;
         }
         // Only dates the clock was checked at (DEBUG_TIME_YEAR_RANGE): a year
@@ -1157,7 +1292,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         constexpr int64_t DEBUG_TIME_MIN = daysFromCivil(DEBUG_TIME_YEAR_RANGE.lo, 1, 1) * 86400;
         constexpr int64_t DEBUG_TIME_MAX = daysFromCivil(DEBUG_TIME_YEAR_RANGE.hi + 1, 1, 1) * 86400;
         if (realNow + offset < DEBUG_TIME_MIN || realNow + offset >= DEBUG_TIME_MAX) {
-            req->send(400, "text/plain", String("Choose a date between the years ") + DEBUG_TIME_YEAR_RANGE.lo + " and " + DEBUG_TIME_YEAR_RANGE.hi);
+            req->send(400, "text/plain", Texts::fill(Texts::debugYears, String(DEBUG_TIME_YEAR_RANGE.lo), String(DEBUG_TIME_YEAR_RANGE.hi)));
             return;
         }
         g_cfg->debugTimeOffset = offset;
@@ -1224,11 +1359,14 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         static const char* HEX_DIGITS = "0123456789ABCDEF";
         for (size_t i = 0; i < text.length(); i++) {
             uint8_t ch = (uint8_t)text[i];
-            if (isalnum(ch) || ch == '-' || ch == '_' || ch == '.' || ch == '~') enc += (char)ch;
+            if (StringTools::asciiAlnum((char)ch) || ch == '-' || ch == '_' || ch == '.' || ch == '~') enc += (char)ch;
             else { enc += '%'; enc += HEX_DIGITS[ch >> 4]; enc += HEX_DIGITS[ch & 15]; }
         }
         res->addHeader("X-Screen-Text", enc);
         res->addHeader("X-Scroll-X", String(scrollX));
+        // Scrolling or an animation now: the calibration view asks for the next
+        // picture sooner (index.html MIRROR_*_MS).
+        res->addHeader("X-Screen-Moving", DisplayManager::screenMoving() ? "1" : "0");
         req->send(res);
     }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
 
@@ -1256,7 +1394,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
             o["atMs"] = slow[i].atMs; o["op"] = NAMES[slow[i].op]; o["us"] = slow[i].us;
             o["bytes"] = slow[i].bytes; o["task"] = slow[i].task;
         }
-        doc["uptimeMs"] = millis();
+        doc["uptimeMs"] = Uptime::ms();   // 64-bit, as /api/status
         sendJson(req, doc);
     }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
 
@@ -1291,19 +1429,22 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
     // chosen in the page for network `slot` (1-based in the page, 0-based here).
     g_server->on("/api/location/place", HTTP_POST, [](AsyncWebServerRequest *req)
                  {
+        if (refusedForRoom(req, FS_CONFIG_PATH)) return;   // room first (refusedForRoom())
         String body;
         if (!getBody(req, body)) { req->send(400, "text/plain", "Missing body"); return; }
         JsonDocument doc;
-        if (deserializeJson(doc, body)) { req->send(400, "text/plain", "Invalid JSON"); return; }
+        if (deserializeJson(doc, body)) { req->send(400, "text/plain", Texts::invalidJson); return; }
         Place p = {};
-        strlcpy(p.city,    doc["city"]    | "", sizeof(p.city));
-        strlcpy(p.country, doc["country"] | "", sizeof(p.country));
-        strlcpy(p.tzid,    doc["tzid"]    | "", sizeof(p.tzid));
+        StringTools::utf8Copy(p.city,    doc["city"]    | "");
+        StringTools::utf8Copy(p.country, doc["country"] | "");
+        StringTools::utf8Copy(p.tzid,    doc["tzid"]    | "");
         p.lat = doc["lat"] | 999.0f;
         p.lon = doc["lon"] | 999.0f;
         p.offsetSec = doc["offsetSec"] | 0;
         String error;
         if (!Location::queuePlace(doc["slot"] | -1, p, error)) { req->send(400, "text/plain", error); return; }
+        Storage::clearTextNotes("places." + String((doc["slot"] | -1) + 1));
+        for (const char* k : {"city", "country", "tzid", "tzPOSIX"}) Storage::clearTextNote(k);
         req->send(200, "text/plain", "Saved"); }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
 
     // search (POST {q}) / search-result (GET): a place by name, looked up by
@@ -1313,7 +1454,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         String body;
         if (!getBody(req, body)) { req->send(400, "text/plain", "Missing body"); return; }
         JsonDocument doc;
-        if (deserializeJson(doc, body)) { req->send(400, "text/plain", "Invalid JSON"); return; }
+        if (deserializeJson(doc, body)) { req->send(400, "text/plain", Texts::invalidJson); return; }
         String q = doc["q"] | "";
         q.trim();
         if (q.length() < 2 || q.length() > 60) { req->send(400, "text/plain", "Type at least 2 letters"); return; }
@@ -1358,13 +1499,15 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
     // ── /api/calendar (GET) ───────────────────────────────────────────────────
     // No UI client calls this anymore (2026-10-08 - was the status-popup's
     // Hebrew date/parasha/holiday fields, removed with the popup). Kept as a
-    // standalone, curl-able diagnostic endpoint - may be useful again for
-    // debugging or a future feature.
+    // standalone, curl-able diagnostic endpoint - and the tests' view of the
+    // clock's day ("gregorianDate": which day this is, 2026-11-20 - right after
+    // a date change it was the old day's for a moment, unsaid).
 
     g_server->on("/api/calendar", HTTP_GET, [](AsyncWebServerRequest *req)
                  {
         JsonDocument doc;
         const DayInfo& today = Calendar::getToday();
+        doc["gregorianDate"] = today.gregorianDate;   // the day these are for (YYYY-MM-DD)
         doc["hebrewDate"]   = Calendar::formatUserHebrewDate(today.hebrewDateStr);
         doc["parasha"]      = today.parashaHebrew;
         doc["holiday"]      = today.holidayHebrew;
@@ -1407,7 +1550,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         String body;
         if (!getBody(req, body)) { req->send(400, "text/plain", "Missing body"); return; }
         JsonDocument doc;
-        if (deserializeJson(doc, body)) { req->send(400, "text/plain", "Invalid JSON"); return; }
+        if (deserializeJson(doc, body)) { req->send(400, "text/plain", Texts::invalidJson); return; }
         if (doc["frozen"].is<bool>()) DisplayManager::setFrozen(doc["frozen"].as<bool>());
         req->send(200, "text/plain", "Applied (until restart)");
     }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
@@ -1423,6 +1566,36 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         bool on = doc["on"];
         MessageAggregator::requestDemo(on);
         req->send(200, "text/plain", on ? "Demo started" : "Demo stopped");
+    }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
+
+    // ── /api/ntp/test: does a time server answer? (2026-11-13) ────────────────
+    // The page asks before saving a server the user typed (the user: junk must be
+    // refused at once, not saved). POST {"server": NAME} starts it on the main loop
+    // (NTPManager::testStart - its own lookup and port); GET polls:
+    // {"state": "running"|"answered"|"failed"|"none", "server", "detail"}.
+    g_server->on("/api/ntp/test", HTTP_POST, [](AsyncWebServerRequest *req) {
+        String body;
+        if (!getBody(req, body)) { req->send(400, "text/plain", "Missing body"); return; }
+        JsonDocument doc;
+        if (deserializeJson(doc, body)) { req->send(400, "text/plain", Texts::invalidJson); return; }
+        String s = doc["server"] | "";
+        s.trim();
+        if (!NTPManager::serverNameValid(s.c_str())) {
+            req->send(400, "text/plain", Texts::fill(Texts::ntpBadServerName, s, String(NTP_SERVER_MAX_CHARS)));
+            return;
+        }
+        NTPManager::testStart(s.c_str());
+        req->send(200, "text/plain", "Checking");
+    }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
+    g_server->on("/api/ntp/test", HTTP_GET, [](AsyncWebServerRequest *req) {
+        int st; String server, detail;
+        NTPManager::testResult(st, server, detail);
+        JsonDocument doc;
+        static const char* const NAMES[] = { "none", "running", "answered", "failed" };
+        doc["state"] = NAMES[st];
+        doc["server"] = server;
+        doc["detail"] = detail;
+        sendJson(req, doc);
     }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
 
     // ── /api/limits (GET) ─────────────────────────────────────────────────────
@@ -1444,6 +1617,26 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         doc["maxEvents"] = MAX_EVENTS;
         doc["maxDeletedEvents"] = MAX_DELETED_EVENTS;
         doc["wifiNetworks"] = WIFI_NETWORKS;
+        doc["iconMaxChars"] = EVENT_ICON_MAX_CHARS;
+        doc["ntpServerSlots"] = NTP_SERVER_SLOTS;
+        doc["ntpServerMaxChars"] = NTP_SERVER_MAX_CHARS;
+        // Texts, in bytes of UTF-8 (the page counts the same way: data-limit-bytes).
+        JsonObject tb = doc["textBytes"].to<JsonObject>();
+        tb["name"] = EVENT_NAME_MAX_BYTES;
+        tb["projectName"] = PROJECT_NAME_MAX_CHARS;
+        tb["wifiSSID"] = WIFI_SSID_MAX_BYTES;
+        tb["wifiPassword"] = WIFI_PASSWORD_MAX_CHARS;
+        tb["separator"] = SEPARATOR_MAX_BYTES;
+        // What a text already in the clock's files keeps when longer than its limit: as much as its
+        // field holds (Storage.cpp Checker, OnClock) - a size of its own, not the limit (2026-11-20, the
+        // numbers run: a test took one for the other).
+        JsonObject fb = doc["fieldBytes"].to<JsonObject>();
+        fb["name"] = (int)sizeof(PersonalEvent::name) - 1;
+        fb["separator"] = (int)sizeof(AppConfig::messageSeparator) - 1;
+        doc["apPasswordMinChars"] = AP_PASSWORD_MIN_CHARS;
+        doc["apPasswordMaxChars"] = AP_PASSWORD_MAX_CHARS;
+        doc["apOwnPasswordChars"] = AP_OWN_PASSWORD_CHARS;       // a password the clock makes itself
+        doc["apOwnPasswordLetters"] = AP_OWN_PASSWORD_LETTERS;
         JsonObject r = doc["ranges"].to<JsonObject>();
         auto put = [&r](const char* key, IntRange v) { JsonArray a = r[key].to<JsonArray>(); a.add(v.lo); a.add(v.hi); };
         for (const char* k : { "brightPct", "nightPct", "dayPct", "roomDarkPct", "roomLightPct" }) put(k, PERCENT_RANGE);
@@ -1459,11 +1652,32 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         put("debugYear", DEBUG_TIME_YEAR_RANGE);
         put("frameMs", PICTURE_FRAME_MS_RANGE);
         JsonArray types = doc["eventTypes"].to<JsonArray>();
-        for (const auto& et : EVENT_TYPES) { JsonObject o = types.add<JsonObject>(); o["type"] = et.type; o["icon"] = et.icon; }
+        size_t nTypes;
+        const Storage::EventType* et = Storage::eventTypes(nTypes);
+        for (size_t k = 0; k < nTypes; k++) { JsonObject o = types.add<JsonObject>(); o["type"] = et[k].type; o["icon"] = et[k].icon; }
         // The Hebrew months as the clock names them (1..12, then Adar II) - the
-        // page's calendar grid keeps its own list, checked against this one (ui_tests).
+        // page's calendar grid keeps its own list, checked against this one (sim/web_ui.py).
         JsonArray months = doc["hebrewMonths"].to<JsonArray>();
         for (int m = 1; m <= 13; m++) months.add(JewishDateEngine::getMonthName(m));
+        sendJson(req, doc);
+    }).setFilter(ON_ANY_INCL_SETUP_FILTER);
+
+    // ── /api/texts (GET) ──────────────────────────────────────────────────────
+    // Every system message the screen can show, by situation (Texts.h - the one
+    // list the screen code uses): tests ask, never copy (the user, 2026-11-20).
+    g_server->on("/api/texts", HTTP_GET, [](AsyncWebServerRequest *req) {
+        JsonDocument doc;
+        Texts::toJson(doc);
+        sendJson(req, doc);
+    }).setFilter(ON_ANY_INCL_SETUP_FILTER);
+
+    // ── /api/tunables (GET) ───────────────────────────────────────────────────
+    // The tunables a test or script depends on (Tunables.h: each file marks its
+    // own with TUNABLE_SHARED), by their code names - asked, never copied (the
+    // user, 2026-11-19). Read only; setup mode too, like /api/limits.
+    g_server->on("/api/tunables", HTTP_GET, [](AsyncWebServerRequest *req) {
+        JsonDocument doc;
+        Tunables::toJson(doc);
         sendJson(req, doc);
     }).setFilter(ON_ANY_INCL_SETUP_FILTER);
 
@@ -1474,6 +1688,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
     // wrong than the benefit is worth for a project this size.
 
     g_server->on("/api/debug/log-level", HTTP_POST, [](AsyncWebServerRequest *req) {
+        if (refusedForRoom(req, FS_CONFIG_PATH)) return;   // room first (refusedForRoom())
         // The Settings UI's apiPost() always wraps its payload as a single
         // JSON "body" param (see getBody()/the other /api/* POST handlers
         // above) - NOT individual top-level form fields. A plain
@@ -1509,7 +1724,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         // explicit persist=1 writes it into config.json, so it survives on
         // purpose, not by accident.
         if (persist) {
-            strlcpy(g_cfg->logLevel, Logging::levelName(Logging::getLevel()), sizeof(g_cfg->logLevel));
+            StringTools::utf8Copy(g_cfg->logLevel, Logging::levelName(Logging::getLevel()));
             g_cfg->logLevelUntil = hours > 0 ? (int64_t)time(nullptr) + (int64_t)hours * 3600 : 0;
             Storage::saveConfig(*g_cfg);
         }
@@ -1570,28 +1785,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         EventsLock::take();
         for (const auto& e : *g_events) {
             JsonObject ev = arr.add<JsonObject>();
-            ev["id"]          = e.id;
-            ev["name"]        = e.name;
-            ev["hasG"]        = e.hasGregorian;
-            ev["gD"]          = e.gDay;
-            ev["gM"]          = e.gMonth;
-            ev["gY"]          = e.gYear;
-            ev["afterSunset"] = e.afterSunset;
-            ev["hasJ"]        = e.hasJewish;
-            ev["jD"]          = e.jDay;
-            ev["jMonth"]      = (e.jMonth == 13) ? "אדר" : JewishDateEngine::getMonthName(e.jMonth);
-            ev["isAdarII"]    = (e.jMonth == 13);
-
-            int yVal = e.jYear;
-            ev["jYNum"] = yVal;
-            char yHeb[32];
-            if (yVal >= 5000) JewishDateEngine::yearToGematria(yVal, yHeb, sizeof(yHeb));
-            else              JewishDateEngine::numToGematria(yVal, yHeb, sizeof(yHeb));
-            ev["jY"]           = yHeb;
-            ev["icon"]         = e.icon;
-            ev["warn"]         = e.warningDays;
-            ev["type"]         = e.type[0]         ? e.type         : "birthday";
-            ev["image"]        = e.image;   // picture library id, "" = none
+            Storage::eventToJson(e, ev, Storage::EventJson::Page);
 
             // Hebrew-only events need a Gregorian equivalent for the UI's
             // age display (computeAge() in index.html only knows Gregorian
@@ -1605,7 +1799,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
             // WebUI::sendJson()), each one paid a fresh TCP handshake,
             // piling up behind Chrome's 6-connections-per-origin limit -
             // a HAR capture showed onLoad at ~2.58s, almost all of it this.
-            if (e.hasJewish && !e.hasGregorian && e.jYear > 0) {
+            if (e.hasJewish && !e.hasGregorian && e.jYear > 0 && e.jDay > 0) {
                 HebrewDate h = { e.jYear, e.jMonth, e.jDay };
                 GregorianDate g = JewishDateEngine::calculateGregorian(h);
                 ev["gAgeY"] = g.year;
@@ -1632,10 +1826,12 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
 
     g_server->on("/api/events/delete", HTTP_POST, [&](AsyncWebServerRequest *req)
                  {
+        if (refusedForRoom(req, FS_EVENTS_PATH, FS_DELETED_EVENTS_PATH)) return;   // room first (refusedForRoom())
         String id = req->hasParam("id", true) ? req->getParam("id", true)->value()
                   : req->hasParam("id")        ? req->getParam("id")->value()
                   : "";
         if (id.isEmpty()) { req->send(400, "text/plain", "Missing id"); return; }
+        Storage::clearTextNote("event:" + id);
 
         EventsLock::take();
         int idx = -1;
@@ -1644,7 +1840,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         }
         if (idx < 0) {
             EventsLock::give();
-            req->send(404, "text/plain", "Event not found");
+            req->send(404, "text/plain", Texts::eventNotFound);
             return;
         }
 
@@ -1659,11 +1855,17 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
             req->send(500, "text/plain", "Failed to save the recycle bin - nothing deleted");
             return;
         }
+        PersonalEvent gone = (*g_events)[idx];
         g_events->erase(g_events->begin() + idx);
         bool saved = Storage::saveEvents(*g_events);
+        if (!saved) {   // still in the file: back in the list, and out of the bin (2026-11-18, see the import)
+            g_events->insert(g_events->begin() + idx, gone);
+            bin.pop_back();
+            Storage::saveEvents(bin, FS_DELETED_EVENTS_PATH);
+        }
         EventsLock::give();
         if (!saved) {
-            req->send(500, "text/plain", "Failed to save events");
+            req->send(500, "text/plain", "Failed to save events - nothing deleted");
             return;
         }
         removeUnusedImages();
@@ -1679,6 +1881,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
     // id = one event's id, or several separated by commas (Restore selected /
     // Restore all): one save of each file for all of them.
     g_server->on("/api/events/restore", HTTP_POST, [](AsyncWebServerRequest *req) {
+        if (refusedForRoom(req, FS_EVENTS_PATH, FS_DELETED_EVENTS_PATH)) return;   // room first (refusedForRoom())
         String ids = req->hasParam("id", true) ? req->getParam("id", true)->value() : "";
         if (ids.isEmpty()) { req->send(400, "text/plain", "Missing id"); return; }
         EventsLock::take();
@@ -1701,7 +1904,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
             if ((int)g_events->size() >= MAX_EVENTS) { full = true; break; }
             PersonalEvent ev = bin[idx];
             for (const auto& e : *g_events) if (strcmp(e.id, ev.id) == 0) {   // its id taken meanwhile (an import)
-                strlcpy(ev.id, Storage::generateEventId(*g_events).c_str(), sizeof(ev.id));
+                StringTools::utf8Copy(ev.id, Storage::generateEventId(*g_events).c_str());
                 break;
             }
             g_events->push_back(ev);
@@ -1711,7 +1914,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         if (!restored) {
             EventsLock::give();
             if (full) req->send(507, "text/plain", "The event list is full");
-            else req->send(404, "text/plain", "Not in the recycle bin");
+            else req->send(404, "text/plain", Texts::notInBin);
             return;
         }
         bool saved = Storage::saveEvents(*g_events);
@@ -1725,8 +1928,8 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         EventsLock::give();
         if (!saved) { req->send(500, "text/plain", "Failed to save events"); return; }
         DiagnosticLog::record("Events", "restored %d event(s) from the recycle bin", restored);
-        req->send(200, "text/plain", full ? String("Restored ") + restored + " - the event list is full"
-                                          : String("Restored") + (restored > 1 ? String(" ") + restored + " events" : String("")));
+        req->send(200, "text/plain", full ? Texts::fill(Texts::restoredEvents, String(restored))
+                                          : restored > 1 ? Texts::fill(Texts::restoredCount, String(restored)) : String(Texts::restored));
     }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
 
     g_server->on("/api/events/empty-bin", HTTP_POST, [](AsyncWebServerRequest *req) {
@@ -1770,7 +1973,11 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
             }
             LittleFS.remove(IMAGE_UPLOAD_TMP);
             if (error.length()) { req->send(400, "text/plain", error); return; }
-            DisplayManager::isImageUsable(path.c_str());   // into memory now: the list and downloads come from there
+            // Into memory now: the list and downloads come from there. A "missing"
+            // the screen noted while the file was gone (the same picture removed and
+            // added again - an own icon after delete + import, 2026-11-10) goes first.
+            if (!DisplayManager::hasImage(path.c_str())) DisplayManager::forgetImage(path.c_str());
+            DisplayManager::isImageUsable(path.c_str());
             DiagnosticLog::record("Images", "picture %s %s (%dx%d, %d frame(s), %u bytes)", id.c_str(),
                                   existed ? "already there" : "added", info.width, info.height, info.frames, (unsigned)info.bytes);
             req->send(200, "application/json", "{\"id\":\"" + id + "\",\"existed\":" + (existed ? "true" : "false") + "}");
@@ -1805,7 +2012,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
             o["frames"] = im.frames; o["frameMs"] = im.frameMs; o["bytes"] = im.fileSize;
             int users = 0;
             EventsLock::take();
-            for (const auto& e : *g_events) if (id == e.image) users++;
+            for (const auto& e : *g_events) if (id == e.image || id == e.iconImage) users++;
             EventsLock::give();
             o["usedBy"] = users;
         }
@@ -1820,7 +2027,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
     g_server->on("/api/images/get", HTTP_GET, [](AsyncWebServerRequest *req) {
         String id = req->hasParam("id") ? req->getParam("id")->value() : "";
         AsyncWebServerResponse* res = ImageLibrary::isValidId(id.c_str()) ? imageResponse(req, imagePath(id.c_str())) : nullptr;
-        if (!res) { req->send(404, "text/plain", "No such picture"); return; }
+        if (!res) { req->send(404, "text/plain", Texts::noSuchPicture); return; }
         res->addHeader("Cache-Control", "max-age=31536000, immutable");   // an id is a content checksum: never changes
         req->send(res); }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
 
@@ -1861,7 +2068,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         bool custom = req->hasParam("which") && req->getParam("which")->value() == "custom";
         AsyncWebServerResponse* res = isBuiltinName(name)
             ? imageResponse(req, custom ? customImagePath(name.c_str()) : String("/IMG/") + name + ".bmp") : nullptr;
-        if (!res) { req->send(404, "text/plain", "No such picture"); return; }
+        if (!res) { req->send(404, "text/plain", Texts::noSuchPicture); return; }
         req->send(res); }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
 
     // upload (POST ?name=, one file): checked, then put in place of the
@@ -1899,10 +2106,10 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
                 s_customName = req->hasParam("name") ? req->getParam("name")->value() : "";
                 size_t size = req->contentLength();
                 size_t others = customImagesBytes(s_customName.c_str());
-                if (!isBuiltinName(s_customName)) s_customRefused = "No such picture";
+                if (!isBuiltinName(s_customName)) s_customRefused = Texts::noSuchPicture;
                 else if (others + size > CUSTOM_IMAGES_MAX_BYTES)
-                    s_customRefused = "Too big: replaced icons may use " + String(CUSTOM_IMAGES_MAX_BYTES / 1024) + " KB together, " +
-                                      String((CUSTOM_IMAGES_MAX_BYTES - others) / 1024) + " KB are left - a shorter animation fits";
+                    s_customRefused = Texts::fill(Texts::iconsTooBig, String(CUSTOM_IMAGES_MAX_BYTES / 1024),
+                                                  String((CUSTOM_IMAGES_MAX_BYTES - others) / 1024));
                 else ImageLibrary::hasRoomFor(size, &s_customRefused);
                 if (!s_customRefused.length()) s_customUpload = LittleFS.open(CUSTOM_UPLOAD_TMP, "w");
             }
@@ -1913,7 +2120,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
     // reset (POST ?name=): back to the clock's own picture.
     g_server->on("/api/builtin/reset", HTTP_POST, [](AsyncWebServerRequest *req) {
         String name = req->hasParam("name") ? req->getParam("name")->value() : "";
-        if (!isBuiltinName(name)) { req->send(404, "text/plain", "No such picture"); return; }
+        if (!isBuiltinName(name)) { req->send(404, "text/plain", Texts::noSuchPicture); return; }
         String path = customImagePath(name.c_str());
         LittleFS.remove(path);
         DisplayManager::forgetImage(path.c_str());
@@ -1925,14 +2132,87 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
     // Events" produces), not one record. Builds the full replacement list
     // before touching *g_events at all, for the same reason as upsert - a
     // bad file must never leave a half-replaced list.
+    // ── /api/update/check and /api/update/install (POST): Settings' "Check now" / "Install now"
+    g_server->on("/api/update/check", HTTP_POST, [](AsyncWebServerRequest *req)
+                 { OnlineUpdate::checkNow(); req->send(200, "text/plain", "OK"); }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
+    g_server->on("/api/update/install", HTTP_POST, [](AsyncWebServerRequest *req) {
+        if (!OnlineUpdate::status().available.length()) { req->send(400, "text/plain", "No newer version known - check first"); return; }
+        OnlineUpdate::installNow();
+        req->send(200, "text/plain", "OK"); }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
+
+    // ── /api/update/key-set (POST {"key": HEX}): Settings' "Paste a key" - a new signing key
+    // (UpdateKeyState.h); replaces the one there, its id shown on the page first
+    g_server->on("/api/update/key-set", HTTP_POST, [](AsyncWebServerRequest *req) {
+        if (refusedForRoom(req, FS_CONFIG_PATH)) return;   // room first (refusedForRoom())
+        String body;
+        JsonDocument doc;
+        if (!getBody(req, body) || deserializeJson(doc, body)) { req->send(400, "text/plain", Texts::invalidJson); return; }
+        String was = UpdateKeyState::id();
+        String hex = UpdateKeyState::canonical(doc["key"] | "");
+        String id = UpdateKeyState::idOfHex(hex.c_str());
+        if (!id.length() || hex.length() >= sizeof(g_cfg->updateKey)) { req->send(400, "text/plain", Texts::notUpdateKey); return; }
+        StringTools::utf8Copy(g_cfg->updateKey, hex.c_str());
+        UpdateKeyState::use(g_cfg->updateKey);
+        Storage::saveConfigSoon();
+        DiagnosticLog::record("OTA", "update key %s pasted in Settings (was %s)", id.c_str(), was.length() ? was.c_str() : "none");
+        req->send(200, "text/plain", "OK"); }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
+    // ── /api/update/key-id (POST {"key": HEX}): the short id of a key being pasted in Settings ("" = not a key)
+    g_server->on("/api/update/key-id", HTTP_POST, [](AsyncWebServerRequest *req) {
+        String body;
+        JsonDocument doc;
+        if (!getBody(req, body) || deserializeJson(doc, body)) { req->send(400, "text/plain", Texts::invalidJson); return; }
+        req->send(200, "text/plain", UpdateKeyState::idOfHex(doc["key"] | "")); }).setFilter(ON_ANY_INCL_SETUP_FILTER);
+
+    // ── /api/update/failed-seen (POST): "OK, seen" under a failed update's notice - the
+    // screen and Settings stop saying it (Updater::failedUpdateSeen())
+    g_server->on("/api/update/failed-seen", HTTP_POST, [](AsyncWebServerRequest *req)
+                 { Updater::failedUpdateSeen(); req->send(200, "text/plain", "OK"); }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
+
+    // ── /api/problems/seen (POST {"which": "texts" | "feed"}): Settings' "OK, seen" under one problem
+    // the clock found by itself - off the screen; the screen's "Error - see Settings" goes once every
+    // problem is seen or put right (the user, 2026-11-15). Settings lists each until put right.
+    g_server->on("/api/problems/seen", HTTP_POST, [](AsyncWebServerRequest *req) {
+        String body;
+        JsonDocument doc;
+        if (!getBody(req, body) || deserializeJson(doc, body)) { req->send(400, "text/plain", Texts::invalidJson); return; }
+        String which = doc["which"] | "";
+        if (which == "texts") Storage::textNotesSeenNow();
+        else if (which == "feed") OnlineUpdate::feedMissingSeenNow();
+        else { req->send(400, "text/plain", Texts::unknownProblem); return; }
+        req->send(200, "text/plain", "OK"); }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
+
+    // ── /api/events/check (POST): what an import of these events would say - nothing changes
+    g_server->on("/api/events/check", HTTP_POST, [](AsyncWebServerRequest *req)
+                 {
+        String body;
+        JsonDocument doc;
+        if (!getBody(req, body) || deserializeJson(doc, body) || !doc.is<JsonArray>()) { req->send(400, "text/plain", Texts::invalidJsonArray); return; }
+        JsonArrayConst arr = doc.as<JsonArrayConst>();
+        JsonDocument resp;
+        String blankRows;
+        eventListProblems(arr, min((int)arr.size(), MAX_EVENTS), resp["problems"].to<JsonArray>(), blankRows);
+        sendJson(req, resp); }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
+
+    // readable (GET ?madeBy=): can this version read a file made by that version? {"problem": ""}
+    // = yes. The page asks before offering an import or restore; both refuse by themselves too.
+    g_server->on("/api/data/readable", HTTP_GET, [](AsyncWebServerRequest *req) {
+        JsonDocument d;
+        d["version"] = FIRMWARE_VERSION;
+        d["problem"] = VersionRule::dataProblem(FIRMWARE_VERSION, req->hasParam("madeBy") ? req->getParam("madeBy")->value() : String(), "This file");
+        sendJson(req, d); }).setFilter(ON_ANY_INCL_SETUP_FILTER);
+
     g_server->on("/api/events/import", HTTP_POST, [&](AsyncWebServerRequest *req)
                  {
+        if (refusedForRoom(req, FS_EVENTS_PATH)) return;   // room first (refusedForRoom())
         const AsyncWebParameter* p = req->getParam("body", true);
         if (!p) { req->send(400, "text/plain", "Missing body"); return; }
+        // ?madeBy=: the version that made the Excel file (the page reads it from the file) - VersionRule.h
+        String tooNew = VersionRule::dataProblem(FIRMWARE_VERSION, req->hasParam("madeBy") ? req->getParam("madeBy")->value() : String(), "This file");
+        if (tooNew.length()) { req->send(400, "text/plain", "Not imported - nothing was changed. " + tooNew + "."); return; }
 
         JsonDocument doc;
         if (deserializeJson(doc, p->value()) || !doc.is<JsonArray>()) {
-            req->send(400, "text/plain", "Invalid JSON array");
+            req->send(400, "text/plain", Texts::invalidJsonArray);
             return;
         }
 
@@ -1942,22 +2222,28 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         // All-or-nothing like the rest of import: a nameless row rejects the
         // whole file, with every offending row listed, before anything changes.
         String blankRows;
-        for (int i = 0; i < count; i++) {
-            if (isBlankName(arr[i]["name"] | "")) {
-                if (blankRows.length()) blankRows += ", ";
-                blankRows += String(i + 1);
-            }
-        }
+        JsonDocument refusal;   // every problem, each with its place in the list (the page: its Excel row and columns)
+        JsonArray problems = refusal["problems"].to<JsonArray>();
+        eventListProblems(arr, count, problems, blankRows);
         if (blankRows.length()) {
-            req->send(400, "text/plain", "Not imported: event(s) " + blankRows + " have no name. Nothing was changed.");
+            req->send(400, "text/plain", Texts::fill(Texts::importNoName, blankRows));
             return;
         }
+        if (problems.size()) {   // same as a nameless row: all or nothing, every problem said (2026-11-13; dates 2026-11-14)
+            refusal["saved"] = false;
+            refusal["error"] = "Not imported - nothing was changed.";
+            String out;
+            serializeJson(refusal, out);
+            req->send(400, "application/json", out);
+            return;
+        }
+        Storage::clearTextNotes("event:");   // the whole list is replaced
 
         size_t freeSpiram  = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
         size_t totalSpiram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
         float freePct = totalSpiram ? (100.0f * freeSpiram / totalSpiram) : 100.0f;
         if (freePct < EVENTS_PSRAM_REFUSE_PCT) {
-            req->send(400, "text/plain", "Not imported: only " + String(freePct, 1) + "% of PSRAM free (refusing below " + String(EVENTS_PSRAM_REFUSE_PCT, 0) + "%).");
+            req->send(400, "text/plain", Texts::fill(Texts::psramImportRefused, String(freePct, 1), String(EVENTS_PSRAM_REFUSE_PCT, 0)));
             return;
         }
 
@@ -1985,11 +2271,11 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
                 // distinct records sharing one by accident (e.g. a copy-pasted
                 // event whose id never got changed) - import never treats two
                 // records as "the same event" by id, only loadEvents() does.
-                strncpy(ev.id, Storage::generateEventId(imported).c_str(), sizeof(ev.id) - 1);
+                StringTools::utf8Copy(ev.id, Storage::generateEventId(imported).c_str());
 
                 const char* name = ev.name[0] ? ev.name : "Unnamed event";
                 String detail;
-                if (!validateHebrewGregorianCombination(ev, detail) || (detail = eventYearProblem(ev)).length()) {
+                if (!validateHebrewGregorianCombination(ev, detail)) {
                     JsonObject w = warnings.add<JsonObject>();
                     w["name"] = name;
                     w["detail"] = detail;
@@ -2007,16 +2293,15 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         // Pictures come along by id ("image"; the page uploads the file's
         // pictures first). Unused ones are NOT removed here - Undo may need
         // them; see removeUnusedImages().
+        // Swapped in, not copied (no second list in PSRAM); a save that fails swaps the old
+        // list back - the clock never shows events its file doesn't have (2026-11-18: it did,
+        // until the next restart, after a failed save on a full flash).
         {
-            EventsLock::Guard guard; // RAII: releases even if the line below throws.
-            try {
-                *g_events = imported;
-            } catch (const std::bad_alloc&) {
-                req->send(400, "text/plain", "Import failed: ran out of PSRAM copying into the live list. Please check the Events list and try again.");
-                return;
-            }
+            EventsLock::Guard guard;
+            imported.swap(*g_events);
             saved = Storage::saveEvents(*g_events);
             savedCount = (int)g_events->size();
+            if (!saved) imported.swap(*g_events);
         }
         if (!saved) {
             req->send(500, "text/plain", "Failed to save events");
@@ -2046,6 +2331,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
     // and a failed validation can never lose data.
     g_server->on("/api/events/upsert", HTTP_POST, [&](AsyncWebServerRequest *req)
                  {
+        if (refusedForRoom(req, FS_EVENTS_PATH)) return;   // room first (refusedForRoom())
         const AsyncWebParameter* p = req->getParam("body", true);
         if (!p) { req->send(400, "text/plain", "Missing body"); return; }
 
@@ -2058,8 +2344,13 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         if (isBlankName(in["name"] | "")) {
             // The Settings page blocks this itself; this is the backstop for
             // any other client. The page shows this text in its toast.
-            req->send(400, "text/plain", "Please enter a name - who is this event for?");
+            req->send(400, "text/plain", Texts::needName);
             return;
+        }
+        {   // the page stops typing at the limits; a backstop for other clients
+            std::vector<Storage::TextNote> tooLong;
+            Storage::eventProblems(in, 0, Storage::TextMode::Change, tooLong);
+            if (!tooLong.empty()) { req->send(400, "text/plain", Storage::joinTexts(tooLong)); return; }   // the page says "Not saved: "
         }
         PersonalEvent ev = parseEventFields(in);
         autoFillMissingCalendarSide(ev);
@@ -2068,20 +2359,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         JsonDocument respDoc;
         JsonArray warnings = respDoc["warnings"].to<JsonArray>();
 
-        // A missing Hebrew month (e.g. legacy data saved before the
-        // front-end required one) is caught here directly, since
-        // validateHebrewGregorianCombination() below only runs - and would
-        // only catch it as a "dates don't match" mismatch - when
-        // hasGregorian is ALSO set. A Hebrew-only event with no month would
-        // otherwise pass through silently.
-        if (ev.hasJewish && (ev.jMonth < 1 || ev.jMonth > 13)) {
-            JsonObject w = warnings.add<JsonObject>();
-            w["name"] = name;
-            w["detail"] = "Hebrew date is missing its month - please edit and re-select it.";
-        }
-
-        const String yearProblem = eventYearProblem(ev);
-        if (yearProblem.length()) { req->send(400, "text/plain", yearProblem); return; }
+        // (A Hebrew date without its month: refused by eventProblems() above - web_ui refusals.)
 
         // Two dates that never meet are refused, not saved with a warning
         // (2026-11-07: "Saved." plus a cryptic note left a wrong event behind).
@@ -2108,9 +2386,12 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
             }
         }
         bool idNotFound = clientId.length() > 0 && existingIdx < 0;
+        if (clientId.length()) Storage::clearTextNote("event:" + clientId);   // saved again: checked above
 
+        PersonalEvent previous;   // what a failed save puts back
         if (existingIdx >= 0) {
-            strncpy(ev.id, clientId.c_str(), sizeof(ev.id) - 1);
+            StringTools::utf8Copy(ev.id, clientId.c_str());
+            previous = (*g_events)[existingIdx];
             (*g_events)[existingIdx] = ev;
         } else {
             // New event (or a stale/unknown id): growing the vector touches
@@ -2125,7 +2406,7 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
                 EventsLock::give();
                 JsonObject w = warnings.add<JsonObject>();
                 w["name"] = name;
-                w["detail"] = "Not saved: only " + String(freePct, 1) + "% of PSRAM free (refusing new events below " + String(EVENTS_PSRAM_REFUSE_PCT, 0) + "%).";
+                w["detail"] = Texts::fill(Texts::psramEventRefused, String(freePct, 1), String(EVENTS_PSRAM_REFUSE_PCT, 0));
                 respDoc["saved"] = false;
                 sendJson(req, respDoc);
                 return;
@@ -2133,10 +2414,10 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
             if (freePct < EVENTS_PSRAM_WARN_PCT) {
                 JsonObject w = warnings.add<JsonObject>();
                 w["name"] = name;
-                w["detail"] = "Saved, but only " + String(freePct, 1) + "% of PSRAM remains free.";
+                w["detail"] = Texts::fill(Texts::psramSavedLow, String(freePct, 1));
             }
 
-            strncpy(ev.id, Storage::generateEventId(*g_events).c_str(), sizeof(ev.id) - 1);
+            StringTools::utf8Copy(ev.id, Storage::generateEventId(*g_events).c_str());
             // The PSRAM_REFUSE_PCT check above is a point-in-time heuristic,
             // not a hard guarantee against fragmentation - PsramAllocator
             // (PsramVector.h) still throws std::bad_alloc if growth genuinely
@@ -2151,6 +2432,10 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         }
 
         bool saved = Storage::saveEvents(*g_events);
+        if (!saved) {   // the live list back as the file has it (2026-11-18, see the import above)
+            if (existingIdx >= 0) (*g_events)[existingIdx] = previous;
+            else g_events->pop_back();
+        }
         EventsLock::give();
         if (!saved) {
             req->send(500, "text/plain", "Failed to save events");
@@ -2216,6 +2501,24 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         req->send(200, "text/plain", "Wi-Fi credentials cleared. Rebooting into setup mode...");
         scheduleRestart(RESTART_AFTER_REPLY_MS); }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
 
+    // ── /api/ap-password (POST {"password": "..."}): Settings' Change of the clock's own Wi-Fi
+    // password (the user, 2026-11-15) - checked (Storage::apPasswordProblem), saved at once,
+    // then a restart: its own Wi-Fi comes back with it (the page follows the restart)
+    g_server->on("/api/ap-password", HTTP_POST, [](AsyncWebServerRequest *req) {
+        if (refusedForRoom(req, FS_CONFIG_PATH)) return;   // room first (refusedForRoom())
+        String body;
+        JsonDocument doc;
+        if (!getBody(req, body) || deserializeJson(doc, body)) { req->send(400, "text/plain", Texts::invalidJson); return; }
+        const char* pw = doc["password"] | "";
+        String why = Storage::apPasswordProblem(pw);
+        if (why.length()) { req->send(400, "text/plain", Texts::fill(Texts::apPwNotChanged, why)); return; }
+        if (strcmp(pw, WiFiManager::apPassword()) == 0) { req->send(400, "text/plain", Texts::apPwSame); return; }
+        StringTools::utf8Copy(g_cfg->apPassword, pw);
+        if (!Storage::saveConfig(*g_cfg)) { req->send(500, "text/plain", "Could not save it - try again."); return; }
+        DiagnosticLog::record("WIFI", "the clock's own Wi-Fi password changed in Settings - restarting with it");
+        req->send(200, "text/plain", "OK");
+        scheduleRestart(RESTART_AFTER_REPLY_MS); }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
+
     // ── /api/backup (GET) ─────────────────────────────────────────────────────
 
     g_server->on("/api/backup", HTTP_GET, [](AsyncWebServerRequest *req)
@@ -2230,10 +2533,8 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         // download. Also avoids holding the backup as a 4th/5th in-RAM copy.
         const char* tmpPath = "/backup_tmp.json";
         String backup = Storage::exportBackup();
-        File f = LittleFS.open(tmpPath, "w");
-        if (!f) { req->send(500, "text/plain", "Backup write failed"); return; }
-        f.print(backup);
-        f.close();
+        // Whole or not at all (FileTools.h): a cut-off temp file would download as a broken backup.
+        if (!FileTools::writeTextAtomic(tmpPath, backup)) { req->send(500, "text/plain", "Backup write failed - is the clock's storage full?"); return; }
         AsyncWebServerResponse *res = req->beginResponse(LittleFS, tmpPath, "application/json; charset=utf-8");
         res->addHeader("Content-Disposition", "attachment; filename=\"jewishclock-backup.json\"");
         req->send(res); }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
@@ -2242,12 +2543,14 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
 
     g_server->on("/api/restore", HTTP_POST, [](AsyncWebServerRequest *req)
                  {
+        if (refusedForRoom(req, FS_CONFIG_PATH)) return;   // room first (refusedForRoom())
         CLOCK_LOG("WebUI", "Restoring backup...");
         String body;
         if (!getBody(req, body)) { req->send(400, "text/plain", "Missing body"); return; }
 
-        if (!Storage::importBackup(body)) {
-            req->send(400, "text/plain", "Invalid backup format");
+        String why;
+        if (!Storage::importBackup(body, why)) {
+            req->send(400, "text/plain", why);
             return;
         }
         req->send(200, "text/plain", "Backup restored. Rebooting...");
@@ -2264,15 +2567,24 @@ void WebUI::begin(AppConfig &cfg, EventList &events)
         "/update", HTTP_POST,
         [](AsyncWebServerRequest *req)
         {
-            // Plain firmware .bin or a .jcupdate package - see Updater.h.
+            // A signed .jcupdate package - see Updater.h.
             bool ok = Updater::uploadEnd();
-            req->send(ok ? 200 : 400, "text/plain", Updater::uploadMessage());
+            if (ok && Updater::eraseWanted()) {   // an older version: its data can't be read - erased now (Wi-Fi kept)
+                DiagnosticLog::record("OTA", "older version installed with erase: everything but Wi-Fi erased");
+                Storage::factoryReset(g_cfg, true);
+            }
+            const String msg = Updater::uploadMessage(), version = Updater::uploadVersion();
+            AsyncWebServerResponse* r = req->beginResponse(ok ? 200 : 400, "text/plain", msg.c_str());
+            if (version.length()) r->addHeader("X-Update-Version", version.c_str());
+            if (Updater::uploadRefusedOlder()) r->addHeader("X-Update-Refused", "older");   // the page offers erase
+            req->send(r);
             if (ok) scheduleRestart(RESTART_AFTER_REPLY_MS); // not delay()+restart here: see scheduleRestart()
         },
         [](AsyncWebServerRequest *req, String filename,
            size_t index, uint8_t *data, size_t len, bool final)
         {
-            if (!index) Updater::uploadBegin(filename, req->contentLength());
+            // ?erase=1: an older version, everything of the clock's own erased (but Wi-Fi)
+            if (!index) Updater::uploadBegin(filename, req->contentLength(), req->hasParam("erase"));
             Updater::uploadChunk(data, len);
         }).setFilter(ON_STA_OR_SYNCED_AP_FILTER);
 
@@ -2373,7 +2685,7 @@ void WebUI::scheduleMdnsRecheck(const String &mdnsHost)
 
     if (hasStaConnection && (!g_mdnsRunning || g_mdnsInitAttempts < MDNS_FORCE_RETRY_ATTEMPTS)) {
         g_pendingMdnsHost = mdnsHost;
-        g_mdnsRecheckAtMs = millis() + 500;
+        g_mdnsRecheckAtMs = Uptime::ms() + 500;
         CLOCK_LOG("WebUI", "[MdnsDiag] mDNS recheck scheduled for host='%s' at +500ms (attemptsSoFar=%u)", mdnsHost.c_str(), g_mdnsInitAttempts);
     } else {
         CLOCK_LOG("WebUI", "[MdnsDiag] mDNS recheck NOT scheduled: hasStaConnection=%d g_mdnsRunning=%d attemptsSoFar=%u", hasStaConnection, g_mdnsRunning, g_mdnsInitAttempts);
@@ -2382,50 +2694,33 @@ void WebUI::scheduleMdnsRecheck(const String &mdnsHost)
     // unchanged from previous behavior.
 }
 
-// Not currently called anywhere (startServer() no longer tears the listener
-// down to rebuild it - see above). Kept as a deliberate, explicit full
-// teardown for any future caller that genuinely needs one (e.g. a manual
-// "restart networking" debug action), rather than removed outright.
-void WebUI::stopServer()
-{
-    if (g_mdnsRunning) {
-        MDNS.end();
-        g_mdnsRunning = false;
-    }
-    if (g_server && g_serverStarted) {
-        g_server->end();
-        g_serverStarted = false;
-        CLOCK_LOG("WebUI", "Server and mDNS stopped.");
-    }
-}
-
 // ─── loop() ──────────────────────────────────────────────────────────────────
 
 void WebUI::loop()
 {
-    unsigned long now = millis();
+    int64_t now = Uptime::ms();
 
-    static uint32_t factoryResetAt = 0;
+    static int64_t factoryResetAt = 0;
     if (g_factoryResetRequested.exchange(false)) factoryResetAt = now + RESTART_AFTER_REPLY_MS;
-    if (factoryResetAt && (int32_t)(now - factoryResetAt) >= 0) {
+    if (factoryResetAt && now >= factoryResetAt) {
         g_cfgDirty = false;   // the old settings must not be written back
         Storage::factoryReset();
         WiFi.disconnect(true, true);   // the Wi-Fi driver's own stored network too
         delay(200);
-        ESP.restart();
+        Restart::now();
     }
 
-    uint32_t restartAt = g_restartAtMs;
-    if (restartAt && (int32_t)(now - restartAt) >= 0) {
+    int64_t restartAt = g_restartAtMs;
+    if (restartAt && now >= restartAt) {
         flushConfigSave("before restart");
         CLOCK_LOG("WebUI", "Performing requested restart...");
-        ESP.restart();
+        Restart::now();
     }
 
     if (g_cfgDirty && now - g_cfgChangedAtMs >= CONFIG_SAVE_QUIET_MS) flushConfigSave("after the quiet period");
 
     // ── Diagnostic heartbeat (HEARTBEAT_LOG_MS, regardless of connection state) ──
-    static unsigned long lastHeartbeat = 0;
+    static int64_t lastHeartbeat = 0;
     if (lastHeartbeat == 0 || now - lastHeartbeat >= HEARTBEAT_LOG_MS) {
         lastHeartbeat = now;
         DiagnosticLog::record("HEARTBEAT",
@@ -2441,9 +2736,9 @@ void WebUI::loop()
     // once when the signal drops below WEAK and once when it recovers above
     // RECOVERED (the gap avoids a log line per flicker around one threshold),
     // with the duration and the lowest reading. Sampled every WIFI_RSSI_SAMPLE_MS.
-    static unsigned long lastRssiCheck = 0;
+    static int64_t lastRssiCheck = 0;
     static bool weakSignal = false;
-    static unsigned long weakSince = 0;
+    static int64_t weakSince = 0;
     static int weakLowest = 0;
     if (now - lastRssiCheck >= WIFI_RSSI_SAMPLE_MS) {
         lastRssiCheck = now;
@@ -2453,13 +2748,13 @@ void WebUI::loop()
                 weakSignal = true;
                 weakSince = now;
                 weakLowest = rssi;
-                DiagnosticLog::record("WIFI", "signal weak: rssi=%d dBm", rssi);
+                DiagnosticLog::record("WIFI", Texts::signalWeak, rssi);
             } else if (weakSignal) {
                 if (rssi < weakLowest) weakLowest = rssi;
                 if (rssi > WIFI_RSSI_RECOVERED_DBM) {
                     weakSignal = false;
-                    DiagnosticLog::record("WIFI", "signal recovered: rssi=%d dBm after %lus weak (lowest %d dBm)",
-                                          rssi, (now - weakSince) / 1000, weakLowest);
+                    DiagnosticLog::record("WIFI", Texts::signalRecovered,
+                                          rssi, (unsigned long)((now - weakSince) / 1000), weakLowest);
                 }
             }
         }
@@ -2468,7 +2763,7 @@ void WebUI::loop()
     // CLOCK_LOG("WebUI", "WebUI::loop: WiFi status = %d", WiFi.status());
     if (WiFi.status() == WL_CONNECTED) {
 
-        if (g_mdnsBeginAtMs != 0 && (long)(now - g_mdnsBeginAtMs) >= 0) {
+        if (g_mdnsBeginAtMs != 0 && now >= g_mdnsBeginAtMs) {
             g_mdnsBeginAtMs = 0;
             finishMdnsInit();
         }
@@ -2480,7 +2775,7 @@ void WebUI::loop()
         // from whichever tick actually handled the reconnect - so the
         // ~250ms+ MDNS.end()/begin() cost here can never stack onto the same
         // synchronous chain as the AP rebuild and HTTP server (re)bind.
-        if (g_mdnsRecheckAtMs != 0 && (long)(now - g_mdnsRecheckAtMs) >= 0) {
+        if (g_mdnsRecheckAtMs != 0 && now >= g_mdnsRecheckAtMs) {
             g_mdnsRecheckAtMs = 0;
             if (!g_mdnsRunning || g_mdnsInitAttempts < MDNS_FORCE_RETRY_ATTEMPTS) {
                 g_diagMdnsTier2FromServer++;
@@ -2535,7 +2830,7 @@ void WebUI::loop()
     }
 
     // ── Dev helper: keep FE build time metadata current ──────────────────────
-    static unsigned long lastFeRefresh = 0;
+    static int64_t lastFeRefresh = 0;
     if (now - lastFeRefresh >= FE_BUILD_TIME_REFRESH_MS) {
         lastFeRefresh = now;
         refreshFeBuildTime();

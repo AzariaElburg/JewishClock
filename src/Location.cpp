@@ -8,8 +8,10 @@
 #include "Calendar.h"
 #include "WiFiManager.h"
 #include "NTPManager.h"
+#include "StringTools.h"
 #include "DiagnosticLog.h"
 #include "LogLevel.h"
+#include "Texts.h"
 
 namespace Location {
 
@@ -20,6 +22,9 @@ static SemaphoreHandle_t s_queueMutex = nullptr;
 static Place s_queued;
 static std::atomic<int> s_queuedSlot{-1};
 static std::atomic<uint32_t> s_forgetMask{0};   // bit i: forget network i's place
+static std::atomic<uint32_t> s_userSets[WIFI_NETWORKS];   // userSets(): places the user set or confirmed
+
+uint32_t userSets(int slot) { return slot >= 0 && slot < WIFI_NETWORKS ? s_userSets[slot].load() : 0; }
 
 void forgetPlace(int slot) { if (slot >= 0 && slot < WIFI_NETWORKS) s_forgetMask |= (1u << slot); }
 
@@ -44,8 +49,8 @@ String posixFor(const char* tzid) {
 // table can't express "Friday before the last Sunday"), the table's, or -
 // for a zone not in the table - its fixed offset (no summer time).
 static void ruleFor(const Place& p, char* out, size_t n) {
-    if (isIsrael(p)) { strlcpy(out, DEFAULT_TZ_POSIX, n); return; }
-    if (p.tzPOSIX[0]) { strlcpy(out, p.tzPOSIX, n); return; }
+    if (isIsrael(p)) { StringTools::utf8Cut(out, n, DEFAULT_TZ_POSIX, n - 1); return; }
+    if (p.tzPOSIX[0]) { StringTools::utf8Cut(out, n, p.tzPOSIX, n - 1); return; }
     int w = -p.offsetSec, a = abs(w), h = a / 3600, m = (a % 3600) / 60;   // POSIX offsets are west-positive
     int e = p.offsetSec, ea = abs(e);
     snprintf(out, n, "<%c%02d%02d>%s%d%s", e < 0 ? '-' : '+', ea / 3600, (ea % 3600) / 60, w < 0 ? "-" : "", h,
@@ -58,18 +63,21 @@ static void ruleFor(const Place& p, char* out, size_t n) {
 // screen stands still (Storage::saveConfigSoon()).
 static bool activate(AppConfig& cfg, int slot, bool byUser) {
     const Place& p = cfg.places[slot];
+    // Always update the country pool - s_countryPool starts "" each boot, so this
+    // runs even when the city/timezone are already correct (the most common restart case).
+    NTPManager::setCountryPool(p.countryCode);
     char rule[sizeof(cfg.tzPOSIX)];
     ruleFor(p, rule, sizeof(rule));
     bool moved = strcmp(cfg.locationCity, p.city) || strcmp(cfg.locationCountry, p.country) ||
                  cfg.latitude != p.lat || cfg.longitude != p.lon || strcmp(cfg.tzid, p.tzid);
     bool newRule = strcmp(cfg.tzPOSIX, rule) != 0;
     if (!moved && !newRule) return false;
-    strlcpy(cfg.locationCity, p.city, sizeof(cfg.locationCity));
-    strlcpy(cfg.locationCountry, p.country, sizeof(cfg.locationCountry));
+    StringTools::utf8Copy(cfg.locationCity, p.city);
+    StringTools::utf8Copy(cfg.locationCountry, p.country);
     cfg.latitude = p.lat;
     cfg.longitude = p.lon;
-    strlcpy(cfg.tzid, p.tzid, sizeof(cfg.tzid));
-    strlcpy(cfg.tzPOSIX, rule, sizeof(cfg.tzPOSIX));
+    StringTools::utf8Copy(cfg.tzid, p.tzid);
+    StringTools::utf8Copy(cfg.tzPOSIX, rule);
     cfg.inIsrael = isIsrael(p);
     if (newRule) NTPManager::setTimezone(cfg.tzPOSIX);
     if (byUser) Storage::saveConfig(cfg); else Storage::saveConfigSoon();
@@ -78,23 +86,29 @@ static bool activate(AppConfig& cfg, int slot, bool byUser) {
     return true;
 }
 
-bool applyLookup(AppConfig& cfg, int slot, const String& payload) {
+bool applyLookup(AppConfig& cfg, int slot, const String& payload, uint32_t asked) {
     if (slot < 0 || slot >= WIFI_NETWORKS) return false;
+    if (s_userSets[slot] != asked) {   // set or confirmed by the user while it was looked up: theirs stays
+        DiagnosticLog::record("Location", "network %d: a lookup came after the place was set - the place set is kept", slot + 1);
+        return true;
+    }
     JsonDocument doc;
     if (deserializeJson(doc, payload) || doc["status"] != "success") return false;
     Place p = {};
     p.set = true;
     p.confirmed = false;
-    strlcpy(p.city,    doc["city"]     | "", sizeof(p.city));
-    strlcpy(p.country, doc["country"]  | "", sizeof(p.country));
-    strlcpy(p.tzid,    doc["timezone"] | "", sizeof(p.tzid));
+    StringTools::utf8Copy(p.city,        doc["city"]        | "");
+    StringTools::utf8Copy(p.country,     doc["country"]     | "");
+    StringTools::utf8Copy(p.countryCode, doc["countryCode"] | "");
+    for (char* c = p.countryCode; *c; c++) *c = StringTools::asciiToLower(*c);
+    StringTools::utf8Copy(p.tzid,        doc["timezone"]    | "");
     p.lat = doc["lat"] | 0.0f;
     p.lon = doc["lon"] | 0.0f;
     p.offsetSec = doc["offset"] | 0;
-    strlcpy(p.tzPOSIX, posixFor(p.tzid).c_str(), sizeof(p.tzPOSIX));
+    StringTools::utf8Copy(p.tzPOSIX, posixFor(p.tzid).c_str());
     if (!p.city[0] || !p.tzid[0]) return false;
     cfg.places[slot] = p;
-    DiagnosticLog::record("Location", "network %d looked up: %s, %s (%s)", slot + 1, p.city, p.country, p.tzid);
+    DiagnosticLog::record("Location", Texts::placeLookedUp, slot + 1, p.city, p.country, p.tzid);
     if (slot != s_activeSlot || !activate(cfg, slot, false)) Storage::saveConfigSoon();   // one save (see loop())
     return true;
 }
@@ -105,11 +119,12 @@ bool queuePlace(int slot, const Place& in, String& error) {
     Place p = in;
     p.set = true;
     p.confirmed = true;
-    strlcpy(p.tzPOSIX, posixFor(p.tzid).c_str(), sizeof(p.tzPOSIX));
+    StringTools::utf8Copy(p.tzPOSIX, posixFor(p.tzid).c_str());
     if (!s_queueMutex) s_queueMutex = xSemaphoreCreateMutex();
     xSemaphoreTake(s_queueMutex, portMAX_DELAY);
     s_queued = p;
     s_queuedSlot = slot;
+    s_userSets[slot]++;   // a lookup asked before this no longer counts (applyLookup)
     xSemaphoreGive(s_queueMutex);
     return true;
 }
@@ -152,12 +167,18 @@ void searchStarted() {
 
 String searchUrl(const String& query) {
     String q;
+    bool hebrew = false;
     for (size_t i = 0; i < query.length(); i++) {   // URL-encode (UTF-8 bytes as %XX)
         uint8_t c = query[i];
-        if (isalnum(c) || c == '-' || c == '.' || c == '_') q += (char)c;
+        if (c == 0xD7) hebrew = true;               // the lead byte of every Hebrew letter (U+05C0..U+05FF)
+        if (StringTools::asciiAlnum((char)c) || c == '-' || c == '.' || c == '_') q += (char)c;
         else { char b[4]; snprintf(b, sizeof(b), "%%%02X", c); q += b; }
     }
-    return "https://geocoding-api.open-meteo.com/v1/search?count=8&language=en&format=json&name=" + q;
+    // The service finds a name only in the language it is asked in: "תל אביב" with language=en
+    // found nothing - a city typed in Hebrew was always "Not found" (2026-11-18). Hebrew: asked in
+    // Hebrew (the names come back in Hebrew).
+    return String("https://geocoding-api.open-meteo.com/v1/search?count=8&language=") + (hebrew ? "he" : "en") +
+           "&format=json&name=" + q;
 }
 
 // The service's answer -> a short list for the page: name, region, country,

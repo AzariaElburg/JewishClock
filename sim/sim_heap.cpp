@@ -66,3 +66,13 @@ size_t heap_caps_get_free_size(uint32_t caps) {
 size_t heap_caps_get_largest_free_block(uint32_t caps) { return caps & MALLOC_CAP_SPIRAM ? heap_caps_get_free_size(caps) : ESP.getMaxAllocHeap(); }
 size_t heap_caps_get_minimum_free_size(uint32_t caps) { return caps & MALLOC_CAP_SPIRAM ? limitBytes() - g_peak : ESP.getMinFreeHeap(); }
 uint32_t EspClass::getFreePsram() { return (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM); }
+
+// Tests (2026-11-18, control /psram-hog): PSRAM taken until `freePct` % of it is left free, as the
+// clock's code counts it (free / total) - what the low-memory refusals look at; < 0 gives it back.
+static void* g_hog = nullptr;
+void sim_psram_hog(double freePct) {
+    if (g_hog) { heap_caps_free(g_hog); g_hog = nullptr; }
+    if (freePct < 0) return;
+    size_t want = (size_t)(PSRAM_TOTAL_BYTES * freePct / 100.0), free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    if (free > want) g_hog = heap_caps_malloc(free - want, MALLOC_CAP_SPIRAM);
+}

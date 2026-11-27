@@ -1,8 +1,10 @@
 #include "WiFiManager.h"
+#include "Uptime.h"
 #include "WiFiLock.h"
 #include "Config.h"
 #include "Calendar.h"
 #include "StringTools.h"
+#include "Storage.h"
 
 #include <ESPmDNS.h>
 #include <LittleFS.h>
@@ -11,25 +13,30 @@
 #include "GeolocationService.h"
 #include "DiagnosticLog.h"
 #include "LogLevel.h"
+#include "Tunables.h"
+#include "Texts.h"
+#include "Restart.h"
 #include <cstring>
 #include <atomic>
 #include <algorithm>
 #include <vector>
 #include <esp_wifi.h>
+#include <esp_system.h>
 
 // === TUNABLES ===  (rule: see Config.h header)
-static const unsigned long WIFI_CONNECT_TIMEOUT_MS = 10000; // Per STA attempt, before retrying
+static const int64_t      WIFI_CONNECT_TIMEOUT_MS = 10000; // Per STA attempt, before retrying
 static const int           MAX_STA_RETRIES = 2;             // Allow 3 total attempts (0, 1, 2), then AP portal
-static const unsigned long WIFI_LINK_TO_IP_MS = 8000;      // after a link comes up, this long for the IP before retrying
+static const int64_t      WIFI_LINK_TO_IP_MS = 8000;      // after a link comes up, this long for the IP before retrying
 
 // Switching to a stronger access point while connected (mesh / extender) -
 // see serviceRoaming(). Connecting always picks the strongest one already
 // (connectSTA()); this covers the signal fading later, e.g. a node switched off.
 static const int           ROAM_WEAK_RSSI_DBM   = -78;                   // weaker than this counts as weak
-static const unsigned long ROAM_WEAK_FOR_MS     = 30UL * 1000UL;          // weak this long before a scan
-static const unsigned long ROAM_MIN_INTERVAL_MS = 10UL * 60UL * 1000UL;   // at most one scan per
+static const int64_t      ROAM_WEAK_FOR_MS     = 30UL * 1000UL;          // weak this long before a scan
+static const int64_t      ROAM_MIN_INTERVAL_MS = 10UL * 60UL * 1000UL;   // at most one scan per
 static const int           ROAM_MIN_GAIN_DB     = 8;                      // switch only for at least this much better
-static const unsigned long ROAM_SAMPLE_MS       = 5000;
+static const int64_t      ROAM_SAMPLE_MS       = 5000;
+TUNABLE_SHARED(ROAM_WEAK_RSSI_DBM) TUNABLE_SHARED(ROAM_WEAK_FOR_MS) TUNABLE_SHARED(ROAM_MIN_GAIN_DB) TUNABLE_SHARED(ROAM_SAMPLE_MS)
 // Not lower: the core gives an async scan 20 x this in total before calling
 // it failed (WiFiScan.cpp), and while connected - with the clock's own AP up
 // too - the radio keeps returning to its home channel between channels. At
@@ -40,16 +47,17 @@ static const uint32_t      ROAM_SCAN_MS_PER_CH  = 300;
 // ~1.3 s for all 13 - a network not heard that fast is too weak to matter.
 // After PICK_SCAN_GIVE_UP_MS without a result, join in the saved order.
 static const uint32_t      PICK_SCAN_MS_PER_CH  = 100;
-static const unsigned long PICK_SCAN_GIVE_UP_MS = 6000;
+static const int64_t      PICK_SCAN_GIVE_UP_MS = 6000;
 // In setup mode with known networks (none could be joined): try them again this often.
-static const unsigned long PORTAL_RETRY_MS = 2UL * 60UL * 1000UL;
+static const int64_t      PORTAL_RETRY_MS = 2UL * 60UL * 1000UL;
+TUNABLE_SHARED(PORTAL_RETRY_MS)
 // The settings page's list of networks around (serviceListScan()): per
 // channel like ROAM_SCAN_MS_PER_CH (connected, AP up - same reason), a list
 // this young is handed out again instead of scanning anew, and a scan with no
 // result by LIST_SCAN_GIVE_UP_MS counts as failed (an empty list).
 static const uint32_t      LIST_SCAN_MS_PER_CH  = 300;
-static const unsigned long LIST_FRESH_MS        = 30UL * 1000UL;
-static const unsigned long LIST_SCAN_GIVE_UP_MS = 15000;
+static const int64_t      LIST_FRESH_MS        = 30UL * 1000UL;
+static const int64_t      LIST_SCAN_GIVE_UP_MS = 15000;
 
 // ─── State Machine Globals ──────────────────────────────────────────────────
 
@@ -59,18 +67,18 @@ static WiFiState       g_state = WiFiState::IDLE;
 static std::atomic<uint8_t> g_lastDisconnectReason{0};
 static std::atomic<bool>    g_disconnectEventTriggered{false};
 static std::atomic<bool>    g_gotIpEventTriggered{false};
-static std::atomic<uint32_t> g_lastLinkUpMs{0};   // millis() of the last "link established" (0 = none)
-static unsigned long   g_stateTimer = 0;
-static unsigned long   g_lastConnectAttemptMs = 0;
-static unsigned long   g_restartAt = 0;
+static std::atomic<int64_t>  g_lastLinkUpMs{0};   // Uptime::ms() of the last "link established" (0 = none)
+static int64_t         g_stateTimer = 0;
+static int64_t         g_lastConnectAttemptMs = 0;
+static int64_t         g_restartAt = 0;
 static int             g_retryCount = 0;
 
-static unsigned long   g_roamWeakSinceMs = 0;
-static unsigned long   g_roamLastScanMs = 0;
-static unsigned long   g_roamLastSampleMs = 0;
+static int64_t         g_roamWeakSinceMs = 0;
+static int64_t         g_roamLastScanMs = 0;
+static int64_t         g_roamLastSampleMs = 0;
 static bool            g_roamScanRunning = false;
-static unsigned long   g_roamScanStartedMs = 0;
-static const unsigned long ROAM_SCAN_GIVE_UP_MS = 15000;   // a scan with no result by then counts as failed
+static int64_t         g_roamScanStartedMs = 0;
+static const int64_t      ROAM_SCAN_GIVE_UP_MS = 15000;   // a scan with no result by then counts as failed
 
 // Which known network (0..WIFI_NETWORKS-1) is being joined / is joined; -1 =
 // none yet. Which one to join: see connectSTA().
@@ -78,15 +86,15 @@ static int             g_joinSlot = -1;
 static int             g_nextSlot = -1;            // join this one next: "Connect" on the page, or roaming's pick
 static std::atomic<int> g_connectRequest{-1};      // "Connect" pressed (web server task) - loop() takes it
 static bool            g_pickScanRunning = false;
-static unsigned long   g_pickScanStartedMs = 0;
+static int64_t         g_pickScanStartedMs = 0;
 
 // The settings page's list (heardNetworks() / serviceListScan()). The request
 // comes from the web server task; the rest is under WiFiLock.
 static std::atomic<bool> g_listRequest{false};
 static bool            g_listScanRunning = false;
-static unsigned long   g_listScanStartedMs = 0;
+static int64_t         g_listScanStartedMs = 0;
 static std::vector<WiFiManager::HeardNetwork> g_heard;
-static unsigned long   g_heardAtMs = 0;            // when g_heard was made (0 = never)
+static int64_t         g_heardAtMs = 0;            // when g_heard was made (0 = never)
 
 // 2026-10-08: tried deferring the very first WiFi.begin() by 1.5s, on the
 // theory that reason=202 (AUTH_FAIL) - a well-documented ESP32 Arduino core
@@ -118,7 +126,7 @@ void WiFiManager::WiFiEventHandler(WiFiEvent_t event, WiFiEventInfo_t info) {
             {
                 uint8_t reason = info.wifi_sta_disconnected.reason;
                 // Log only the basic reason to keep serial clean
-                CLOCK_LOG("WiFi", "[EVENT] Disconnected (Reason: %d)", reason);
+                CLOCK_LOGF("WiFi", Texts::wifiDisconnected, reason);
                 
                 g_lastDisconnectReason = reason;
                 g_disconnectEventTriggered = true;
@@ -131,7 +139,7 @@ void WiFiManager::WiFiEventHandler(WiFiEvent_t event, WiFiEventInfo_t info) {
             g_gotIpEventTriggered = true;
             break;
         case ARDUINO_EVENT_WIFI_STA_CONNECTED:
-            g_lastLinkUpMs = millis() | 1;   // never 0
+            g_lastLinkUpMs = Uptime::ms() | 1;   // never 0
             {
                 // Link facts for diagnosing slow connects (2026-10-18, core 3.x):
                 // power save should be off (setSleep(false)), transmit power max.
@@ -173,7 +181,7 @@ static bool            g_apActive = false;
 // Atomic: the web server's filters read it (ON_STA_OR_SYNCED_AP_FILTER).
 static std::atomic<bool> g_syncedApUp{false};
 // Last loop() pass that saw a working connection (offlineForMs()).
-static uint32_t        g_lastOnlineMs = 0;
+static int64_t         g_lastOnlineMs = 0;
 static AppConfig*      g_cfgPtr = nullptr;
 static String          g_mdnsHost = makeMdnsHost(PROJECT_NAME_DEFAULT);  // Hostname without .local suffix
 static const char* portal_html = R"rawliteral(
@@ -195,9 +203,9 @@ static const char* portal_html = R"rawliteral(
   <select id="ssidList" size="6"></select><br>
 
   <form id="wifiForm" action="/save" method="POST">
-    <input id="ssidInput" name="ssid" type="text" placeholder="SSID" required><br>
+    <input id="ssidInput" name="ssid" type="text" placeholder="SSID" maxlength="<<SSID_MAX>>" required><br>
     <div class="row">
-      <input id="passwordInput" name="password" type="password" placeholder="Password" required>
+      <input id="passwordInput" name="password" type="password" placeholder="Password (none for an open network)" maxlength="<<PASS_MAX>>">
       <button id="togglePassword" type="button" class="small">Show</button>
     </div>
     <button type="submit">Connect</button>
@@ -244,7 +252,7 @@ static const char* portal_html = R"rawliteral(
 
     // The first answer is usually "scanning" with no networks (the clock
     // starts a scan then): ask again until the list is there - asked once,
-    // the list stayed empty until a reload (found 2026-11-07, sim/ui_tests.py).
+    // the list stayed empty until a reload (found 2026-11-07, sim/web_ui.py).
     async function scanNetworks() {
       for (let i = 0; i < 20; i++) {
         try {
@@ -297,7 +305,7 @@ static void beginSlot(AppConfig& cfg, int slot) {
     WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
     WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
     WiFi.begin(wifiSsidAt(cfg, slot), wifiPasswordAt(cfg, slot));
-    g_lastConnectAttemptMs = millis();   // the connect timeout starts now, not at the scan
+    g_lastConnectAttemptMs = Uptime::ms();   // the connect timeout starts now, not at the scan
 }
 
 // The known networks in the order to try them: those in the `n` scan results,
@@ -325,7 +333,7 @@ static std::vector<int> rankKnownNetworks(const AppConfig& cfg, int n, String& h
 // another (e.g. a network whose password changed must not block the rest).
 void WiFiManager::servicePickScan() {
     int n = WiFi.scanComplete();
-    if (n == WIFI_SCAN_RUNNING && millis() - g_pickScanStartedMs < PICK_SCAN_GIVE_UP_MS) return;
+    if (n == WIFI_SCAN_RUNNING && Uptime::ms() - g_pickScanStartedMs < PICK_SCAN_GIVE_UP_MS) return;
     if (n == WIFI_SCAN_RUNNING) esp_wifi_scan_stop();
     g_pickScanRunning = false;
     String heard;
@@ -371,7 +379,7 @@ void WiFiManager::setState(WiFiState newState) {
     WiFiState oldState = g_state;
     g_state = newState;
     CLOCK_LOG("WiFi", "Transitioning state: %d -> %d", (int)oldState, (int)newState);
-    g_stateTimer = millis();
+    g_stateTimer = Uptime::ms();
 
     switch (newState) {
         case WiFiState::STA_CONNECTING:
@@ -389,8 +397,8 @@ void WiFiManager::setState(WiFiState newState) {
             // increment) and STA still reconnects normally. If this is ever
             // reverted, connectSTA()'s WiFi.mode(WIFI_STA) call below is the
             // other half of the old "drop to pure STA to reconnect" pattern.
-            g_lastConnectAttemptMs = millis();
-            CLOCK_LOG("WiFi", "State: STA_CONNECTING (ms: %lu)", millis());
+            g_lastConnectAttemptMs = Uptime::ms();
+            CLOCK_LOG("WiFi", "State: STA_CONNECTING (ms: %lld)", (long long)Uptime::ms());
             connectSTA(*g_cfgPtr);
             break;
 
@@ -405,7 +413,7 @@ void WiFiManager::setState(WiFiState newState) {
             }
             CLOCK_LOG("WiFi", "State: STA_CONNECTED (IP: %s)", WiFi.localIP().toString().c_str());
             // Which access point (BSSID) and channel: tells mesh nodes apart.
-            DiagnosticLog::record("WIFI", "reconnected #%u rssi=%d ap=%s ch=%d ip=%s", g_diagReconnectCount, WiFi.RSSI(),
+            DiagnosticLog::record("WIFI", Texts::wifiReconnected, g_diagReconnectCount, WiFi.RSSI(),
                                   WiFi.BSSIDstr().c_str(), (int)WiFi.channel(), WiFi.localIP().toString().c_str());
             g_mdnsHost = makeMdnsHost(g_cfgPtr->projectName);
             {
@@ -432,9 +440,9 @@ void WiFiManager::setState(WiFiState newState) {
             // only a network without one gets a single lookup, in the
             // background.
             {
-                uint32_t __chainStartUs = micros();
+                int64_t __chainStartUs = Uptime::us();
                 startAP(*g_cfgPtr); // Start the synchronized AP now that we are connected.
-                g_diagLastReconnectChainMs = (micros() - __chainStartUs) / 1000;
+                g_diagLastReconnectChainMs = (uint32_t)((Uptime::us() - __chainStartUs) / 1000);
                 CLOCK_LOG("WiFi", "Diag: reconnect #%u chain (AP+server) took %u ms",
                           (unsigned)g_diagReconnectCount, (unsigned)g_diagLastReconnectChainMs);
             }
@@ -452,7 +460,7 @@ void WiFiManager::setState(WiFiState newState) {
 
         case WiFiState::RESTART_PENDING:
             CLOCK_LOG("WiFi", "State: RESTART_PENDING");
-            g_restartAt = millis() + 2000;
+            g_restartAt = Uptime::ms() + 2000;
             break;
             
         default: break;
@@ -462,9 +470,9 @@ void WiFiManager::setState(WiFiState newState) {
 void WiFiManager::loop() {
     WiFiLock::Guard guard;
     // 1. Handle planned reboots
-    if (g_state == WiFiState::RESTART_PENDING && millis() > g_restartAt) {
+    if (g_state == WiFiState::RESTART_PENDING && Uptime::ms() >= g_restartAt) {
         CLOCK_LOG("WiFi", "Performing planned restart...");
-        ESP.restart();
+        Restart::now();
         return;
     }
 
@@ -509,7 +517,7 @@ void WiFiManager::loop() {
             }
 
             if (isFatal) {
-                unsigned long age = millis() - g_stateTimer;
+                int64_t age = Uptime::ms() - g_stateTimer;
                 if (age > 2000) { // Ignore stale events from the teardown process
                     if (g_retryCount < MAX_STA_RETRIES) {
                         g_retryCount++; // This will be attempt #2 or #3
@@ -539,14 +547,14 @@ void WiFiManager::loop() {
             // and restarting the connection right then threw away a link the
             // core had just re-established on its own (2026-10-18, core 3.x:
             // ~4 s longer to get online after a restart).
-            if ((int32_t)(millis() - g_lastConnectAttemptMs) > (int32_t)WIFI_CONNECT_TIMEOUT_MS &&
-                (g_lastLinkUpMs == 0 || (int32_t)(millis() - g_lastLinkUpMs) > (int32_t)WIFI_LINK_TO_IP_MS)) {
+            if (Uptime::ms() - g_lastConnectAttemptMs > WIFI_CONNECT_TIMEOUT_MS &&
+                (g_lastLinkUpMs == 0 || Uptime::ms() - g_lastLinkUpMs > WIFI_LINK_TO_IP_MS)) {
                 if (g_retryCount < MAX_STA_RETRIES) {
                     g_retryCount++; // This will be attempt #2 or #3
                     CLOCK_LOG("WiFi", "Connection timed out (Attempt %d). Retrying...", g_retryCount);
                     setState(WiFiState::STA_CONNECTING);
                 } else {
-                    CLOCK_LOG("WiFi", "Connection attempt timed out. Reverting to AP.");
+                    CLOCK_LOGF("WiFi", Texts::revertToAp);
                     g_retryCount = 0;
                     setState(WiFiState::AP_PORTAL);
                 }
@@ -559,7 +567,7 @@ void WiFiManager::loop() {
             // trying them, the usual way, every PORTAL_RETRY_MS - the setup
             // hotspot stays up meanwhile. Before 2026-10-21 only the core's own
             // auto-reconnect (one network) ever got the clock out of here.
-            if (hasValidCredentials(*g_cfgPtr) && millis() - g_stateTimer >= PORTAL_RETRY_MS) {
+            if (hasValidCredentials(*g_cfgPtr) && Uptime::ms() - g_stateTimer >= PORTAL_RETRY_MS) {
                 DiagnosticLog::record("WIFI", "setup mode: trying the known networks again");
                 g_retryCount = 0;
                 setState(WiFiState::STA_CONNECTING);
@@ -569,10 +577,10 @@ void WiFiManager::loop() {
         case WiFiState::STA_CONNECTED:
             // Verify we still have a valid IP (some routers de-auth silently)
             if (WiFi.status() != WL_CONNECTED || WiFi.localIP() == IPAddress(0,0,0,0)) {
-                CLOCK_LOG("WiFi", "Detected IP loss while in connected state. Re-initiating connection.");
+                CLOCK_LOGF("WiFi", Texts::ipLoss);
                 setState(WiFiState::STA_CONNECTING);
             } else {
-                g_lastOnlineMs = millis();
+                g_lastOnlineMs = Uptime::ms();
                 serviceRoaming();
             }
             break;
@@ -604,13 +612,13 @@ void WiFiManager::loop() {
  * move costs the clock 1-3 s of network, invisible on the screen.
  */
 void WiFiManager::serviceRoaming() {
-    unsigned long now = millis();
+    int64_t now = Uptime::ms();
     if (g_roamScanRunning) {
         int n = WiFi.scanComplete();
         if (n == WIFI_SCAN_RUNNING && now - g_roamScanStartedMs < ROAM_SCAN_GIVE_UP_MS) return;
         g_roamScanRunning = false;
         if (n < 0) {
-            DiagnosticLog::record("WIFI", "roam scan: %s (code %d)", n == WIFI_SCAN_RUNNING ? "no result within 15 s" : "failed", n);
+            DiagnosticLog::record("WIFI", Texts::roamScanFailed, n == WIFI_SCAN_RUNNING ? "no result within 15 s" : "failed", n);
             WiFi.scanDelete();
             return;
         }
@@ -628,7 +636,7 @@ void WiFiManager::serviceRoaming() {
         }
         WiFi.scanDelete();
         bool better = bestBssid.length() && bestRssi >= curRssi + ROAM_MIN_GAIN_DB;
-        DiagnosticLog::record("WIFI", "roam scan: on %s at %d dBm; seen %s-> %s",
+        DiagnosticLog::record("WIFI", Texts::roamScan,
                               curBssid.substring(curBssid.length() - 5).c_str(), curRssi, seen.c_str(),
                               better ? "switching" : "staying");
         if (better) {
@@ -665,7 +673,7 @@ void WiFiManager::serviceRoaming() {
 bool WiFiManager::heardNetworks(std::vector<HeardNetwork>& out, bool rescan) {
     WiFiLock::Guard guard;
     if (rescan) g_heardAtMs = 0;   // wait for the next result (a running scan counts)
-    if (g_heardAtMs && millis() - g_heardAtMs < LIST_FRESH_MS) {
+    if (g_heardAtMs && Uptime::ms() - g_heardAtMs < LIST_FRESH_MS) {
         out = g_heard;
         return true;
     }
@@ -682,7 +690,7 @@ bool WiFiManager::heardNetworks(std::vector<HeardNetwork>& out, bool rescan) {
 void WiFiManager::serviceListScan() {
     if (g_listScanRunning) {
         int n = WiFi.scanComplete();
-        if (n == WIFI_SCAN_RUNNING && millis() - g_listScanStartedMs < LIST_SCAN_GIVE_UP_MS) return;
+        if (n == WIFI_SCAN_RUNNING && Uptime::ms() - g_listScanStartedMs < LIST_SCAN_GIVE_UP_MS) return;
         if (n == WIFI_SCAN_RUNNING) esp_wifi_scan_stop();
         g_listScanRunning = false;
         g_heard.clear();
@@ -696,7 +704,7 @@ void WiFiManager::serviceListScan() {
         }
         std::sort(g_heard.begin(), g_heard.end(), [](const HeardNetwork& a, const HeardNetwork& b) { return a.rssi > b.rssi; });
         WiFi.scanDelete();
-        g_heardAtMs = millis() | 1;
+        g_heardAtMs = Uptime::ms() | 1;
         if (n < 0) DiagnosticLog::record("WIFI", "network list for the page: scan %s (code %d)", n == WIFI_SCAN_RUNNING ? "gave no result" : "failed", n);
         else CLOCK_LOG("WiFi", "network list for the page: %d names (%d access points)", (int)g_heard.size(), n);
         return;
@@ -706,10 +714,10 @@ void WiFiManager::serviceListScan() {
     if (WiFi.scanNetworks(true /*async*/, false, false, LIST_SCAN_MS_PER_CH) == WIFI_SCAN_FAILED) {
         DiagnosticLog::record("WIFI", "network list for the page: scan could not start");
         g_heard.clear();
-        g_heardAtMs = millis() | 1;
+        g_heardAtMs = Uptime::ms() | 1;
         return;
     }
-    g_listScanStartedMs = millis();
+    g_listScanStartedMs = Uptime::ms();
     g_listScanRunning = true;
 }
 
@@ -728,7 +736,7 @@ String WiFiManager::getStatusMessage() {
             // there sent people to a network that didn't exist.
             // Scrolls, and starts over when read (MessageAggregator::loop()).
             if (!g_syncedApUp)
-                info = "Setup: join Wi-Fi " + String(AP_SSID_PREFIX) + "Setup - password " + String(AP_PASSWORD_DEFAULT) + " - open 192.168.4.1";
+                info = Texts::fill(Texts::setupLine, String(AP_SSID_PREFIX) + "Setup", apPassword());
             break;
         // In all other states (eg. connected, connecting), return an empty string
         // to avoid cluttering the display.
@@ -744,10 +752,40 @@ bool WiFiManager::isApActive() {
 
 bool WiFiManager::syncedApUp() { return g_syncedApUp; }
 
-uint32_t WiFiManager::offlineForMs() {
+int64_t WiFiManager::offlineForMs() {
     WiFiLock::Guard guard;
     if (g_state == WiFiState::STA_CONNECTED && WiFi.status() == WL_CONNECTED) return 0;
-    return millis() - g_lastOnlineMs;
+    return Uptime::ms() - g_lastOnlineMs;
+}
+
+String WiFiManager::ownWifiName() {
+    if (!g_syncedApUp && g_apActive) return String(AP_SSID_PREFIX) + "Setup";
+    return g_cfgPtr ? String(g_cfgPtr->projectName).substring(0, WIFI_SSID_MAX_BYTES) : String();   // as startAP() names it
+}
+
+// The clock's own Wi-Fi password: the one in its settings, always (the user, 2026-11-14:
+// every clock alike - made once, then fixed for that clock). None there yet (first start,
+// factory reset, or settings from a version that used the compiled-in one): the
+// compiled-in AP_PASSWORD_DEFAULT if this build has one - so a clock that had it keeps
+// it - else a random one; either is written to the settings and stays.
+const char* WiFiManager::apPassword() {
+    if (!g_cfgPtr) return AP_PASSWORD_DEFAULT;
+    char* pw = g_cfgPtr->apPassword;
+    if (Storage::apPasswordProblem(pw).length()) {   // none yet - or one the radio would refuse
+        if (pw[0]) DiagnosticLog::record("WIFI", "the clock's own Wi-Fi password in the settings is not usable (%s) - a new one",
+                                         Storage::apPasswordProblem(pw).c_str());
+        if (AP_PASSWORD_DEFAULT[0]) {
+            StringTools::utf8Copy(g_cfgPtr->apPassword, AP_PASSWORD_DEFAULT);
+            DiagnosticLog::record("WIFI", "the clock's own Wi-Fi password kept in the settings");
+        } else {
+            for (int i = 0; i < AP_OWN_PASSWORD_CHARS; i++)
+                pw[i] = AP_OWN_PASSWORD_LETTERS[esp_random() % (sizeof(AP_OWN_PASSWORD_LETTERS) - 1)];
+            pw[AP_OWN_PASSWORD_CHARS] = '\0';
+            DiagnosticLog::record("WIFI", "the clock's own Wi-Fi got its own password");
+        }
+        Storage::saveConfigSoon();
+    }
+    return pw;
 }
 
 // ─── Private Actions (Triggered by State Transitions) ───────────────────────
@@ -809,7 +847,7 @@ void WiFiManager::connectSTA(AppConfig& cfg) {
     if (g_roamScanRunning) { WiFi.scanDelete(); g_roamScanRunning = false; }
     if (g_listScanRunning) {   // the page gets "none heard"
         esp_wifi_scan_stop(); WiFi.scanDelete();
-        g_listScanRunning = false; g_heard.clear(); g_heardAtMs = millis() | 1;
+        g_listScanRunning = false; g_heard.clear(); g_heardAtMs = Uptime::ms() | 1;
     }
     g_pickScanRunning = false;
     int known = knownNetworkCount(cfg);
@@ -856,17 +894,28 @@ void WiFiManager::connectSTA(AppConfig& cfg) {
         return;
     }
     g_pickScanRunning = true;
-    g_pickScanStartedMs = millis();
+    g_pickScanStartedMs = Uptime::ms();
 }
 
 void WiFiManager::startAP(AppConfig& cfg) {
-    if (g_apActive) return;
+    // Already the clock's own Wi-Fi: nothing to do. Up as the setup one ("...-Setup",
+    // startAPPortal() - no network could be joined): started again under the clock's name now.
+    // Until 2026-11-20 it stayed "...-Setup" after the clock got back onto its home Wi-Fi - found
+    // at the parents' (2.1.2, 9 days up, its page saying "JewishClock"); drill setup_then_back.
+    if (g_apActive && g_syncedApUp) return;
+    if (g_apActive) {
+        CLOCK_LOG("WiFi", "Own Wi-Fi was the setup one - renamed to the clock's");
+        dnsServer.stop();
+    }
     g_diagApRebuildCount++;
 
     // cfg.projectName already defaults to "JewishClock" and is normalized to a
     // prefix-free identifier, so use it directly - prepending AP_SSID_PREFIX here
     // would double up the branding (e.g. "JewishClock-JewishClock").
     String apName = String(cfg.projectName);
+    // A name kept from an older version may be longer than an SSID can be (the
+    // page asks for a shorter one); the radio gets what it takes. ASCII only.
+    if (apName.length() > (unsigned)WIFI_SSID_MAX_BYTES) apName.remove(WIFI_SSID_MAX_BYTES);
     int channel = WiFi.channel(); // Get the channel we are connected on
 
     CLOCK_LOG("WiFi", "Starting synchronized AP '%s' on channel %d", apName.c_str(), channel);
@@ -875,7 +924,7 @@ void WiFiManager::startAP(AppConfig& cfg) {
     // With STA already connected, calling softAP directly will implicitly
     // switch to WIFI_AP_STA mode without causing an interface restart.
     // WiFi.mode(WIFI_AP_STA);
-    WiFi.softAP(apName.c_str(), AP_PASSWORD_DEFAULT, channel);
+    WiFi.softAP(apName.c_str(), apPassword(), channel);
 
     delay(100); // Allow radio to stabilize
     IPAddress apIP = WiFi.softAPIP();
@@ -887,19 +936,6 @@ void WiFiManager::startAP(AppConfig& cfg) {
 
     // Start the web server now that both interfaces are ready
     WebUI::startServer(cfg);
-}
-
-// Not currently called anywhere (the STA_CONNECTING transition no longer
-// tears the AP down before reconnecting - see setState()'s comment). Kept,
-// like WebUI::stopServer(), as a deliberate explicit teardown for any future
-// caller that genuinely needs one, rather than removed outright.
-void WiFiManager::stopAP() {
-    if (!g_apActive) return;
-    dnsServer.stop();
-    WiFi.softAPdisconnect(true);
-    g_apActive = false;
-    g_syncedApUp = false;
-    CLOCK_LOG("WiFi", "AP stopped.");
 }
 
 void WiFiManager::startAPPortal(AppConfig& cfg) {
@@ -914,7 +950,7 @@ void WiFiManager::startAPPortal(AppConfig& cfg) {
     String apName = String(AP_SSID_PREFIX) + "Setup";
     // Configure AP with specific IP
     WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
-    WiFi.softAP(apName.c_str(), AP_PASSWORD_DEFAULT);
+    WiFi.softAP(apName.c_str(), apPassword());
     
     delay(100); // Give AP time to start
     IPAddress apIP = WiFi.softAPIP();
@@ -935,16 +971,31 @@ void WiFiManager::startAPPortal(AppConfig& cfg) {
             
             String html = String(portal_html);
             html.replace("<<PROJECT_NAME>>", StringTools::formatProjectName(cfg.projectName));
+            html.replace("<<SSID_MAX>>", String(WIFI_SSID_MAX_BYTES));   // Config.h LIMITS (the form counts letters; /save checks bytes)
+            html.replace("<<PASS_MAX>>", String(WIFI_PASSWORD_MAX_CHARS));
             request->send(200, "text/html", html);
         }).setFilter(ON_AP_FILTER);
 
         server->on("/save", HTTP_POST, [](AsyncWebServerRequest *request) {
             String ssid = request->arg("ssid");
             String pass = request->arg("password");
+            // Config.h LIMITS: refused, never cut (2026-11-13). No minimum for the
+            // password - the home network's own business.
+            String why = ssid.isEmpty() ? String(Texts::setupNeedName)
+                : !StringTools::asciiPlain(ssid.c_str()) ? Texts::fill(Texts::wifiNotPlain, Texts::labelSetupNetName) + "."
+                : !StringTools::asciiPlain(pass.c_str()) ? Texts::fill(Texts::wifiNotPlain, Texts::labelSetupPassword) + "."
+                : ssid.length() > (unsigned)WIFI_SSID_MAX_BYTES
+                ? Texts::fill(Texts::setupNameTooLong, Storage::textLimitText(WIFI_SSID_MAX_BYTES, false))
+                : pass.length() > (unsigned)WIFI_PASSWORD_MAX_CHARS
+                ? Texts::fill(Texts::setupPassTooLong, Storage::textLimitText(WIFI_PASSWORD_MAX_CHARS, false))
+                : String();
+            if (why.length()) {
+                request->send(400, "text/html", "<html><body style='font-family:sans-serif; text-align:center; padding-top:50px;'><h2>" + String(Texts::setupNotSaved) + "</h2><p>"
+                              + why + "</p><p><a href='/'>Back</a></p></body></html>");
+                return;
+            }
 
-            // Debugging: Log SSID and encrypted password hash for verification.
-            String encrypted = Storage::encryptPassword(pass.c_str());
-            CLOCK_LOG("WiFi", "Portal Setup - SSID: %s, Encrypted Password: %s", ssid.c_str(), encrypted.c_str());
+            CLOCK_LOG("WiFi", "Portal Setup - SSID: %s", ssid.c_str());   // never the password (Storage.cpp load)
 
             // Into the slot that already has this name (new password), else
             // the first free one, else the last - the others are kept, so
@@ -956,8 +1007,8 @@ void WiFiManager::startAPPortal(AppConfig& cfg) {
             // A different network in that slot: its place is unknown (looked
             // up when joined). Directly - the clock restarts right after this.
             if (ssid != wifiSsidAt(*g_cfgPtr, slot)) memset(&g_cfgPtr->places[slot], 0, sizeof(Place));
-            strlcpy(wifiSsidAt(*g_cfgPtr, slot), ssid.c_str(), sizeof(g_cfgPtr->wifiSSID));
-            strlcpy(wifiPasswordAt(*g_cfgPtr, slot), pass.c_str(), sizeof(g_cfgPtr->wifiPassword));
+            StringTools::utf8Cut(wifiSsidAt(*g_cfgPtr, slot), sizeof(g_cfgPtr->wifiSSID), ssid.c_str(), sizeof(g_cfgPtr->wifiSSID) - 1);
+            StringTools::utf8Cut(wifiPasswordAt(*g_cfgPtr, slot), sizeof(g_cfgPtr->wifiPassword), pass.c_str(), sizeof(g_cfgPtr->wifiPassword) - 1);
             Storage::saveConfig(*g_cfgPtr);
 
             // The clock's name on the network (its mDNS name follows the clock's
@@ -967,7 +1018,7 @@ void WiFiManager::startAPPortal(AppConfig& cfg) {
             String host = makeMdnsHost(g_cfgPtr->projectName) + ".local";
             String html = "<html><head><meta http-equiv='refresh' content='10;url=http://" + host + "/'></head>";
             html += "<body style='font-family:sans-serif; text-align:center; padding-top:50px;'>";
-            html += "<h2>Settings Saved</h2>";
+            html += String("<h2>") + Texts::setupSaved + "</h2>";
             html += "<p>Connecting to <b>" + ssid + "</b>...</p>";
             html += "<p>The setup hotspot will close shortly.</p>";
             html += "<p>If your device supports mDNS, you will be redirected to <a href='http://" + host + "/'>" + host + "</a> in 10 seconds.</p>";

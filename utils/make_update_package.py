@@ -14,6 +14,10 @@ Package format (all integers little-endian, crc32 = zlib.crc32):
   entryCount x ( u8 type (1 = web file, 2 = firmware) | u8 pathLen | path |
                  u32 size | u32 crc32 | data )
   b"JCEND!"
+  then the signature (2026-11-14; versions before it stop reading at JCEND! and ignore it):
+  b"JCSIG1" | u16 sigLen | ECDSA P-256 signature (DER) of SHA-256 over every byte up to and
+  including JCEND! - made with the private key (utils/update_key.py); the clock checks it
+  with the public key in its firmware (include/UpdateKey.h) and installs nothing without it.
 """
 import re
 import struct
@@ -74,6 +78,11 @@ def main():
         out += struct.pack("<II", len(data), zlib.crc32(data) & 0xFFFFFFFF)
         out += data
     out += b"JCEND!"
+    import update_key
+    sig = update_key.sign(bytes(out))
+    if not update_key.verify(bytes(out), sig, update_key.header_public_der()):   # the key the firmware carries
+        sys.exit("The signature does not check out against include/UpdateKey.h (another key?) - not written")
+    out += b"JCSIG1" + struct.pack("<H", len(sig)) + sig
 
     out_dir.mkdir(parents=True, exist_ok=True)
     target = out_dir / f"JewishClock-update-{version}.jcupdate"
@@ -83,7 +92,7 @@ def main():
           f"({sum(len(e[2]) for e in web):,} bytes)")
     for _, path, data in web:
         print(f"  {path}  {len(data):,}")
-    print(f"-> {target}  ({len(out):,} bytes)")
+    print(f"-> {target}  ({len(out):,} bytes, signed: key {update_key.key_id(update_key.public_der())})")
 
 
 if __name__ == "__main__":

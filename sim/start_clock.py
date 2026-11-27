@@ -3,6 +3,7 @@ Start (or stop) one of the two simulated clocks that can run side by side:
 
     C:/pio3/jc_clean/venv/Scripts/python sim/start_clock.py family [--fresh]
     C:/pio3/jc_clean/venv/Scripts/python sim/start_clock.py dev [--fresh] [--build]
+    ... family|dev --hotspot   its own Wi-Fi as a real Wi-Fi for phones (sim/hotspot.py)
     C:/pio3/jc_clean/venv/Scripts/python sim/start_clock.py stop family|dev
 
 family - exactly the build the parents' clock runs (sim/family_version.txt, the
@@ -14,11 +15,13 @@ family - exactly the build the parents' clock runs (sim/family_version.txt, the
 dev    - the working version: today's code (--build rebuilds it first), Data/.
          Every start is like flashing it over USB: the working build and page
          files go in, its settings, events, pictures and log stay.
-         Web http://127.0.0.1:8080 (8081, control 8090).
+         Web http://127.0.0.1:8080 (8081, control 8090). Named "JewishClockWork"
+         (browser tab, page, start screen), the family clock keeps their name.
 
 Each keeps its flash and state between starts (C:/pio3/jc_clean/sim/<name>/clock);
 --fresh starts from the seed again. When the family installs an update: set
-family_version.txt, and refresh seed/ from a backup of theirs.
+family_version.txt, and refresh seed/ from an Excel export of theirs
+(sim/seed_from_export.py <file.xlsx>) - with every new export they send.
 """
 import io
 import os
@@ -40,6 +43,7 @@ sys.path.insert(0, str(ROOT / "sim"))
 from sim_ports import ports  # noqa: E402
 CLOCKS = {k: dict(zip(("home", "ap", "ctl"), ports(k))) for k in ("family", "dev")}
 TITLES = {"family": "Released", "dev": "Work"}   # first word of each clock's window title
+DEV_NAME = "JewishClockWork"   # the dev clock's name (start()); shown "Jewish Clock Work"
 sys.path.insert(0, str(ROOT / "utils"))
 import web_files  # noqa: E402
 
@@ -174,6 +178,15 @@ def start(name, fresh, build):
         update_page(d / "fs")
     (d / "state").mkdir(parents=True, exist_ok=True)
     if name == "dev":
+        # Its own name (the user, 2026-11-12: tell the simulators apart everywhere, not
+        # only in the window title): browser tab, page heading, start screen, its Wi-Fi.
+        # The family clock keeps theirs - it is their data. Only while still the default:
+        # a name typed in its Settings stays.
+        cfg_file = d / "fs" / "config.json"
+        cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+        if cfg.get("projectName", "JewishClock") == "JewishClock":
+            cfg["projectName"] = DEV_NAME
+            cfg_file.write_text(json.dumps(cfg, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
         # As a USB flash: the working build becomes the firmware in its flash. The
         # slots remember the last installed version, so without this it went on
         # running an older kept build (2026-11-07).
@@ -209,8 +222,35 @@ def main():
     if args[0] == "stop":
         for n in (args[1:] or ["family", "dev"]):
             stop(n)
+            if hotspot_follows() == n:
+                subprocess.run([PY, str(ROOT / "sim" / "hotspot.py"), "stop"])
         return
     start(args[0], "--fresh" in args, "--build" in args)
+    if "--hotspot" in args:
+        start_hotspot(args[0])
+
+
+def hotspot_follows():
+    """Which clock sim/hotspot.py follows now (None: not running)."""
+    f = SIM / "hotspot" / "pid.json"
+    try:
+        return json.loads(f.read_text())["clock"]
+    except Exception:
+        return None
+
+
+def start_hotspot(name):
+    """sim/hotspot.py in a window of its own (its lines: hotspot on/off, the address for phones)."""
+    if hotspot_follows():
+        subprocess.run([PY, str(ROOT / "sim" / "hotspot.py"), "stop"])
+    subprocess.Popen(["conhost.exe", PY, str(ROOT / "sim" / "hotspot.py"), name], cwd=str(ROOT),
+                     creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
+    for _ in range(60):
+        time.sleep(1)
+        if hotspot_follows() == name:
+            print("hotspot follows the %s clock - see its window for the address for phones" % name)
+            return
+    print("hotspot did not start - run sim/hotspot.py %s to see why" % name)
 
 
 if __name__ == "__main__":

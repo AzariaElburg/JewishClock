@@ -10,7 +10,8 @@ the hardware replaced:
   `main.cpp` included, in real time - web pages, Wi-Fi, updates, backups,
   factory reset, restarts, its own NTP against real time servers. For
   everything the clock does besides drawing, and every test the clock itself
-  was needed for (`utils/ap_tests.py --sim`).
+  was needed for (`sim/web_ui.py` section `from_family`; `utils/ap_tests.py --sim`
+  still runs the four trips against it by hand).
 
 ## The full simulator (jcclock.exe, since 2026-11-05)
 
@@ -34,8 +35,23 @@ only the ticks of `millis()`). Downloads (Hebcal, place) go out for real.
   start): the networks and access points around - name, password, signal,
   channel, address, internet, on/off. `POST /world` on the control port
   changes it while running (a network switched off drops the connection,
-  reason 200, as an access point vanishing does).
-- **Control port** (tests, not the clock): `GET /state`, `POST /power-cut`
+  reason 200, as an access point vanishing does). `"blocked": ["ntp",
+  "hebcal.com"]`: one service down while the internet works - "ntp" = time
+  requests get no answer, anything else = downloads whose address contains it
+  fail after 5 s (2026-11-10).
+- **Its own Wi-Fi as a real Wi-Fi** (2026-11-13): `sim/start_clock.py family|dev
+  --hotspot` (or `sim/hotspot.py family|dev`, `... stop`). Windows' Mobile Hotspot
+  takes the clock's Wi-Fi name and password and is on while that Wi-Fi is up - off
+  while the clock restarts, as the real one. Phones and other computers join it and
+  open the page: `http://192.168.4.1` after the one-time admin step
+  `sim/hotspot_admin_setup.ps1 -StopIIS` (address, firewall, IIS off - `-Undo` reverses
+  it); before it `http://192.168.137.1:8071` (family) / `:8081` (work). The laptop
+  stays on its home Wi-Fi. One hotspot per laptop: one clock at a time. Differences:
+  Windows shares the laptop's internet on it, so phones don't pop the page up by
+  themselves. Its window shows on/off and the address; the laptop's own hotspot
+  name/password are put back at stop. Works with any build (old ones: name from
+  `/api/status`, password from Config.h).
+- **Control port** (tests, not the clock): `GET /state` (incl. `ap`, `apSsid`, `apPass`), `POST /power-cut`
   (RTC memory lost), `POST /reset` (kept), `POST /stop`, `GET|POST /world`,
   `POST /light?lux=N` (`&sensor=0`: no sensor).
 - **Updates across versions**: each build is also kept as
@@ -54,15 +70,25 @@ only the ticks of `millis()`). Downloads (Hebcal, place) go out for real.
   `utils/ap_tests.py --sim` runs all four trips against it (22/22, 2026-11-05).
 - **Not on a PC**: the panel itself (speed, tear lines), flash-write pauses,
   real radio behaviour, heap fragmentation.
-- **Drills** (`sim/drills.py`, `--list`, `--only NAME`, `--exe` for a before/after):
+- **Resilience** (`sim/resilience.py` - the "drills": `--list`, `--only NAME`, `--exe` for a before/after,
+  `--jobs N` = N at a time, each with its own clock and ports):
   what the clock does when things go wrong - NTP at start, RTC memory (reset
   keeps / power cut loses), a network vanishing, all networks gone, wrong
   password, no internet, power cuts around saves, room light, broken update
   files, an update whose trial fails, a power cut during a trial, flash full of
-  pictures, 2000 events, and a complaint reproduced (the family's Excel backup on
+  pictures, 2000 events, "Internet unreachable" in scroll mode, NTP or Hebcal
+  down at start (tries 10, 20, 40 s apart), the calendar running out (>21 days offline), a power
+  cut while the router is down, and a complaint reproduced (the family's Excel backup on
   a factory-new clock, set to a date, its screen compared with jcsim's). Run
-  them all for every version (~20 min). 2026-11-06: found the clock's own
-  Wi-Fi unusable when the home Wi-Fi is gone - fixed in 2.1.1.
+  them all for every version (~10 min at --jobs 6; ~1 h one by one). 2026-11-06: found the clock's own
+  Wi-Fi unusable when the home Wi-Fi is gone - fixed in 2.1.1. 2026-11-11: Hebcal
+  asked again every 5 s while down - fixed (Calendar.cpp retryWaitMs: 10, 20, 40 s, then a minute;
+  the whole schedule on simulated time: `test_retry.py`).
+- **Web-ui** (`sim/web_ui.py`, `--list` shows sections and their parts,
+  `--only SECTION[.PART],...`, `--jobs N` = N lanes, each its own clock and browser,
+  coverage merged). The simulator's control port `/state` also reports `rounds`
+  (rounds of slides begun - MessageAggregator::roundsDone()) and `backlight` (the
+  PWM output, 0..1).
 - **Older versions on today's stand-ins** (to reproduce what a version the
   family has does): `git worktree add C:/pio3/jc_clean/wt v2.1.0`, then
   `python sim/build_clock.py --tree C:/pio3/jc_clean/wt` -> versions/2.1.0/. The
@@ -102,6 +128,7 @@ second copy, e.g. while a long test is using `jcsim.exe`).
 | Simulator vs the clock, 55 moments (holidays, Shabbat, fasts, sunset, years to 2300, rain/dew prayer around all three switches and their eves, settings 0/1/2) | `C:/pio3/jc_clean/venv/Scripts/python sim/moments.py --clock <clock-ip>` (~2.7 h; restarts the clock over USB, puts it back on real time at the end). A screenshot differing only in a few pixels in a flame (cake, candle) is the animation's phase, not a fault: the frame follows the uptime (`millis() / frame_delay_ms`, Display.cpp), which the simulator matches only roughly |
 | The same moments without the clock: today's simulator against the clock's screenshots saved by the last `moments.py` run (2026-11-04/05, before the clock left) | `C:/pio3/jc_clean/venv/Scripts/python sim/replay_moments.py` (~5 min). Slides containing the characters of `--expect-changed` (default ׳ ״, raised after that run) may differ; to prove a change touched nothing else, build the code from before it (`build.py --exe`) and replay with `--exe PATH --expect-changed "#"` - must be all OK (done 2026-11-05 for the geresh: 103/103) |
 | Rain/dew prayer slide (both switches), every day around each switch day, settings 0/1/2, evenings, nusach, abroad | `python sim/test_prayer.py` (~2 min) |
+| A download service out of reach: when the clock tries again, the calendar as soon as it's back (half an hour of Hebcal down, a blip, zmanim only) | `python sim/test_retry.py` (~30 s). jcsim's own option: `--down TEXT[@FROM-UNTIL]` (seconds after power-on; downloads whose address contains TEXT fail after 5 s; each download listed on stderr) |
 | Brightness learning on simulated days (widen, narrow after 3 days, gap, restart, millis wrap, saves) | `python sim/test_brightness.py` (seconds) |
 | Every slide of a whole year, to read through | `python sim/sweep.py --days 365` -> `C:/pio3/jc_clean/sim/work/sweep/slides.tsv` (~15 min) |
 | Does a wording stand still in alternating mode? Width in pixels of each line of a UTF-8 file, next to the window's (calibW) | `C:/pio3/jc_clean/sim/build/jcsim.exe --fs C:/pio3/jc_clean/sim/work/fs --instant-boot --measure FILE` |

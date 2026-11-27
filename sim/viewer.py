@@ -10,7 +10,6 @@ sim/prepare_fs.py. The page shows the screen ~20 times a second and the
 slide's text underneath.
 """
 import http.server
-import json
 import subprocess
 import sys
 import threading

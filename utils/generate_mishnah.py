@@ -2,8 +2,8 @@
 Draw the Mishna Yomit picture from scratch (2026-11-04): a closed hardcover
 volume, front cover with a gold frame and the title "משנה", the page edges
 showing at the side and bottom. Replaces a photo of a real book's cover
-(no reuse license; the original is kept in assets/images/ only, never on
-the clock).
+(no reuse license), which was then removed from the project entirely (the
+user, 2026-11-12) - this drawing is the Mishnah picture.
 
 Still picture, 16bpp RGB565 BMP like the other generators. Candidates +
 an enlarged preview to C:\\pio3\\jc_clean\\mishnah\\ (local_dirs.py) - copy the

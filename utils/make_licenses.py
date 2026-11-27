@@ -74,8 +74,10 @@ SERVICES = [
      "Derived from the IANA time zone database (public domain) via ICU. https://www.iana.org/time-zones"),
 ]
 
-# The LGPL texts refer to the GPL; it has to travel with them.
-EXTRA = [("GPL-3.0.txt", "GNU General Public License 3.0 (referred to by the LGPL 3.0)")]
+# The LGPL texts refer to the GPL; it has to travel with them. The data services' CC BY 4.0
+# in full too (2026-11-15: a link alone relies on the internet keeping it).
+EXTRA = [("GPL-3.0.txt", "GNU General Public License 3.0 (referred to by the LGPL 3.0)"),
+         ("CC-BY-4.0.txt", "Creative Commons Attribution 4.0 International (Hebcal, Open-Meteo, GeoNames data)")]
 
 
 def versions():

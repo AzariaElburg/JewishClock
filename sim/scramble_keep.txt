@@ -1,0 +1,9 @@
+# Texts sim/scrambled_build.py leaves as they are: not messages, but data the clock exchanges with
+# the outside - scrambling them would break the clock, not show a copied text in a test.
+# One per line, exactly as the literal in the code; a reason after "  #".
+Fast begins  # Hebcal's title_orig the clock matches (Calendar.cpp)
+Fast ends  # Hebcal's title_orig the clock matches (Calendar.cpp)
+Yom HaAtzma  # Hebcal's title_orig the clock matches (Calendar.cpp)
+application/json; charset=utf-8  # the content type the browser must understand
+text/plain; charset=utf-8  # the content type the browser must understand
+max-age=31536000, immutable  # a cache header the browser must understand

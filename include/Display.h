@@ -135,7 +135,6 @@ public:
     static void update(const AppConfig& cfg);
 
     static void setMode(DisplayMode mode);
-    static DisplayMode getMode();
     // Calibration mode shows either the live content (false) or a test
     // pattern of the whole panel with numbered edges (true) - both with the
     // window frame on top. Any task.
@@ -160,7 +159,12 @@ public:
     // waitingSinceMs; in single-scroll mode (never still) after a short
     // wait that gathers a burst into one write. Also true
     // before the screen draws at all. Any task.
-    static bool     goodMomentToWrite(uint32_t waitingSinceMs);
+    static bool     goodMomentToWrite(int64_t waitingSinceMs);   // Uptime::ms() the write began waiting
+    // The clock's content moves right now (scrolling, an animation), as of the last
+    // frame - calibration's moving frame doesn't count. Any task (the calibration
+    // view's refresh rate).
+    static bool     screenMoving();
+    static bool     contentStill();   // isStill() without the mode check. Main loop only.
     static uint32_t getAlternatingScrollRevealElapsedMs();
 
     // SingleScroll's round-advance signal: true once the currently-showing
@@ -278,7 +282,7 @@ private:
     static DisplayMode       _mode;
     static bool              _isInitialized;
     static bool              _displayReal;
-    static uint32_t          _lastInitAttemptMs;
+    static int64_t           _lastInitAttemptMs;
 
     static int _winX, _winY, _winW, _winH;
 
@@ -301,9 +305,10 @@ private:
     // State Machine
     static DisplayState _displayState;
     static AltScrollPhase _altScrollPhase;
-    static uint32_t        _altItemStartMs;   // millis() when the current alternating item was hard-cut in.
-    static uint32_t        _altCycleStartMs;  // millis() when the current pass's scrolling began (for measuring its duration).
-    static uint32_t        _altRevealDoneAtMs; // millis() when the final pass finished revealing (0 = not yet).
+    static void            startAlternatingItem(int64_t now);   // alternating mode: a new item on screen
+    static int64_t         _altItemStartMs;   // Uptime::ms() when the current alternating item was hard-cut in.
+    static int64_t         _altCycleStartMs;  // Uptime::ms() when the current pass's scrolling began (for measuring its duration).
+    static int64_t         _altRevealDoneAtMs; // Uptime::ms() when the final pass finished revealing (0 = not yet).
     static bool             _altCheckpointArmed; // True while waiting to detect the next reveal-complete
                                                   // crossing (one per pass); disarmed right after handling
                                                   // one, re-armed at the next seamless-wrap boundary.
@@ -318,8 +323,8 @@ private:
     static uint16_t _messageColor;
     static int      _scrollX;
     static int      _scrollSpeed;
-    static uint32_t _lastScrollMs;
+    static int64_t  _lastScrollMs;
 
     static int      _calibBorderPhase;
-    static uint32_t _lastCalibMs;
+    static int64_t  _lastCalibMs;
 };

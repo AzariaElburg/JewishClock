@@ -20,6 +20,11 @@ public:
     static void begin(AppConfig& cfg);
     static void loop();
     static String getStatusMessage();
+    // The clock's own Wi-Fi's password: AP_PASSWORD_DEFAULT, or - when that is
+    // "" - this clock's own, made at random the first time it is needed and
+    // saved (Config.h). Main loop only (it may write the settings).
+    static const char* apPassword();
+    static String      ownWifiName();   // the clock's own Wi-Fi up now: its synced one (the clock's name) or the setup one
     static bool   isApActive();
     // The clock's own Wi-Fi is up as its synchronized AP (projectName, the
     // full page - startAP()), not the setup one (startAPPortal()). Stays up
@@ -27,7 +32,7 @@ public:
     static bool   syncedApUp();
     // How long no known network has been joined: 0 while connected, else ms
     // since the last connection (since startup if none yet). Main loop only.
-    static uint32_t offlineForMs();
+    static int64_t  offlineForMs();
     // The known network being joined (or joined); "" while still choosing.
     static String joiningSsid();
     // Join known network `slot` now ("Connect" on the page; any task).
@@ -56,7 +61,6 @@ private:
     static void WiFiEventHandler(WiFiEvent_t event, WiFiEventInfo_t info);
     static void startAP(AppConfig& cfg);
     static void startAPPortal(AppConfig& cfg);
-    static void stopAP();
     static void connectSTA(AppConfig& cfg);
     static void serviceRoaming();   // move to a clearly stronger access point if the signal stays weak
     static void servicePickScan();  // several known networks: join the strongest once the scan is done

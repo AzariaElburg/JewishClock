@@ -154,6 +154,12 @@ def main():
             c = {"fast": {"from": f, "until": u}}
             jobs.append(("fast_f%d_u%d" % (f, u), c, FAST_MOMENTS, ("צום:", "סעודה"),
                          lambda now, w=c["fast"]: [x for x in [fast_text(now, w)] if x]))
+    # --only NAME ...: just those combinations (shabbat0..7, fast_f0_u0..; 2026-11-11)
+    if "--only" in sys.argv:
+        only = sys.argv[sys.argv.index("--only") + 1:]
+        if not [j for j in jobs if j[0] in only]:
+            sys.exit("no such combination - names: %s" % " ".join(j[0] for j in jobs))
+        jobs = [j for j in jobs if j[0] in only]
     results = {}
 
     def run(name, c, moments):

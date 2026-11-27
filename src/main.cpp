@@ -39,6 +39,9 @@
 #include "WiFiManager.h"
 #include "Location.h"
 #include "NTPManager.h"
+#include "Uptime.h"
+#include "OnlineUpdate.h"
+#include "UpdateKeyState.h"
 #include "Calendar.h"
 #include "MessageAggregator.h"
 #include "BrightnessManager.h"
@@ -55,6 +58,7 @@
 #include "lang.h"
 #include "StringTools.h"
 #include "Font.h"
+#include "Texts.h"
 
 // === TUNABLES ===  (rule: see Config.h header)
 
@@ -66,10 +70,9 @@
 // hang for long.
 static const uint32_t WDT_TIMEOUT_SEC = 20;
 
-// Boot overlay (AP name/address) shown for at least this long, so there's
-// time to read it and connect to the clock's own AP - crucial on networks
-// with client isolation, where devices can't see each other.
-static const unsigned long BOOT_OVERLAY_MS = 3UL * 60UL * 1000UL;
+// Boot overlay (AP name/address) shown for at least MessageAggregator::BOOT_OVERLAY_MS, so
+// there's time to read it and connect to the clock's own AP - crucial on networks with client
+// isolation, where devices can't see each other. (There since 2026-11-19: the simulator needs it too.)
 
 // TIMED_STEP / loop total: log a step or loop pass slower than this.
 // Display's own SPI blit is a ~54-65 ms baseline every pass, so anything
@@ -81,7 +84,7 @@ static const uint32_t SLOW_STEP_US = 200000;
 static const size_t SERIAL_TX_BUFFER_BYTES = 4096;
 
 // Periodic "[Trace] ... State" lines, even when nothing changed.
-static const unsigned long TRACE_LOG_INTERVAL_MS = 5000;
+static const int64_t TRACE_LOG_INTERVAL_MS = 5000;
 
 // ─── Global state ─────────────────────────────────────────────────────────────
 
@@ -95,7 +98,7 @@ static int  g_lastWordGap  = -1;
 static int  g_lastWidthScale = -1;
 
 // Boot sequence tracking
-static unsigned long g_bootStartMs = 0;
+static int64_t g_bootStartMs = 0;
 
 // =============================================================================
 // Public Functions
@@ -119,7 +122,6 @@ void setup() {
     Serial.begin(115200);
     // Wait up to 3 seconds for the Serial Monitor to actually connect
     // This ensures you don't miss the first messages.
-    // while (!Serial && millis() < 3000); // Removed to prevent S3 boot stalls when headless
     // delay(200);
     Serial.print("\n\n");
     CLOCK_LOG("System", "=== JewishClock %s ===", FIRMWARE_VERSION);
@@ -161,6 +163,7 @@ void setup() {
     DiagnosticLog::begin();
     DiagnosticLog::record("BOOT", "firmware=%s reset_reason=%d", FIRMWARE_VERSION, (int)esp_reset_reason());
     Storage::loadConfig(g_cfg);
+    if (UpdateKeyState::adopt(g_cfg)) Storage::saveConfigSoon();   // a new firmware writes its own update key in
 
     // As early as possible - before anything below has a chance to log -
     // so a persisted "debug" survives being set, flashed via uploadfs
@@ -171,9 +174,7 @@ void setup() {
     // The debug time offset is now fully managed via the Web UI.
     NTPManager::setDebugOffset(g_cfg.debugTimeOffset); // Apply offset from loaded config
     Storage::loadEvents(g_events);
-    // Event pictures: the old per-event photos into the shared library (once),
-    // and pictures no event uses any more (e.g. after an Excel import) away.
-    if (ImageLibrary::migrateOldPhotos(g_events)) Storage::saveEvents(g_events);
+    // Event pictures no event uses any more (e.g. after an Excel import) away.
     ImageLibrary::removeUnused(g_events);
     EventsLock::begin(); // Before WebUI::begin()/MessageAggregator::begin() below hand out any reference to g_events.
     CLOCK_LOG("System", "Config loaded. Project: %s, SSID: %s", g_cfg.projectName, g_cfg.wifiSSID[0] ? g_cfg.wifiSSID : "Not Set"); // Keep this line
@@ -224,10 +225,11 @@ void setup() {
     // 5. Networking & Time
     WiFiLock::begin(); // Before WiFiManager::begin() - its internal state machine can race against the AP-portal's /save handler as soon as the AP starts serving.
     WiFiManager::begin(g_cfg);
-    NTPManager::begin(
-        g_cfg.ntpServerCount > 0 ? g_cfg.ntpServers[0] : NTP_SERVER_1,
-        g_cfg.tzPOSIX
-    );
+    {
+        const char* ntp[NTP_SERVER_SLOTS];
+        for (int i = 0; i < NTP_SERVER_SLOTS; i++) ntp[i] = g_cfg.ntpServers[i];
+        NTPManager::begin(ntp, NTP_SERVER_SLOTS, g_cfg.tzPOSIX);   // all of them: the next when one doesn't answer
+    }
 
     // 6. Calendar & Events
     Calendar::begin(g_cfg);
@@ -241,7 +243,7 @@ void setup() {
     Updater::begin();
 
     // Record boot time for boot message display
-    g_bootStartMs = millis();
+    g_bootStartMs = Uptime::ms();
 
     CLOCK_LOG("main", "Setup complete — entering loop");
 }
@@ -257,7 +259,7 @@ void setup() {
         snprintf(newMsg, sizeof(newMsg), fmt, ##__VA_ARGS__); \
         if (strcmp(buffer, newMsg) != 0 || doLog) { \
             CLOCK_LOG("main", "[Trace] %s", newMsg); \
-            strncpy(buffer, newMsg, sizeof(buffer)); \
+            StringTools::utf8Copy(buffer, newMsg); \
         } \
     } while (0)
 
@@ -266,29 +268,32 @@ void loop() {
     // iteration regardless of which branch below runs, so it stays right at
     // the top, unconditionally, before anything that could itself stall.
     esp_task_wdt_reset();
+    NTPManager::beginPass();   // one moment for this whole pass (NTPManager.h) - endPass() at the end
 
     // This static variable is initialized only ONCE. On subsequent loops, it retains its value.
-    static unsigned long lastLogMs = 0 - TRACE_LOG_INTERVAL_MS - 1; // Initialize to a value that ensures the first log runs immediately.
-    unsigned long now = millis();
+    static Timer sinceLog;   // not running: the first log runs immediately
+    int64_t now = Uptime::ms();
     // This check provides a periodic "heartbeat" log.
-    bool doLog = (now - lastLogMs > TRACE_LOG_INTERVAL_MS);
+    bool doLog = sinceLog.idleOrPassed(TRACE_LOG_INTERVAL_MS + 1);
 
-    if (doLog) lastLogMs = now;
+    if (doLog) sinceLog.startAt(now);
 
     // --- Permanent diagnostic (CLAUDE.md, "Never run a blocking call"): logs
     // any loop() step slow enough to stall the screen or the web server.
     // Removed once and the bug it catches came back - keep it. First added
     // in the 2026-09-30 investigation (commit 33bd2f7). Threshold: SLOW_STEP_US.
-    uint32_t __loopStartUs = micros();
+    int64_t __loopStartUs = Uptime::us();
     #define TIMED_STEP(label, code) do { \
-        uint32_t __stepStartUs = micros(); \
+        int64_t __stepStartUs = Uptime::us(); \
         code; \
-        uint32_t __stepUs = micros() - __stepStartUs; \
+        uint32_t __stepUs = (uint32_t)(Uptime::us() - __stepStartUs); \
         if (__stepUs > SLOW_STEP_US) DiagnosticLog::record("Timing", "SLOW STEP: %s took %u us", label, __stepUs); \
     } while (0)
 
     // 1. Non-blocking NTP step/slew poll
     TIMED_STEP("NTPManager::loop", NTPManager::loop());
+    TIMED_STEP("NTPManager::serviceTimeSeen", NTPManager::serviceTimeSeen());
+    TIMED_STEP("NTPManager::serviceTroubleFile", NTPManager::serviceTroubleFile());
 
     // 2. Wi-Fi connection state machine (reconnects, connect timeouts)
     TIMED_STEP("WiFiManager::loop", WiFiManager::loop());
@@ -298,7 +303,7 @@ void loop() {
 
     // 3. Boot sequence: show AP setup info for BOOT_OVERLAY_MS, or until time is known.
     bool hasTime = NTPManager::isSynced() || Calendar::getToday().hYear != 0;
-    bool showOverlay = (now - g_bootStartMs < BOOT_OVERLAY_MS) || (!hasTime && WiFiManager::isApActive());
+    bool showOverlay = (now - g_bootStartMs < MessageAggregator::BOOT_OVERLAY_MS) || (!hasTime && WiFiManager::isApActive());
 
     static char lastLoopState[128] = "";
     LOG_IF_CHANGED(lastLoopState, doLog, "Loop State: showOverlay=%s, hasTime=%s, isApActive=%s", showOverlay ? "true" : "false", hasTime ? "true" : "false", WiFiManager::isApActive() ? "true" : "false");
@@ -361,7 +366,7 @@ void loop() {
     bool uploading = Updater::uploadInProgress();
     if (uploading != s_updateScreen) {
         s_updateScreen = uploading;
-        if (uploading) DisplayManager::showStill("Updating...", false);
+        if (uploading) DisplayManager::showStill(Texts::updating, false);
         else           DisplayManager::endStill();
     }
 
@@ -373,6 +378,7 @@ void loop() {
 
     // 11. Firmware trial (confirm / roll back) and installing waiting web files
     TIMED_STEP("Updater::loop", Updater::loop());
+    TIMED_STEP("OnlineUpdate::loop", OnlineUpdate::loop(g_cfg));
 
     // 12. Waiting log lines to their file, in a batch (DiagnosticLog.h)
     TIMED_STEP("DiagnosticLog::loop", DiagnosticLog::loop());
@@ -380,20 +386,22 @@ void loop() {
 
     // A log level set for a while (Settings > Diagnostic log): back to info
     // when its time is up - checked once a minute, once the real time is known.
-    static unsigned long lastLogLevelCheckMs = 0;
-    if (g_cfg.logLevelUntil > 0 && now - lastLogLevelCheckMs > 60000UL && NTPManager::isSynced()) {
+    static int64_t lastLogLevelCheckMs = 0;
+    if (g_cfg.logLevelUntil > 0 && now - lastLogLevelCheckMs > 60000 && NTPManager::isSynced()) {
         lastLogLevelCheckMs = now;
         if ((int64_t)time(nullptr) >= g_cfg.logLevelUntil) {
             DiagnosticLog::record("Log", "level %s: its time is up - back to info", g_cfg.logLevel);
-            strlcpy(g_cfg.logLevel, "info", sizeof(g_cfg.logLevel));
+            StringTools::utf8Copy(g_cfg.logLevel, "info");
             g_cfg.logLevelUntil = 0;
             Logging::setLevel(LogLevel::INFO);
             Storage::saveConfigSoon();
         }
     }
 
+    NTPManager::endPass();
+
     // --- Permanent diagnostic: total loop() time, same SLOW_STEP_US threshold.
-    uint32_t __loopTotalUs = micros() - __loopStartUs;
+    uint32_t __loopTotalUs = (uint32_t)(Uptime::us() - __loopStartUs);
     if (__loopTotalUs > SLOW_STEP_US) DiagnosticLog::record("Timing", "SLOW LOOP: total %u us", __loopTotalUs);
     #undef TIMED_STEP
 }

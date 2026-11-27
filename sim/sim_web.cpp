@@ -13,6 +13,8 @@
 #include <ESPAsyncWebServer.h>
 #include <LittleFS.h>
 #include <thread>
+#include <atomic>
+#include <chrono>
 #include <vector>
 #include <string>
 #include <map>
@@ -252,17 +254,93 @@ void parseMultipart(const std::string& body, const std::string& boundary, std::v
     }
 }
 
+// Investigation 2026-11-15: an upload once got no connection for 21 s (WinError 10060) while the
+// clock ran on. Every connection is timed; uploads and anything slower than 2 s are said
+// (stderr = the clock's run.log): when it was accepted, its headers, body and answer.
+std::atomic<int> g_openConnections{0};
+static long long nowMsReal() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+struct ConnTrace {
+    long long t0 = nowMsReal(), tHead = 0, tBody = 0, tHandled = 0, tSent = 0;
+    std::string path = "?";
+    size_t bodyBytes = 0;
+    int openAtAccept = 0;
+    const char* end = "closed early";
+    ~ConnTrace() {
+        long long total = nowMsReal() - t0;
+        g_openConnections--;
+        // also every connection not answered normally: one the client gave up on shows up so (2026-11-16)
+        if (total < 2000 && path.rfind("/update", 0) != 0 && strcmp(end, "answered") == 0) return;
+        auto rel = [&](long long t) { return t ? t - t0 : -1; };
+        fprintf(stderr, "[sim] web %s: %s; head +%lld, body %zu bytes +%lld, handled +%lld, sent +%lld, total %lld ms; open at accept %d\n",
+                path.c_str(), end, rel(tHead), bodyBytes, rel(tBody), rel(tHandled), rel(tSent), total, openAtAccept);
+    }
+};
+
+// An upload, as the real library hands it over (2026-11-18): the file's data to the handler piece
+// by piece AS IT ARRIVES - an upload that stops halfway has begun, and the clock's own stall check
+// (Updater UPLOAD_STALLED_MS) is what ends it. Before, the whole body was read first and a cut-off
+// one dropped, so the clock never saw an upload that stalled. One file part (the clock's upload
+// forms). True = all of it arrived and was handed over (the last piece marked final).
+static bool streamUpload(SOCKET s, std::string body, size_t contentLength, const std::string& boundary,
+                         AsyncWebServerRequest& req, AsyncCallbackWebHandler* h, size_t& received) {
+    char tmp[16384];
+    received = body.size();
+    auto more = [&]() {
+        if (received >= contentLength) return false;
+        int n = recv(s, tmp, sizeof(tmp), 0);
+        if (n <= 0) return false;
+        body.append(tmp, n); received += n;
+        return true;
+    };
+    size_t partHead;
+    while ((partHead = body.find("\r\n\r\n")) == std::string::npos) if (!more()) return false;
+    std::string hdr = body.substr(0, partHead);
+    std::string filename;
+    size_t a = hdr.find("filename=\"");
+    if (a != std::string::npos) { a += 10; filename = hdr.substr(a, hdr.find('"', a) - a); }
+    body.erase(0, partHead + 4);
+    const std::string delim = "\r\n--" + boundary;
+    const size_t keep = delim.size() + 4;   // held back: may be the closing boundary
+    const size_t CHUNK = 1436;
+    size_t index = 0;
+    auto hand = [&](const char* p, size_t n, bool final) {
+        std::lock_guard<std::recursive_mutex> lk(Sim::clockLock());
+        h->onUpload_(&req, String(filename.c_str()), index, (uint8_t*)p, n, final);
+        index += n;
+    };
+    for (;;) {
+        while (body.size() > keep + CHUNK) { hand(body.data(), CHUNK, false); body.erase(0, CHUNK); }
+        if (received >= contentLength) break;
+        if (!more()) return false;   // cut off or stalled for good: no final piece, no answer
+    }
+    size_t end = body.find(delim);
+    if (end == std::string::npos) end = body.size();
+    size_t i = 0;
+    do {   // the rest, the last piece marked final
+        size_t k = std::min(CHUNK, end - i);
+        hand(body.data() + i, k, i + k >= end);
+        i += k;
+    } while (i < end);
+    return true;
+}
+
 void serveConnection(SOCKET s, bool viaAp) {
+    ConnTrace tr;
+    tr.openAtAccept = ++g_openConnections;
     std::string buf;
     size_t hdrEnd;
     char tmp[16384];
     while ((hdrEnd = buf.find("\r\n\r\n")) == std::string::npos) {
         int n = recv(s, tmp, sizeof(tmp), 0);
-        if (n <= 0 || buf.size() > 64 * 1024) { closesocket(s); return; }
+        if (n <= 0 || buf.size() > 64 * 1024) { tr.end = n == 0 ? "peer closed before headers" : "recv error before headers"; closesocket(s); return; }
         buf.append(tmp, n);
     }
+    tr.tHead = nowMsReal();
+    { size_t sp = buf.find(' '); size_t sp2 = sp == std::string::npos ? sp : buf.find(' ', sp + 1); if (sp2 != std::string::npos) tr.path = buf.substr(sp + 1, sp2 - sp - 1); }
     // The interface must be up (on the clock: no address on it = unreachable).
-    if (viaAp ? !Sim::apUp() : !Sim::staUp()) { closesocket(s); return; }
+    if (viaAp ? !Sim::apUp() : !Sim::staUp()) { tr.end = "interface down"; closesocket(s); return; }
 
     AsyncWebServerRequest req;
     std::string head = buf.substr(0, hdrEnd);
@@ -291,8 +369,30 @@ void serveConnection(SOCKET s, bool viaAp) {
         pos = e + 2;
     }
     std::string body = buf.substr(hdrEnd + 4);
-    if (req.contentLength_ && !recvAll(s, body, req.contentLength_)) { closesocket(s); return; }
+    bool streamed = false;   // an upload, handed over as it arrived (streamUpload())
+    {
+        std::string ct = req.contentType_;
+        size_t b = ct.find("boundary=");
+        AsyncCallbackWebHandler* up = nullptr;
+        if (ct.rfind("multipart/form-data", 0) == 0 && b != std::string::npos && req.contentLength_) {
+            std::lock_guard<std::recursive_mutex> lk(Sim::clockLock());
+            for (auto& h : g_server->handlers_) if (h->canHandle(&req)) { up = h.get(); break; }
+            if (up && !up->onUpload_) up = nullptr;
+        }
+        if (up) {
+            std::string boundary = ct.substr(b + 9);
+            if (!boundary.empty() && boundary.front() == '"') boundary = boundary.substr(1, boundary.size() - 2);
+            size_t got = 0;
+            if (!streamUpload(s, body, req.contentLength_, boundary, req, up, got)) {
+                tr.bodyBytes = got; tr.end = "upload cut off"; closesocket(s); return;
+            }
+            streamed = true;
+            body.clear();
+        }
+    }
+    if (!streamed && req.contentLength_ && !recvAll(s, body, req.contentLength_)) { tr.bodyBytes = body.size(); tr.end = "body cut off"; closesocket(s); return; }
     body.resize(std::min(body.size(), req.contentLength_));
+    tr.tBody = nowMsReal(); tr.bodyBytes = body.size();
 
     IPAddress local = viaAp ? WiFi.softAPIP() : WiFi.localIP();
     req.client_.local_ = local;
@@ -341,6 +441,7 @@ void serveConnection(SOCKET s, bool viaAp) {
         std::lock_guard<std::recursive_mutex> lk(Sim::clockLock());
         if (g_server->notFound_) g_server->notFound_(&req);
     }
+    tr.tHandled = nowMsReal();
     std::string out;
     {
         std::lock_guard<std::recursive_mutex> lk(Sim::clockLock());   // fillers read the clock's memory
@@ -358,6 +459,7 @@ void serveConnection(SOCKET s, bool viaAp) {
         }
     }
     sendAll(s, out.data(), out.size());
+    tr.tSent = nowMsReal(); tr.end = "answered";
     shutdown(s, SD_SEND);
     closesocket(s);
 }
@@ -374,9 +476,16 @@ void listenOn(int port, bool viaAp) {
     }
     if (listen(ls, 32) != 0) { fprintf(stderr, "[sim] listen failed on 127.0.0.1:%d\n", port); std::exit(10); }
     fprintf(stderr, "[sim] %s at http://127.0.0.1:%d\n", viaAp ? "clock's own Wi-Fi (192.168.4.1)" : "home network", port);
+    long long lastAccept = nowMsReal();
     for (;;) {
         SOCKET c = accept(ls, nullptr, nullptr);
-        if (c == INVALID_SOCKET) continue;
+        if (c == INVALID_SOCKET) { fprintf(stderr, "[sim] web accept on %d failed: %d\n", port, WSAGetLastError()); continue; }
+        long long t = nowMsReal();
+        // A long gap between connections: said, open ones or not (2026-11-16: a stalled accept with
+        // nothing open left no trace; the tests ask every second or so, so 15 s is not idle)
+        if (t - lastAccept > 15000)
+            fprintf(stderr, "[sim] web accept on %d: next connection after %lld ms, %d open\n", port, t - lastAccept, g_openConnections.load());
+        lastAccept = t;
         std::thread(serveConnection, c, viaAp).detach();
     }
 }

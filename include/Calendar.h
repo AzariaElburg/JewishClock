@@ -162,6 +162,8 @@ public:
     static String getUpcomingMevarchim();
     static const char*     getTodaySummary();
     static FastNotice getFastNotice();
+    // The one background task (downloads): wake it for OnlineUpdate's work (OnlineUpdate::runInTask()).
+    static void wakeTask();
     // The same slides by the user's show windows (AppConfig::candleShow ...,
     // Config.h ShowSpan). The default windows give exactly what
     // getCivilToday() / getUpcomingParasha() / getUpcomingMevarchim() /
@@ -193,7 +195,7 @@ private:
     static DayInfo       s_today;
     static DayInfo       s_civilToday;
     static std::vector<DayInfo> s_manifest;
-    static unsigned long s_lastFetchMs;
+    static int64_t s_lastFetchMs;   // Uptime::ms()
     static bool          s_forceRefresh;
 
     // ── Date computation ──

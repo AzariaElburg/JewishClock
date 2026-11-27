@@ -31,10 +31,27 @@ namespace Logging {
     // silently go quiet.
     LogLevel parseLevelName(const char* name, LogLevel fallback);
 
+    // Areas the clock logs at DEBUG by itself while it is in them, whatever the
+    // setting (the user, 2026-11-15: for the phone test of updates from the internet,
+    // A -> B -> C - nobody at the clock sets anything). The setting itself is left
+    // as it is (getLevel() still answers it), so leaving every area IS going back.
+    // Turned on/off with a log line by Updater::debugFocus(). REMOVE after that
+    // test (version C installed by itself from B): this, Updater::debugFocus and its calls.
+    enum Focus : uint8_t {
+        FOCUS_UPDATE_CHECK    = 1,   // asking the update feed
+        FOCUS_UPDATE_DOWNLOAD = 2,   // downloading a package from it
+        FOCUS_UPDATE_INSTALL  = 4,   // a package being received and checked (file or download)
+        FOCUS_UPDATE_TRIAL    = 8,   // the new version on trial, until its web files are in place
+    };
+    uint8_t focus();                         // the areas in now (0 = none)
+    bool    setFocus(uint8_t area, bool on);   // true if that changed whether any area is on
+
     // True if something at this level would currently be shown/recorded -
     // check before doing any work (e.g. serializing a whole JSON item)
     // that's only needed to build the log line itself.
-    inline bool enabled(LogLevel level) { return (uint8_t)level <= (uint8_t)getLevel(); }
+    inline bool enabled(LogLevel level) {
+        return (uint8_t)level <= (focus() ? (uint8_t)LogLevel::DEBUG : (uint8_t)getLevel());
+    }
 }
 
 // Routes through DiagnosticLog::record() (prints live AND persists) only

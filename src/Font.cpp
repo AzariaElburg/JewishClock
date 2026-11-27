@@ -76,18 +76,9 @@ void fontSetSpacing(uint8_t charGapPx, uint8_t wordGapPx) {
     fontComputeMetrics(); // Recompute the whole table now, from the real bitmaps.
 }
 
-void fontGetSpacing(uint8_t& charGapPx, uint8_t& wordGapPx) {
-    charGapPx = g_charGapPx;
-    wordGapPx = g_wordGapPx;
-}
-
 void fontSetWidthScale(uint8_t percent) {
     g_widthScalePct = percent;
     fontComputeMetrics();
-}
-
-uint8_t fontGetWidthScale() {
-    return g_widthScalePct;
 }
 
 uint8_t fontGetGlyphAdvance(uint8_t index) {
@@ -96,11 +87,6 @@ uint8_t fontGetGlyphAdvance(uint8_t index) {
     return g_glyphAdvance[index];
 }
 
-uint8_t fontGetGlyphLeftBearing(uint8_t index) {
-    if (!g_glyphMetricsReady) fontComputeMetrics();
-    if (index >= FONT_GLYPH_COUNT) return 0;
-    return g_glyphLeftBearing[index];
-}
 
 uint8_t fontGetGlyphScaledInkWidth(uint8_t index) {
     if (!g_glyphMetricsReady) fontComputeMetrics();

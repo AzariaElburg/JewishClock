@@ -1,7 +1,9 @@
 """What the parents do, done the way they do it: through the clock's own
 Wi-Fi ("JewishClock", 192.168.4.1 - their router keeps devices apart), with
 the clock's own pages in a browser (Edge, driven by Playwright). Run before
-shipping; a pre-ship check, not a unit test.
+shipping; a pre-ship check, not a unit test. For the REAL clock (the laptop at the
+parents'); the full simulator run covers the same path with sim/web_ui.py section
+from_family (2026-11-11) - --sim still runs these trips against a simulator by hand.
 
     C:/pio3/jc_clean/venv/Scripts/python utils/ap_tests.py [--skip page,settings,update] [--package FILE]
 
@@ -128,7 +130,14 @@ def snapshot(tag):
     backup = json.loads(get(b, "/api/backup", 60))
     images = sorted(x["id"] for x in json.loads(get(b, "/api/images/list", 60)))
     status = json.loads(get(b, "/api/status"))
-    snap = {"config": backup["config"], "events": backup["events"], "images": images,
+    # Pictures of deleted events: kept in the recycle bin (since 2.1.2) - trip 1
+    # deletes the event it made, its picture stays with it. Older firmware has
+    # no bin (the path answers with the page, not JSON).
+    try:
+        bin_images = sorted({e["image"] for e in json.loads(get(b, "/api/events/deleted", 30)) if e.get("image")})
+    except (ValueError, TypeError, KeyError, urllib.error.HTTPError):
+        bin_images = []
+    snap = {"config": backup["config"], "events": backup["events"], "images": images, "binImages": bin_images,
             "firmware": status.get("firmware"), "updateState": status.get("updateState")}
     (OUT / (tag + ".json")).write_text(json.dumps(snap, ensure_ascii=False, indent=1), encoding="utf-8")
     return snap
@@ -144,6 +153,10 @@ def compare(before, tag, stage):
     for k in sorted(set(before["config"]) | set(after["config"])):
         if k in LEARNED:
             continue
+        # A setting the starting file didn't have yet (written by an older version):
+        # the clock's first save writes it with its default - not a change.
+        if k not in before["config"]:
+            continue
         if before["config"].get(k) != after["config"].get(k):
             diffs.append("config.%s: %r -> %r" % (k, before["config"].get(k), after["config"].get(k)))
     # Without "id": an Excel import gives every event a new one (the file has none).
@@ -152,8 +165,9 @@ def compare(before, tag, stage):
     if ev(before) != ev(after):
         diffs.append("events: %d -> %d, %d differ" % (len(before["events"]), len(after["events"]),
                                                      len(set(ev(before)) ^ set(ev(after)))))
-    if before["images"] != after["images"]:
-        diffs.append("pictures: %s -> %s" % (before["images"], after["images"]))
+    in_use = lambda s: sorted(set(s["images"]) - set(s.get("binImages", [])))
+    if in_use(before) != in_use(after):
+        diffs.append("pictures: %s -> %s" % (in_use(before), in_use(after)))
     result(stage, not diffs, "; ".join(diffs) or "settings, events and pictures as at the start")
     return after
 
@@ -202,6 +216,14 @@ def pages_differ(url, data_dir):
     """The page files the clock serves that aren't data_dir's - their line ends as LF on
     both sides, as the clock gets them (utils/web_files.py; a git archive of a tag has CRLF)."""
     lf = lambda b: b.replace(b"\r\n", b"\n")
+    # Right after a restart "/" is the clock's "initializing..." page until its
+    # time sync (WebUI.cpp) - compared then, index.html "differed" (2026-11-09).
+    def synced():
+        try:
+            return json.loads(get(url, "/api/status")).get("synced")
+        except Exception:
+            return False   # still restarting
+    wait_until(synced, 60, 1)
     return [p for p in ("index.html", "update.html", "sortable.min.js")
             if lf(get(url, "/" + p if p != "index.html" else "/")) != lf((Path(data_dir) / p).read_bytes())]
 
@@ -381,7 +403,7 @@ def trip_settings(url, browser, xlsx):
             ssids.append((round(time.time() - t0), s))
             log("PC Wi-Fi at %+.0f s: %s" % (time.time() - t0, s))
         try:   # the page reloads itself once the clock answers again
-            back = pg.evaluate("document.readyState === 'complete' && typeof events !== 'undefined' && events.length > 0 && !el('data-result').textContent.includes('Importing')")
+            back = pg.evaluate("document.readyState === 'complete' && typeof events !== 'undefined' && events.length > 0 && !/Importing|Settings received|restarting/.test(el('data-result').textContent)")
         except Exception:
             back = False   # in the middle of the reload
         if back and time.time() - t0 > 10:
@@ -519,9 +541,21 @@ def trip_empty(browser, xlsx):
             pg.inner_text("#restore-msg")), 300, 2)
         pg.screenshot(path=str(OUT / "restore_page.png"))
         result("empty clock: restore page", bool(msg and msg.startswith("Restored:")), (msg or "no answer in 300 s").replace("\n", " | "))
-        result("empty clock: restore names the clock's Wi-Fi", bool(msg and CLOCK_AP in msg and "choose the Wi-Fi" in msg),
-               (msg or "").split("\n")[-1])
-        real = [e for e in errors if "favicon" not in e and "request failed" not in e]
+        # "Choose the Wi-Fi ... again" only once the clock stops answering (it
+        # restarted) - not with "Restored" (2026-11-09); then the page goes to "/".
+        def restore_text():
+            try:
+                return pg.evaluate("(document.getElementById('restore-msg') || {}).textContent || ''")
+            except Exception:
+                return ""   # in the middle of going to "/"
+        early = "Choose the Wi-Fi" in (msg or "")
+        said = wait_until(lambda: (lambda t: t if 'Choose the Wi-Fi "%s" again' % CLOCK_AP in t else None)(restore_text()), 120, 0.3)
+        result("empty clock: restore names the clock's Wi-Fi once it restarts", bool(said) and not early,
+               ("said too early, with Restored: " if early else "") + (said or "not said within 120 s").split("\n")[-1])
+        # The page asks "are you back?" while the clock restarts (2026-11-09): those
+        # requests fail at the network level - expected; script errors still count.
+        real = [e for e in errors if "favicon" not in e and "request failed" not in e
+                and not re.search(r"Failed to load resource: net::ERR_", e)]
         result("no page errors (trip 4)", not real, " | ".join(real)[:1500])
         ctx.close()
     finally:

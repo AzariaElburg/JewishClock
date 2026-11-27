@@ -4,6 +4,7 @@
 #include <Wire.h>
 #include "StringTools.h"
 #include "DiagnosticLog.h"
+#include "Uptime.h"
 #include <BH1750.h>
 
 namespace AmbientLight {
@@ -21,11 +22,12 @@ static const float         SMOOTHING_ALPHA    = 0.3f;
 // still be told apart from "dark". Daylight behind the pinhole stays far
 // below the top of the range.
 static const uint8_t       SENSOR_MTREG       = 254;
+static const uint32_t      READ_FAIL_LOG_AFTER = 3;   // failed reads in a row before the persistent log hears of it
 
 static BH1750 g_lightMeter(BH1750_ADDR);
 static bool g_sensorFound = false;
 static float g_lastLux = SIMULATED_LUX;
-static unsigned long g_lastSampleMs = 0;
+static int64_t g_lastSampleMs = 0;
 
 bool begin() {
     Wire.begin(BH1750_SDA, BH1750_SCL);
@@ -52,7 +54,7 @@ float readLux() {
 }
 
 void loop() {
-    unsigned long now = millis();
+    int64_t now = Uptime::ms();
     if (now - g_lastSampleMs < SAMPLE_INTERVAL_MS) return;
     g_lastSampleMs = now;
 
@@ -64,10 +66,16 @@ void loop() {
 
     if (g_lightMeter.measurementReady()) {
         float rawLux = g_lightMeter.readLightLevel();
+        // A sensor that stops answering after a good start (a loose wire) held the brightness at
+        // its last reading with no word anywhere (2026-11-18 review): one line when the reads start
+        // failing, one when they work again (DiagnosticLog::Streak, as for the downloads).
+        static DiagnosticLog::Streak s_readStreak{READ_FAIL_LOG_AFTER};
         if (rawLux < 0) {
             // On a read error, hold the last good value
+            s_readStreak.fail("SENSOR", "Light sensor reading", "the BH1750 doesn't answer - brightness held at the last reading");
             return;
         }
+        s_readStreak.ok("SENSOR", "Light sensor reading");
 
         // Apply smoothing (Exponential Moving Average)
         g_lastLux = SMOOTHING_ALPHA * rawLux + (1.0f - SMOOTHING_ALPHA) * g_lastLux;

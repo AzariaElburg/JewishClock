@@ -46,10 +46,17 @@ protected:
     int16_t w_, h_;
 };
 
+// The window the last frame was sent to (x, y, w, h) - what the panel was told, kept like
+// the ledc stand-in keeps its duty, so a test can follow Calibration's window to the panel
+// (/state "panelWindow", 2026-11-15). All -1 = nothing sent yet.
+inline int16_t g_simPanelWindow[4] = { -1, -1, -1, -1 };
+
 class Arduino_NV3041A : public Arduino_GFX {
 public:
     Arduino_NV3041A(Arduino_DataBus* bus, int8_t rst = GFX_NOT_DEFINED, uint8_t r = 0, bool ips = false) : Arduino_GFX(480, 128) {}
-    void writeAddrWindow(int16_t x, int16_t y, uint16_t w, uint16_t h) {}
+    void writeAddrWindow(int16_t x, int16_t y, uint16_t w, uint16_t h) {
+        g_simPanelWindow[0] = x; g_simPanelWindow[1] = y; g_simPanelWindow[2] = (int16_t)w; g_simPanelWindow[3] = (int16_t)h;
+    }
 };
 
 class Arduino_Canvas : public Arduino_GFX {

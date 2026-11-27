@@ -1,4 +1,5 @@
 #include "ImageLibrary.h"
+#include "StringTools.h"
 #include "DiagnosticLog.h"
 #include "Display.h"
 #include "Storage.h"
@@ -35,7 +36,7 @@ namespace ImageLibrary {
 
 bool isValidId(const char* id) {
     if (!id || strlen(id) != 8) return false;
-    for (const char* p = id; *p; p++) if (!isxdigit((unsigned char)*p) || isupper((unsigned char)*p)) return false;
+    for (const char* p = id; *p; p++) if (!StringTools::asciiHex(*p) || StringTools::asciiUpper(*p)) return false;
     return true;
 }
 
@@ -76,29 +77,6 @@ bool hasRoomFor(size_t bytes, String* why) {
     return false;
 }
 
-bool migrateOldPhotos(EventList& events) {
-    bool changed = false;
-    for (auto& ev : events) {
-        String old = String(FS_OLD_PHOTO_DIR "/") + ev.id + ".bmp";
-        if (!ev.id[0] || !LittleFS.exists(old)) continue;
-        File f = LittleFS.open(old, "r");
-        uint32_t crc = 0;
-        uint8_t buf[512];
-        size_t n;
-        while ((n = f.read(buf, sizeof(buf))) > 0) crc = crc32(crc, buf, n);
-        f.close();
-        String id = idFromCrc(crc);
-        LittleFS.mkdir(FS_IMAGE_DIR);
-        if (LittleFS.exists(imagePath(id.c_str()))) LittleFS.remove(old);   // same picture already there
-        else LittleFS.rename(old, imagePath(id.c_str()));
-        strlcpy(ev.image, id.c_str(), sizeof(ev.image));
-        changed = true;
-        DiagnosticLog::record("Images", "moved the photo of event %s into the picture library as %s", ev.id, id.c_str());
-    }
-    LittleFS.rmdir(FS_OLD_PHOTO_DIR);   // only if empty
-    return changed;
-}
-
 int removeUnused(const EventList& events) {
     // Deleted events keep their pictures while in the recycle bin (restorable).
     EventList deleted;
@@ -111,8 +89,8 @@ int removeUnused(const EventList& events) {
         f.close();
         String id = name.endsWith(".bmp") ? name.substring(0, name.length() - 4) : "";
         bool used = false;
-        for (const auto& ev : events) if (id.length() && id == ev.image) { used = true; break; }
-        for (const auto& ev : deleted) if (!used && id.length() && id == ev.image) { used = true; break; }
+        for (const auto& ev : events) if (id.length() && (id == ev.image || id == ev.iconImage)) { used = true; break; }
+        for (const auto& ev : deleted) if (!used && id.length() && (id == ev.image || id == ev.iconImage)) { used = true; break; }
         if (!used) unused.push_back(String(FS_IMAGE_DIR "/") + name);
     }
     dir.close();

@@ -8,6 +8,14 @@ software > Licenses) and every update package carries. The list of parts,
 and the online data services with their terms, is in that script - edit it
 there and rerun it when a library, the framework, the font or a service changes.
 
+`CC-BY-4.0.txt` (2026-11-15): the license of the online data the clock shows
+(Hebcal, Open-Meteo, GeoNames), in full - the clock only downloads that data,
+but its credit line names the license, and a link alone relies on the internet
+keeping the text. Copied from creativecommons.org/licenses/by/4.0/legalcode.txt.
+The services' own terms of use (ip-api.com, Open-Meteo's "free for
+non-commercial use") are web pages, not license texts: they can change at any
+time and are only linked.
+
 ## The font
 
 The clock's font (`include/Font.h`) is drawn from one external font. Its

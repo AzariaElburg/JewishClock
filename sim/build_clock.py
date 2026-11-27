@@ -12,7 +12,6 @@ simulator's sim/stubs). Same compiler as sim/build.py (Zig).
    i.e. the last firmware build's: build the firmware first (pio run), so the
    simulator and the firmware.bin of an update package are the same version.
 """
-import re
 import shutil
 import subprocess
 import sys
@@ -20,11 +19,11 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build import find_zig, ARDUINOJSON, OUT, ROOT, SIM  # noqa: E402
+from build import compiler, link, ARDUINOJSON, OUT, ROOT, SIM  # noqa: E402
 
 VERSIONS = OUT.parent / "versions"
-NOT_ON_PC = set()   # every file of the clock's
-SIM_SOURCES = ["sim_clock_main", "sim_platform", "sim_web", "sim_wifi", "sim_ota", "sim_heap", "sim_ntp", "sim_net"]
+NOT_ON_PC = {"UpdateSignature"}   # the clock's files a stand-in replaces on the PC (sim_signature.cpp)
+SIM_SOURCES = ["sim_clock_main", "sim_platform", "sim_web", "sim_wifi", "sim_ota", "sim_heap", "sim_ntp", "sim_net", "sim_win", "sim_coverage"]
 
 
 FIRMWARE_PATHS = ["src", "include", "lib", "scripts", "pioarduino.ini"]   # as scripts/gen_version.py
@@ -33,8 +32,11 @@ FIRMWARE_PATHS = ["src", "include", "lib", "scripts", "pioarduino.ini"]   # as s
 TREE = ROOT   # the clock's code (src/, include/) - --tree: another checkout, e.g. an older version
 
 
+SCRAMBLED = "--scrambled" in sys.argv   # sim/scrambled_build.py: the tree is a changed copy of this project's code
+
+
 def git(*args):
-    r = subprocess.run(["git", *args], cwd=TREE, capture_output=True, text=True)
+    r = subprocess.run(["git", *args], cwd=ROOT if SCRAMBLED else TREE, capture_output=True, text=True)
     return r.stdout.strip() if r.returncode == 0 else None
 
 
@@ -69,23 +71,35 @@ def main():
     global TREE
     if "--tree" in sys.argv:   # e.g. git worktree add C:/pio3/jc_clean/wt v2.1.0 -> today's stand-ins, that version's clock code
         TREE = Path(sys.argv[sys.argv.index("--tree") + 1]).resolve()
-    zig = find_zig()
+    if TREE == ROOT and subprocess.call([sys.executable, str(ROOT / "scripts" / "check_rules.py")]):
+        sys.exit("build stopped: scripts/check_rules.py")   # as the firmware build (an older --tree had its own rules)
     OUT.mkdir(parents=True, exist_ok=True)
     ver = version()
     write_version_cpp(ver)
     clock = sorted(p for p in (TREE / "src").glob("*.cpp") if p.stem not in NOT_ON_PC)
     sources = [str(SIM / (s + ".cpp")) for s in SIM_SOURCES] + [str(p) for p in clock]
+    if (TREE / "src" / "UpdateSignature.cpp").exists():   # signed updates (2026-11-14): Windows' crypto stands in for mbedtls
+        sources.append(str(SIM / "sim_signature.cpp"))
     flags = ["c++", "-std=c++17", "-O1", "-g0", "-target", "x86_64-windows-gnu",
              "-include", str(SIM / "stubs" / "sim_force.h"), "-include", str(SIM / "clock_stubs" / "clock_force.h"),
              "-I", str(SIM / "clock_stubs"), "-I", str(SIM / "stubs"), "-I", str(SIM), "-I", str(TREE / "include"),
              "-I", str(ARDUINOJSON),
              "-DARDUINO=10819", "-DARDUINOJSON_ENABLE_PROGMEM=0", "-DJC_FULL_SIM=1",
              "-Wno-deprecated-declarations", "-Wno-unused-command-line-argument", "-Wno-invalid-offsetof"]
-    exe = OUT / ("jcclock.exe" if TREE == ROOT else "jcclock_tree.exe")
-    cmd = [zig] + flags + sources + ["-lws2_32", "-o", str(exe)]
+    exe = OUT / ("jcclock.exe" if TREE == ROOT or SCRAMBLED else "jcclock_tree.exe")   # scrambled: where the tests take it
+    # --clean-ap: built as the clean copy is - no fixed password for the clock's own
+    # Wi-Fi, each clock makes its own (Config.h AP_PASSWORD_DEFAULT ""). A test
+    # build only: not kept as a version.
+    clean_ap = "--clean-ap" in sys.argv
+    if clean_ap:
+        flags.append('-DAP_PASSWORD_DEFAULT=""')
+        exe = OUT / "jcclock_cleanap.exe"
     print("building", exe, "...")
-    if subprocess.run(cmd).returncode != 0:
+    if not link(compiler(flags) + sources + ["-lws2_32", "-lbcrypt"], exe):
         sys.exit("BUILD FAILED")
+    if clean_ap or "--coverage" in sys.argv:   # a test / measuring build: never kept as a version
+        print("OK:", exe)
+        return
     dest = VERSIONS / ver
     # A release's build is kept as it was (the family's clock runs it - complaints
     # are looked at on exactly that build): never replaced, unless --force. Before

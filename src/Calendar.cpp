@@ -10,8 +10,13 @@
 // We fetch once per day (or on forced refresh) and cache to /hebcal_cache.json.
 // =============================================================================
 
+#include <mutex>
 #include <climits>
+#include "FileTools.h"
 #include "Calendar.h"
+#include "Uptime.h"
+#include "DateRules.h"
+#include "OnlineUpdate.h"
 #include "EventsLock.h"
 #include "NTPManager.h"
 #include "Config.h"
@@ -31,6 +36,9 @@
 #include "PsramJsonAllocator.h"
 #include "JewishDateEngine.h"
 #include "SunTimes.h"
+#include "Tunables.h"
+#include "Texts.h"
+#include "NetHealth.h"
 #include <math.h>
 #include <string.h>
 #include <stdio.h>
@@ -42,15 +50,19 @@
 DayInfo       Calendar::s_today;
 DayInfo       Calendar::s_civilToday;
 std::vector<DayInfo> Calendar::s_manifest;
-unsigned long Calendar::s_lastFetchMs  = 0;
+int64_t Calendar::s_lastFetchMs  = 0;
 bool          Calendar::s_forceRefresh = false;
 static std::atomic<bool> s_timeJumped{false};   // set from the web server's task - see Calendar::timeJumped()
+// Failed main fetches in a row (0 = the last one worked) and when the last one failed - see retryWaitMs().
+static unsigned       s_mainFails = 0;
+static int64_t  s_lastMainFailMs = 0;
 static std::atomic<bool> s_clearCacheRequested{false};   // likewise - see update() 1a
 // A new main calendar not yet written to the cache file (saved after its zmanim).
 static bool s_cacheUnsaved = false;
 // A failed location lookup: which network, and when to try again (step 3).
 static int s_lookupRetrySlot = -1;
-static unsigned long s_lookupRetryAtMs = 0;
+static uint32_t s_lookupRetrySets = 0;   // Location::userSets() when the failed lookup was asked for
+static int64_t s_lookupRetryAtMs = 0;
 // Failing downloads, into the persistent log once per streak (DiagnosticLog::Streak).
 static DiagnosticLog::Streak s_hebcalStreak, s_zmanimStreak, s_geoStreak;
 // "HTTP 503" for a server's answer, the library's text for a connection failure (negative codes).
@@ -71,20 +83,47 @@ static const int   CACHE_FORMAT     = 6;
 // === TUNABLES ===  (rule: see Config.h header)
 // Minimum gap between main Hebcal fetches (a big monthly payload - no need
 // to hammer it). Does NOT gate the zmanim retry below; see update() step 4.
-static const unsigned long MAIN_FETCH_COOLDOWN_MS   = 5UL * 60UL * 1000UL;
-// Zmanim gap-fill retry - see s_zmanimOk.
-static const unsigned long ZMANIM_RETRY_INTERVAL_MS = 60UL * 1000UL;
+static const int64_t MAIN_FETCH_COOLDOWN_MS   = 5LL * 60 * 1000;
+TUNABLE_SHARED(MAIN_FETCH_COOLDOWN_MS)
+// After a FAILED download (main calendar or zmanim) the next try waits
+// RETRY_FIRST_MS, doubling with each failure in a row up to RETRY_MAX_MS
+// (10, 20, 40, 60, 60... s): a short blip is over within seconds, a long outage
+// costs one try a minute - retryWaitMs(). Always, even when a refresh is forced
+// or the date jumped. Until 2026-11-11 only a success started a pause: with
+// Hebcal down the clock asked again right after each failure (seen in the drills
+// every 5 s - the connect timeout; a quick refusal would have been many a second).
+// The user, 2026-11-11: growing waits, at most a minute (5 min was too long).
+static const int64_t RETRY_FIRST_MS = 10LL * 1000;
+TUNABLE_SHARED(RETRY_FIRST_MS)
+static const int64_t RETRY_MAX_MS   = 60LL * 1000;
+TUNABLE_SHARED(RETRY_MAX_MS)
+// The calendar downloaded reaches this many days past today - or further when an event's
+// reminder starts earlier (its warning days) - plus a week, so it never runs dry between downloads.
+static const int    CALENDAR_DAYS_AHEAD_MIN = 14;
+TUNABLE_SHARED(CALENDAR_DAYS_AHEAD_MIN)
+static const int    CALENDAR_DAYS_MARGIN    = 7;
+TUNABLE_SHARED(CALENDAR_DAYS_MARGIN)
 // A failed location lookup for the connected network, tried again after this.
-static const unsigned long LOOKUP_RETRY_MS = 5UL * 60UL * 1000UL;
+static const int64_t LOOKUP_RETRY_MS = 5LL * 60 * 1000;
+TUNABLE_SHARED(LOOKUP_RETRY_MS)
 
 // Tracks whether the Zmanim gap-fill (see applyZmanimPayload below) succeeded on the
 // current manifest. A transient failure here (network hiccup, one bad response)
 // must not leave "today" without a sunset/tzeit rollover trigger until the next
 // scheduled monthly-range refetch (up to a day away) - so this is retried on its
-// own short interval (ZMANIM_RETRY_INTERVAL_MS), independent of the main
-// manifest fetch's daily gate.
+// own short wait (retryWaitMs()), independent of the main manifest fetch's
+// daily gate.
 static bool          s_zmanimOk            = false;
-static unsigned long s_lastZmanimAttemptMs = 0;
+static int64_t s_lastZmanimAttemptMs = 0;
+static unsigned      s_zmanimFails         = 0;   // failed zmanim downloads in a row
+static int64_t s_lastZmanimFailMs    = 0;
+
+// The wait after `fails` failed downloads in a row (see RETRY_FIRST_MS).
+static int64_t retryWaitMs(unsigned fails) {
+    int64_t w = RETRY_FIRST_MS;
+    for (unsigned i = 1; i < fails && w < RETRY_MAX_MS; i++) w *= 2;
+    return w < RETRY_MAX_MS ? w : RETRY_MAX_MS;
+}
 
 // ─── Async HTTP GET helper ──────────────────────────────────────────────────
 //
@@ -133,6 +172,34 @@ namespace {
     std::atomic<bool> s_fetchDone{false};
     std::atomic<bool> s_fetchWanted{false};   // a download is waiting for the task
     String        s_fetchUrl;
+    // A server asked us to wait - HTTP 429/503 with Retry-After, or ip-api's own "none left" (X-Rl 0, the
+    // window's end in X-Ttl s): no download from THAT host before (another host isn't held up). A few
+    // hosts at most (Hebcal, the place lookup, Open-Meteo): the oldest hold makes room.
+    struct HostHold { char host[48]; int64_t untilMs; };
+    HostHold      s_holds[4] = {};
+    std::mutex    s_holdsLock;   // the download task writes, the main loop reads
+    String hostOf(const String& url) {
+        int a = url.indexOf("//");
+        String h = url.substring(a < 0 ? 0 : a + 2);
+        int b = h.indexOf('/');
+        return b < 0 ? h : h.substring(0, b);
+    }
+    void holdHost(const String& host, int64_t untilMs) {
+        std::lock_guard<std::mutex> g(s_holdsLock);
+        int slot = 0;
+        for (int i = 0; i < 4; i++) {
+            if (host.equalsIgnoreCase(s_holds[i].host)) { slot = i; break; }
+            if (s_holds[i].untilMs < s_holds[slot].untilMs) slot = i;
+        }
+        if (!host.equalsIgnoreCase(s_holds[slot].host) || untilMs > s_holds[slot].untilMs) s_holds[slot].untilMs = untilMs;
+        StringTools::utf8Copy(s_holds[slot].host, host.c_str());
+    }
+    bool hostHeld(const String& host) {
+        bool held = false;
+        std::lock_guard<std::mutex> g(s_holdsLock);
+        for (auto& h : s_holds) if (host.equalsIgnoreCase(h.host) && Uptime::ms() < h.untilMs) held = true;
+        return held;
+    }
     String        s_fetchPayload;
     int           s_fetchHttpCode   = -1;
     bool          s_fetchParse = false;                      // parse it as the main calendar
@@ -161,13 +228,31 @@ namespace {
             // HTTP-vs-HTTPS branch; the pre-refactor inline version had no
             // such branch and kept client alive in one flat scope throughout.
             WiFiClientSecure client;
+            // A server's "come back in N s" (RFC 9110); ip-api's requests left in its minute and the
+            // seconds to its end (ip-api.com/docs: 45 a minute, then 429 - and banned for an hour if it goes on)
+            static const char* WAIT_HEADERS[] = { "Retry-After", "X-Rl", "X-Ttl" };
             if (s_fetchUrl.startsWith("https://")) {
                 client.setInsecure();
                 http.begin(client, s_fetchUrl);
+                http.collectHeaders(WAIT_HEADERS, 3);
                 code = http.GET();
             } else {
                 http.begin(s_fetchUrl);
+                http.collectHeaders(WAIT_HEADERS, 3);
                 code = http.GET();
+            }
+            if (code > 0) NetHealth::heard();   // it answered: the internet is there
+            // Too many / not now (2026-11-21, the user: act on what a server answers, always): Hebcal
+            // answers 429 past 90 requests in 10 s - its Retry-After obeyed, else the retry's longest wait.
+            bool noneLeft = http.hasHeader("X-Rl") && http.header("X-Rl").toInt() <= 0;   // ip-api: the minute used up
+            if (code == 429 || code == 503 || noneLeft) {
+                long waitS = http.header("Retry-After").toInt();
+                if (waitS <= 0) waitS = http.header("X-Ttl").toInt() + 1;   // ip-api: its window's end
+                if (waitS <= 1) waitS = (long)(RETRY_MAX_MS / 1000);
+                if (waitS > 24L * 3600) waitS = 24L * 3600;
+                String host = hostOf(s_fetchUrl);
+                holdHost(host, Uptime::ms() + (int64_t)waitS * 1000);
+                DiagnosticLog::record("Calendar", Texts::svcWait, host.c_str(), waitS, code);
             }
             String payload = (code == 200) ? http.getString() : String();
             http.end();
@@ -186,12 +271,18 @@ namespace {
     void fetchTaskFn(void*) {
         for (;;) {
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);   // sleep until there's work
+            // Is the internet there (a time server silent)? - the same task. First, and also
+            // while a cache file waits below: the time waits on its answer ("at once", NetHealth.h;
+            // 2026-11-22: it waited 11 s behind a cache file for a still screen - up to
+            // FLASH_WRITE_MAX_WAIT_MS - and the next server was asked that much later).
+            NetHealth::probeInTask();
             // A cache file, written while the screen stands still (a flash
             // write pauses it); downloads meanwhile go ahead, and a newer
             // copy replaces the waiting one.
             if (auto* snap = s_saveSnapshot.exchange(nullptr)) {
-                uint32_t since = millis();
+                int64_t since = Uptime::ms();
                 while (!DisplayManager::goodMomentToWrite(since)) {
+                    NetHealth::probeInTask();
                     if (s_fetchWanted.exchange(false)) doFetch();
                     vTaskDelay(pdMS_TO_TICKS(50));
                     if (auto* newer = s_saveSnapshot.exchange(nullptr)) { delete snap; snap = newer; }
@@ -200,9 +291,15 @@ namespace {
                 delete snap;
             }
             if (s_fetchWanted.exchange(false)) doFetch();
+            OnlineUpdate::runInTask();   // a check / download asked for (OnlineUpdate.h) - the same one task
+            NetHealth::probeInTask();    // asked for meanwhile: not one more round's wait
         }
     }
 
+    void ensureTask();
+}
+void Calendar::wakeTask() { ensureTask(); xTaskNotifyGive(s_fetchTaskHandle); }
+namespace {
     void ensureTask() {
         if (!s_fetchTaskHandle) {
             // 16 KB: the main-calendar parse now runs here too (ArduinoJson recursion).
@@ -210,10 +307,18 @@ namespace {
         }
     }
 
-    // Returns false if a fetch is already in flight; caller should wait and retry later.
+    // Returns false if a fetch is already in flight - or finished with its result
+    // not yet taken by update() step 1b; the caller tries again later.
     // parse: it's the main calendar - parsed by the task (s_fetchManifest).
+    // (2026-11-14, the flaky "runs out, Hebcal down" drill: only s_fetchBusy was
+    // checked. A download finishing between step 1b and step 4 of one update() -
+    // busy cleared, result waiting - let step 4 start the next one, which cleared
+    // s_fetchDone: the result was thrown away unseen. A failure then wasn't
+    // counted (the next try 5 s later, no retry wait); a success was downloaded
+    // again, and its parsed calendar leaked.)
     bool startAsyncFetch(const String& url, bool parse = false) {
-        if (s_fetchBusy) return false;
+        if (s_fetchBusy || s_fetchDone) return false;
+        if (hostHeld(hostOf(url))) return false;   // that server asked us to wait: later
         ensureTask();
         s_fetchUrl  = url;
         s_fetchParse = parse;
@@ -232,34 +337,31 @@ enum class PendingFetch { None, MainManifest, ZmanimGapFill, GeoSync, PlaceSearc
 static PendingFetch s_pendingFetch = PendingFetch::None;
 // The network an in-flight GeoSync lookup is for (Location::applyLookup()).
 static int s_pendingLookupSlot = -1;
-// millis() when the in-flight GeoSync fetch was started, so the completion
+// Uptime::ms() when the in-flight GeoSync fetch was started, so the completion
 // handler below can report its duration - GeolocationService no longer
 // times this itself now that nothing in it makes the blocking call.
-static unsigned long s_geoSyncStartMs = 0;
+static int64_t s_geoSyncStartMs = 0;
 // A lookup asked for (network slot), started by update() once no other
 // download runs. Set from the main loop (Location) or the web task (Detect).
 static std::atomic<int> s_lookupRequestSlot{-1};
+static std::atomic<uint32_t> s_lookupRequestSets{0};   // Location::userSets() when it was asked for
+static uint32_t s_pendingLookupSets = 0;
 
 void Calendar::requestLookup(int slot) {
     if (slot < 0 || slot >= WIFI_NETWORKS) return;
+    s_lookupRequestSets = Location::userSets(slot);
     s_lookupRequestSlot = slot;
     CLOCK_LOG("Calendar", "Location lookup requested for network %d.", slot + 1);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// Internal implementation of timegm to resolve linker errors on some ESP32 toolchains
-static time_t internalTimegm(struct tm *tm) {
-    static const int days_before[] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
-    int years = tm->tm_year - 70; // years since 1970
-    int leap_days = (years + 1) / 4; // count leap years
-    time_t days = (years * 365) + leap_days + days_before[tm->tm_mon] + (tm->tm_mday - 1);
-    
-    // Adjust for current year if it is a leap year and we are past February
-    if (tm->tm_mon >= 2 && ((tm->tm_year + 1900) % 4 == 0 && ((tm->tm_year + 1900) % 100 != 0 || (tm->tm_year + 1900) % 400 == 0)))
-        days++;
-        
-    return ((((days * 24) + tm->tm_hour) * 60 + tm->tm_min) * 60 + tm->tm_sec);
+// UTC date and time -> seconds since 1970 (timegm() isn't on every ESP32
+// toolchain). The one day count, Config.h daysFromCivil() - until 2026-11-14
+// its own, which counted 2100 as a leap year and read its month table at
+// whatever month an answer gave. Callers pass DateRules-checked values.
+static time_t utcSeconds(int y, int m, int d, int h, int mi, int s) {
+    return (time_t)(daysFromCivil(y, m, d) * 86400 + h * 3600 + mi * 60 + s);
 }
 
 // The display font has no nikud (vowel point) glyphs at all - Hebcal
@@ -307,14 +409,14 @@ static String stripNikud(const char* src) {
 // since it just replaces each digit run independently.
 static String mishnaRefToGematria(const String& raw) {
     int i = 0;
-    while (i < (int)raw.length() && !isdigit((unsigned char)raw[i])) i++;
+    while (i < (int)raw.length() && !StringTools::asciiDigit(raw[i])) i++;
     if (i >= (int)raw.length()) return raw; // No digits found; leave as-is.
 
     String result = raw.substring(0, i);
     while (i < (int)raw.length()) {
-        if (isdigit((unsigned char)raw[i])) {
+        if (StringTools::asciiDigit(raw[i])) {
             int start = i;
-            while (i < (int)raw.length() && isdigit((unsigned char)raw[i])) i++;
+            while (i < (int)raw.length() && StringTools::asciiDigit(raw[i])) i++;
             char gematria[16];
             JewishDateEngine::numToGematria(raw.substring(start, i).toInt(), gematria, sizeof(gematria));
             result += gematria;
@@ -336,7 +438,7 @@ static String mishnaRefToGematria(const String& raw) {
 static String gematrizeTrailingYear(const char* raw, int hYear) {
     String s = raw;
     int i = s.length();
-    while (i > 0 && isdigit((unsigned char)s[i - 1])) i--;
+    while (i > 0 && StringTools::asciiDigit(s[i - 1])) i--;
     if (i == (int)s.length() || i == 0 || s[i - 1] != ' ') return s;
     s.remove(i - 1);
     if (hYear > 0) {
@@ -353,22 +455,11 @@ static void extractTime(const char* isoDateTime, char* buf, size_t len) {
     if (!isoDateTime || !*isoDateTime) return;
 
     int yr, mon, day, hr, min, sec;
-    // Hebcal ISO format: "2024-04-12T16:45:00"
-    if (sscanf(isoDateTime, "%d-%d-%dT%d:%d:%d", &yr, &mon, &day, &hr, &min, &sec) < 5) return;
+    // Hebcal ISO format: "2024-04-12T16:45:00" - only a real date and time (DateRules.h)
+    if (!DateRules::parseIsoDateTime(isoDateTime, yr, mon, day, hr, min, sec)) return;
 
-    struct tm tm_utc;
-    memset(&tm_utc, 0, sizeof(tm_utc));
-    tm_utc.tm_year = yr - 1900;
-    tm_utc.tm_mon  = mon - 1;
-    tm_utc.tm_mday = day;
-    tm_utc.tm_hour = hr;
-    tm_utc.tm_min  = min;
-    tm_utc.tm_sec  = sec;
-    tm_utc.tm_isdst = 0; // Explicitly UTC
-
-    // timegm() converts UTC struct tm to epoch. 
     // localtime_r() converts epoch to local struct tm based on system TZ (POSIX string).
-    time_t t_utc = internalTimegm(&tm_utc);
+    time_t t_utc = utcSeconds(yr, mon, day, hr, min, sec);
     struct tm tm_local;
     localtime_r(&t_utc, &tm_local);
 
@@ -384,8 +475,8 @@ static void extractTime(const char* isoDateTime, char* buf, size_t len) {
 static void extractLocalIsoTime(const char* isoDateTime, char* buf, size_t len) {
     buf[0] = '\0';
     if (!isoDateTime || !*isoDateTime) return;
-    int yr, mon, day, hr, min;
-    if (sscanf(isoDateTime, "%d-%d-%dT%d:%d", &yr, &mon, &day, &hr, &min) < 5) return;
+    int yr, mon, day, hr, min, sec;
+    if (!DateRules::parseIsoDateTime(isoDateTime, yr, mon, day, hr, min, sec)) return;
     snprintf(buf, len, "%02d:%02d", hr, min);
 }
 
@@ -429,7 +520,7 @@ static bool applyZmanimPayload(const String& payload, int httpCode, std::vector<
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
     if (err) {
-        CLOCK_LOG("Calendar", "Zmanim parse error: %s", err.c_str());
+        CLOCK_LOGF("Calendar", Texts::zmanimParseError, err.c_str());
         return false;
     }
     JsonObject sunsetByDate = doc["times"]["sunset"].as<JsonObject>();
@@ -437,7 +528,7 @@ static bool applyZmanimPayload(const String& payload, int httpCode, std::vector<
     // endpoint refused) would otherwise count as success - and a success
     // stops the 60s retry, leaving every ordinary day with no sunset.
     if (sunsetByDate.isNull() || sunsetByDate.size() == 0) {
-        CLOCK_LOG("Calendar", "Zmanim response had no sunset times - will retry");
+        CLOCK_LOGF("Calendar", Texts::zmanimNoSunset);
         return false;
     }
     for (JsonPair kv : sunsetByDate) {
@@ -474,9 +565,9 @@ static std::vector<ZmanimCarry> takeZmanim(const std::vector<DayInfo>& manifest)
     out.reserve(manifest.size());
     for (const auto& d : manifest) {
         ZmanimCarry z;
-        strlcpy(z.date,   d.gregorianDate, sizeof(z.date));
-        strlcpy(z.sunset, d.sunset,        sizeof(z.sunset));
-        strlcpy(z.tzeit,  d.tzeit,         sizeof(z.tzeit));
+        StringTools::utf8Copy(z.date, d.gregorianDate);
+        StringTools::utf8Copy(z.sunset, d.sunset);
+        StringTools::utf8Copy(z.tzeit, d.tzeit);
         out.push_back(z);
     }
     return out;
@@ -488,8 +579,8 @@ static void restoreZmanim(const std::vector<ZmanimCarry>& carried, std::vector<D
     for (auto& d : manifest) {
         for (const auto& z : carried) {
             if (strcmp(d.gregorianDate, z.date) != 0) continue;
-            if (!d.sunset[0]) strlcpy(d.sunset, z.sunset, sizeof(d.sunset));
-            if (!d.tzeit[0])  strlcpy(d.tzeit,  z.tzeit,  sizeof(d.tzeit));
+            if (!d.sunset[0]) StringTools::utf8Copy(d.sunset, z.sunset);
+            if (!d.tzeit[0])  StringTools::utf8Copy(d.tzeit, z.tzeit);
             break;
         }
     }
@@ -499,7 +590,7 @@ static void restoreZmanim(const std::vector<ZmanimCarry>& carried, std::vector<D
 
 void Calendar::begin(const AppConfig& cfg) {
     memset(&s_today, 0, sizeof(s_today));
-    strlcpy(s_today.hebrewDateStr, "Loading...", 64);
+    StringTools::utf8Copy(s_today.hebrewDateStr, Texts::loading);
     s_manifest.clear();
     if (loadCache()) CLOCK_LOG("Calendar", "Manifest cache loaded (%u entries)", s_manifest.size());
     else CLOCK_LOG("Calendar", "Manifest cache empty or failed to load");
@@ -507,9 +598,9 @@ void Calendar::begin(const AppConfig& cfg) {
 
 void Calendar::update(AppConfig& cfg, const EventList& events) {
     // 1. Performance Gate: Run logic once per second
-    static unsigned long lastUpdate = 0;
-    if (millis() - lastUpdate < 1000) return;
-    lastUpdate = millis();
+    static int64_t lastUpdate = 0;
+    if (Uptime::ms() - lastUpdate < 1000) return;
+    lastUpdate = Uptime::ms();
     // Once-a-second lines: DEBUG level only (pure noise at INFO).
     if (Logging::enabled(LogLevel::DEBUG)) CLOCK_LOG("Calendar", "Update() running...");
 
@@ -534,7 +625,8 @@ void Calendar::update(AppConfig& cfg, const EventList& events) {
         s_lookupRequestSlot = -1;
         s_pendingFetch = PendingFetch::GeoSync;
         s_pendingLookupSlot = lookupSlot;
-        s_geoSyncStartMs = millis();
+        s_pendingLookupSets = s_lookupRequestSets;
+        s_geoSyncStartMs = Uptime::ms();
         CLOCK_LOG("Calendar", "Location lookup for network %d started.", lookupSlot + 1);
     }
     String searchQuery;
@@ -570,11 +662,13 @@ void Calendar::update(AppConfig& cfg, const EventList& events) {
             std::vector<DayInfo>* days = s_fetchManifest;
             s_fetchManifest = nullptr;
             if (httpCode == 200 && (!days || days->empty())) {
-                CLOCK_LOG("Calendar", "Hebcal fetch returned HTTP 200 but no usable calendar - keeping the old one, not caching.");
-                s_hebcalStreak.fail("Calendar", "Hebcal download", "HTTP 200 with an unusable answer");
+                CLOCK_LOGF("Calendar", Texts::hebcalUnusable);
+                s_hebcalStreak.fail("Calendar", Texts::hebcalStreak, "HTTP 200 with an unusable answer");
+                s_mainFails++;
+                s_lastMainFailMs = Uptime::ms();
                 delete days;
             } else if (httpCode == 200) {
-                s_hebcalStreak.ok("Calendar", "Hebcal download");
+                s_hebcalStreak.ok("Calendar", Texts::hebcalStreak);
                 CLOCK_LOG("Calendar", "Fetch successful: %u days.", (unsigned)days->size());
                 // The main feed carries no sunset/tzeit for ordinary days -
                 // those come from the separate zmanim gap-fill. Rebuilding the
@@ -591,7 +685,8 @@ void Calendar::update(AppConfig& cfg, const EventList& events) {
                 // 60s retry if the chained request below fails to start.
                 s_zmanimOk = false;
                 s_forceRefresh = false;
-                s_lastFetchMs  = millis();
+                s_lastFetchMs  = Uptime::ms();
+                s_mainFails = 0;
                 syncToday(cfg); // Refresh s_today immediately after data arrives
 
                 // Immediately chain the zmanim gap-fill for this same range,
@@ -603,7 +698,7 @@ void Calendar::update(AppConfig& cfg, const EventList& events) {
                 s_cacheUnsaved = true;
                 if (!s_manifest.empty() && startZmanimFetch(cfg, s_manifest.front().gregorianDate, s_manifest.back().gregorianDate)) {
                     s_pendingFetch = PendingFetch::ZmanimGapFill;
-                    s_lastZmanimAttemptMs = millis();
+                    s_lastZmanimAttemptMs = Uptime::ms();
                     CLOCK_LOG("Calendar", "Zmanim gap-fill (chained after main fetch) requested in background.");
                 } else {
                     saveCache();
@@ -611,25 +706,32 @@ void Calendar::update(AppConfig& cfg, const EventList& events) {
                 }
             } else {
                 CLOCK_LOG("Calendar", "Hebcal fetch failed: %s", httpFailure(httpCode).c_str());
-                s_hebcalStreak.fail("Calendar", "Hebcal download", httpFailure(httpCode).c_str());
+                s_hebcalStreak.fail("Calendar", Texts::hebcalStreak, httpFailure(httpCode).c_str());
+                s_mainFails++;
+                s_lastMainFailMs = Uptime::ms();
             }
         } else if (kind == PendingFetch::ZmanimGapFill) {
             s_zmanimOk = applyZmanimPayload(payload, httpCode, s_manifest);
             CLOCK_LOG("Calendar", "Zmanim result: %s", s_zmanimOk ? "OK" : "FAILED - will retry");
-            if (s_zmanimOk) s_zmanimStreak.ok("Calendar", "Zmanim download");
-            else s_zmanimStreak.fail("Calendar", "Zmanim download", httpCode == 200 ? "unusable answer" : httpFailure(httpCode).c_str());
+            if (s_zmanimOk) { s_zmanimStreak.ok("Calendar", Texts::zmanimStreak); s_zmanimFails = 0; }
+            else {
+                s_zmanimStreak.fail("Calendar", Texts::zmanimStreak, httpCode == 200 ? "unusable answer" : httpFailure(httpCode).c_str());
+                s_zmanimFails++;
+                s_lastZmanimFailMs = Uptime::ms();
+            }
             if (s_zmanimOk) syncToday(cfg);
             // New zmanim, or a new main calendar still unsaved (its zmanim failed).
             if (s_zmanimOk || s_cacheUnsaved) { saveCache(); s_cacheUnsaved = false; }
         } else if (kind == PendingFetch::GeoSync) {
-            GeolocationService::setLastSyncDurationMs((uint32_t)(millis() - s_geoSyncStartMs));
-            bool geoOk = (httpCode == 200) && Location::applyLookup(cfg, s_pendingLookupSlot, payload);
+            GeolocationService::setLastSyncDurationMs((uint32_t)(Uptime::ms() - s_geoSyncStartMs));
+            bool geoOk = (httpCode == 200) && Location::applyLookup(cfg, s_pendingLookupSlot, payload, s_pendingLookupSets);
             CLOCK_LOG("Calendar", "Location lookup: %s", geoOk ? "OK" : "FAILED - will retry");
-            if (geoOk) s_geoStreak.ok("Calendar", "Location lookup");
+            if (geoOk) s_geoStreak.ok("Calendar", Texts::geoStreak);
             else {
-                s_geoStreak.fail("Calendar", "Location lookup", httpCode == 200 ? "unusable answer" : httpFailure(httpCode).c_str());
+                s_geoStreak.fail("Calendar", Texts::geoStreak, httpCode == 200 ? "unusable answer" : httpFailure(httpCode).c_str());
                 s_lookupRetrySlot = s_pendingLookupSlot;   // again in LOOKUP_RETRY_MS (step 3)
-                s_lookupRetryAtMs = millis() + LOOKUP_RETRY_MS;
+                s_lookupRetrySets = s_pendingLookupSets;
+                s_lookupRetryAtMs = Uptime::ms() + LOOKUP_RETRY_MS;
             }
         } else if (kind == PendingFetch::PlaceSearch) {
             Location::searchDone(httpCode, payload);
@@ -642,8 +744,10 @@ void Calendar::update(AppConfig& cfg, const EventList& events) {
     // 3. A failed location lookup is tried again - a network with no place
     // must not stay on the previous one's. (No monthly re-lookup any more:
     // the place follows the network - Location.cpp.)
-    if (s_lookupRetrySlot >= 0 && (long)(millis() - s_lookupRetryAtMs) >= 0) {
-        if (s_lookupRetrySlot == WiFiManager::connectedSlot()) requestLookup(s_lookupRetrySlot);
+    if (s_lookupRetrySlot >= 0 && Uptime::ms() >= s_lookupRetryAtMs) {
+        // not when the user has set its place meanwhile - theirs stays (2026-11-20)
+        if (s_lookupRetrySlot == WiFiManager::connectedSlot() && Location::userSets(s_lookupRetrySlot) == s_lookupRetrySets)
+            requestLookup(s_lookupRetrySlot);
         s_lookupRetrySlot = -1;
     }
     NTPManager::DateTime dt;
@@ -653,8 +757,8 @@ void Calendar::update(AppConfig& cfg, const EventList& events) {
     }
 
     // 4. Rolling Fetch Logic
-    unsigned long nowMs = millis();
-    if (Logging::enabled(LogLevel::DEBUG)) CLOCK_LOG("Calendar", "Update: Checking fetch logic. s_forceRefresh=%d, lastFetchMs=%lu, nowMs=%lu", s_forceRefresh, s_lastFetchMs, nowMs);
+    int64_t nowMs = Uptime::ms();
+    if (Logging::enabled(LogLevel::DEBUG)) CLOCK_LOG("Calendar", "Update: Checking fetch logic. s_forceRefresh=%d, lastFetchMs=%lld, nowMs=%lld", s_forceRefresh, (long long)s_lastFetchMs, (long long)nowMs);
     // This cooldown only throttles the main Hebcal fetch below (it's a big monthly
     // payload, no need to hammer it). It must NOT gate step 5's independent zmanim
     // retry - it used to be a bare `return`, which silently blocked step 5 for the
@@ -662,26 +766,31 @@ void Calendar::update(AppConfig& cfg, const EventList& events) {
     // boot. If that fetch's own zmanim call happened to fail (early boot is exactly
     // when WiFi/DNS are least settled), the retry had no chance to run until this
     // cooldown expired.
-    bool mainFetchOnCooldown = (!s_forceRefresh && !s_timeJumped && s_lastFetchMs > 0 && (nowMs - s_lastFetchMs < MAIN_FETCH_COOLDOWN_MS));
+    bool mainFetchOnCooldown = (!s_forceRefresh && !s_timeJumped && s_lastFetchMs > 0 && (nowMs - s_lastFetchMs < MAIN_FETCH_COOLDOWN_MS))
+                            || (s_mainFails > 0 && nowMs - s_lastMainFailMs < retryWaitMs(s_mainFails));
 
     if (!mainFetchOnCooldown && !s_fetchBusy) {
         s_timeJumped = false;   // checked once, below: downloads only if the new date is missing
         time_t nowUtc = NTPManager::getTime();
-        int maxWarnDays = 14;
+        int maxWarnDays = CALENDAR_DAYS_AHEAD_MIN;
         EventsLock::take();
         for (const auto& ev : events) {
             if (ev.warningDays > maxWarnDays) maxWarnDays = ev.warningDays;
         }
         EventsLock::give();
 
-        // Calculate start (today) and end (window) strings
+        // Calculate start (today) and end (window) strings - the LOCAL date, as syncToday() and the
+        // screen take it (2026-11-21: the UTC date here asked "is yesterday there?" from local
+        // midnight until 02:00/03:00 in Israel; the window covered it, but by chance).
+        (void)nowUtc;
+        time_t nowLocal = NTPManager::getLocalEpoch();
         char startStr[11], endStr[11];
         struct tm tmb;
-        gmtime_r(&nowUtc, &tmb);
+        gmtime_r(&nowLocal, &tmb);   // getLocalEpoch(): local time counted as if UTC
         strftime(startStr, sizeof(startStr), "%Y-%m-%d", &tmb);
 
-        time_t endUtc = nowUtc + (maxWarnDays + 7) * 86400UL;
-        gmtime_r(&endUtc, &tmb);
+        time_t endLocal = nowLocal + (time_t)(maxWarnDays + CALENDAR_DAYS_MARGIN) * 86400;
+        gmtime_r(&endLocal, &tmb);
         strftime(endStr, sizeof(endStr), "%Y-%m-%d", &tmb);
 
         // More robust check: trigger fetch if today is missing OR if the cache window is too short.
@@ -714,24 +823,29 @@ void Calendar::update(AppConfig& cfg, const EventList& events) {
                      startStr, endStr, cfg.latitude, cfg.longitude, diasporaFlag);
             if (startAsyncFetch(url, true)) {   // true: the task parses it
                 s_pendingFetch = PendingFetch::MainManifest;
-                CLOCK_LOG("Calendar", "Fetch conditions met. Requesting in background: %s", url);
+                CLOCK_LOGF("Calendar", Texts::calFetching, url);
             }
         }
     }
 
     // 5. Zmanim gap-fill retry (see s_zmanimOk comment above) - always reachable,
     // regardless of the main fetch's cooldown, so a failed zmanim call recovers on
-    // its own ~60s cadence instead of being stuck behind mainFetchOnCooldown.
-    // Never tried yet (s_lastZmanimAttemptMs == 0) = due now: when the saved
-    // calendar covers today (no main fetch, so nothing chains the gap-fill),
-    // the first attempt otherwise waited until 60 s after boot - and after
-    // sunset the clock showed the previous Hebrew date and Omer count for that
-    // minute (found 2026-10-18 by the simulator-vs-clock test).
+    // its own waits (retryWaitMs() after a failure) instead of being stuck behind
+    // mainFetchOnCooldown. Never tried yet (s_lastZmanimAttemptMs == 0) = due now:
+    // when the saved calendar covers today (no main fetch, so nothing chains the
+    // gap-fill), the first attempt otherwise waited until 60 s after boot - and
+    // after sunset the clock showed the previous Hebrew date and Omer count for
+    // that minute (found 2026-10-18 by the simulator-vs-clock test). Not done but
+    // no failure counted (a new calendar whose chained request didn't start):
+    // RETRY_MAX_MS after the last attempt, as before 2026-11-11.
+    bool zmanimDue = s_lastZmanimAttemptMs == 0
+                  || (s_zmanimFails > 0 ? nowMs - s_lastZmanimFailMs >= retryWaitMs(s_zmanimFails)
+                                        : nowMs - s_lastZmanimAttemptMs >= RETRY_MAX_MS);
     if (!s_zmanimOk && !s_manifest.empty() && !s_fetchBusy && WiFi.status() == WL_CONNECTED && NTPManager::isSynced()
-        && (s_lastZmanimAttemptMs == 0 || nowMs - s_lastZmanimAttemptMs >= ZMANIM_RETRY_INTERVAL_MS)) {
+        && zmanimDue) {
         char zStart[11], zEnd[11];
-        strlcpy(zStart, s_manifest.front().gregorianDate, 11);
-        strlcpy(zEnd,   s_manifest.back().gregorianDate, 11);
+        StringTools::utf8Copy(zStart, s_manifest.front().gregorianDate);
+        StringTools::utf8Copy(zEnd, s_manifest.back().gregorianDate);
         if (startZmanimFetch(cfg, zStart, zEnd)) {
             s_pendingFetch = PendingFetch::ZmanimGapFill;
             s_lastZmanimAttemptMs = nowMs;
@@ -860,8 +974,8 @@ void Calendar::syncToday(const AppConfig& cfg) {
     if (s_today.hDay != s_lastLoggedHDay || s_today.hMonth != s_lastLoggedHMonth) {
         const DayInfo& base = (currentIdx != -1) ? s_manifest[currentIdx] : s_today;
         char ss[24], tz[24];   // "calc HH:MM:SS" = computed here (computeZman)
-        if (base.sunset[0]) strlcpy(ss, base.sunset, sizeof(ss)); else snprintf(ss, sizeof(ss), calcSunset[0] ? "calc %s" : "none", calcSunset);
-        if (base.tzeit[0])  strlcpy(tz, base.tzeit, sizeof(tz));  else snprintf(tz, sizeof(tz), calcTzeit[0] ? "calc %s" : "none", calcTzeit);
+        if (base.sunset[0]) StringTools::utf8Copy(ss, base.sunset); else snprintf(ss, sizeof(ss), calcSunset[0] ? "calc %s" : "none", calcSunset);
+        if (base.tzeit[0])  StringTools::utf8Copy(tz, base.tzeit);  else snprintf(tz, sizeof(tz), calcTzeit[0] ? "calc %s" : "none", calcTzeit);
         DiagnosticLog::record("Calendar", "Hebrew date -> %d/%d at %s (mode=%d, source=%s, today sunset=%s tzeit=%s)",
                               s_today.hDay, s_today.hMonth, nowTime, (int)cfg.rolloverMode,
                               (currentIdx != -1) ? "manifest" : "local-fallback", ss, tz);
@@ -910,12 +1024,14 @@ static void parseManifestInto(const String& json, std::vector<DayInfo>& out) {
         return;
     }
     CLOCK_LOG("Calendar", "Processing %u items from JSON...", items.size());
+    int hebdateProblems = 0;   // Hebcal's Hebrew dates unreadable or not ours: the first one logged
 
     for (JsonObject item : items) {
         const char* dateIso = item["date"] | "";
-        if (strlen(dateIso) < 10) continue;
+        int y, m, d;
+        if (!DateRules::parseIsoDate(dateIso, y, m, d)) continue;   // not a real date: nothing of it is used
         char dateKey[11];
-        strlcpy(dateKey, dateIso, 11);
+        snprintf(dateKey, sizeof(dateKey), "%04d-%02d-%02d", y, m, d);
 
         int entryIdx = -1;
         for (size_t i = 0; i < out.size(); i++) {
@@ -926,7 +1042,13 @@ static void parseManifestInto(const String& json, std::vector<DayInfo>& out) {
             out.emplace_back();
             entryIdx = out.size() - 1;
             memset(&out[entryIdx], 0, sizeof(DayInfo));
-            strlcpy(out[entryIdx].gregorianDate, dateKey, 11);
+            StringTools::utf8Copy(out[entryIdx].gregorianDate, dateKey);
+            // The day's Hebrew date: our own calculation until Hebcal's "hebdate"
+            // item for the day says otherwise (below) - Hebcal is the source of truth.
+            HebrewDate h = JewishDateEngine::calculateHebrew(GregorianDate{y, m, d, false});
+            out[entryIdx].hYear = h.year; out[entryIdx].hMonth = h.month; out[entryIdx].hDay = h.day;
+            JewishDateEngine::formatHebrewDate(h, out[entryIdx].hebrewDateStr, sizeof(out[entryIdx].hebrewDateStr));
+            out[entryIdx].isShabbat = (JewishDateEngine::gregorianToAbsolute(y, m, d) % 7 == 6);
         }
 
         // Shortcut reference (safe within this single iteration)
@@ -940,31 +1062,21 @@ static void parseManifestInto(const String& json, std::vector<DayInfo>& out) {
 
         const char* cat   = item["category"] | "";
 
-        // Detect if this is a Saturday (Shabbat) based on Gregorian date
-        int y, m, d;
-        if (sscanf(dateKey, "%d-%d-%d", &y, &m, &d) == 3) {
-            long absDate = JewishDateEngine::gregorianToAbsolute(y, m, d);
-            entry->isShabbat = (absDate % 7 == 6);
-
-            // 1. Ensure numeric fields are populated for system-wide "Ready" checks
-            GregorianDate g = {y, m, d, false};
-            HebrewDate h = JewishDateEngine::calculateHebrew(g);
-            entry->hYear = h.year;
-            entry->hMonth = h.month;
-            entry->hDay = h.day;
-
-            // 2. Initialize string if empty. Hebcal items for the same day 
-            // will override this later if they contain specific religious strings.
-            if (!entry->hebrewDateStr[0]) {
+        // Hebcal's Hebrew date of the day ("hebdate"; the date itself is in its
+        // "hdate" field, "20 Tevet 5787"): its numbers win over our own calculation,
+        // the wording stays ours (formatHebrewDate: חשוון, as on the rest of the screen).
+        // A disagreement is logged - our engine also dates every event.
+        if (strcmp(cat, "hebdate") == 0) {
+            HebrewDate h;
+            if (!JewishDateEngine::parseHebcalDate(item["hdate"] | "", h)) {
+                if (!hebdateProblems++) LOG_AT(LogLevel::WARN, "Calendar", "Hebcal's Hebrew date for %s not readable: \"%s\"", dateKey, (const char*)(item["hdate"] | ""));
+            } else {
+                if ((h.year != entry->hYear || h.month != entry->hMonth || h.day != entry->hDay) && !hebdateProblems++)
+                    LOG_AT(LogLevel::WARN, "Calendar", "Hebrew date of %s: Hebcal %d/%d/%d, own calculation %d/%d/%d - Hebcal's used",
+                           dateKey, h.day, h.month, h.year, entry->hDay, entry->hMonth, entry->hYear);
+                entry->hYear = h.year; entry->hMonth = h.month; entry->hDay = h.day;
                 JewishDateEngine::formatHebrewDate(h, entry->hebrewDateStr, sizeof(entry->hebrewDateStr));
             }
-        }
-
-        // const char* cat = item["category"] | "";
-        if (strcmp(cat, "hdate") == 0) {
-            const char* h = item["hebrew"];
-            if (h && h[0]) strlcpy(entry->hebrewDateStr, stripNikud(h).c_str(), 64);
-            if (Logging::enabled(LogLevel::DEBUG)) CLOCK_LOG("Calendar", "[DataTrace] Parser -> HDate [%s]: %s", dateKey, entry->hebrewDateStr);
         }
         else if (strcmp(cat, "candles") == 0) {
             extractTime(dateIso, entry->candleLightStr, 10);
@@ -973,7 +1085,7 @@ static void parseManifestInto(const String& json, std::vector<DayInfo>& out) {
             // accepted then, ~20-40 min before actual sunset), so that's when
             // the clock should roll over to the next Hebrew date. The zmanim
             // gap-fill only fills an EMPTY sunset, so it never overwrites this.
-            if (!entry->sunset[0]) strlcpy(entry->sunset, entry->candleLightStr, 10);
+            if (!entry->sunset[0]) StringTools::utf8Copy(entry->sunset, entry->candleLightStr);
             if (Logging::enabled(LogLevel::DEBUG)) CLOCK_LOG("Calendar", "[DataTrace] Parser -> Candles [%s]: %s", dateKey, entry->candleLightStr);
         }
         else if (strcmp(cat, "havdalah") == 0) {
@@ -981,11 +1093,8 @@ static void parseManifestInto(const String& json, std::vector<DayInfo>& out) {
             // Deliberate, like candle lighting for sunset above: after Shabbat
             // or Yom Tov the next day starts at Havdalah, not at the (earlier)
             // weekday צאת הכוכבים. The zmanim gap-fill never overwrites this.
-            if (!entry->tzeit[0]) strlcpy(entry->tzeit, entry->havdalahStr, 10);
+            if (!entry->tzeit[0]) StringTools::utf8Copy(entry->tzeit, entry->havdalahStr);
             if (Logging::enabled(LogLevel::DEBUG)) CLOCK_LOG("Calendar", "[DataTrace] Parser -> Havdalah [%s]: %s", dateKey, entry->havdalahStr);
-        }
-        else if (strcmp(cat, "sunset") == 0) {
-            extractTime(dateIso, entry->sunset, 10);
         }
         else if (strcmp(cat, "zmanim") == 0) {
             // Hebcal's own fast times (Israel rules in i=on mode). title_orig is
@@ -996,16 +1105,16 @@ static void parseManifestInto(const String& json, std::vector<DayInfo>& out) {
             String memo = stripNikud(item["memo"] | "");
             if (strcmp(orig, "Fast begins") == 0) {
                 extractTime(dateIso, entry->fastBegin, sizeof(entry->fastBegin));
-                if (!entry->fastName[0]) strlcpy(entry->fastName, memo.c_str(), sizeof(entry->fastName));
+                if (!entry->fastName[0]) StringTools::utf8Copy(entry->fastName, memo.c_str());
             } else if (strcmp(orig, "Fast ends") == 0) {
                 extractTime(dateIso, entry->fastEnd, sizeof(entry->fastEnd));
-                strlcpy(entry->fastName, memo.c_str(), sizeof(entry->fastName));
+                StringTools::utf8Copy(entry->fastName, memo.c_str());
             }
         }
         else if (strcmp(cat, "omer") == 0) {
             // Prefer full count string, fall back to "Hebrew" label
             const char* src = item["omer"]["count"]["he"] | item["hebrew"] | "";
-            strlcpy(entry->omerHebrew, stripNikud(src).c_str(), sizeof(entry->omerHebrew));
+            StringTools::utf8Copy(entry->omerHebrew, stripNikud(src).c_str());
 
             // Day number from "title_orig" ("Omer 13"), which stays English
             // whatever lg= asks for. "title" is in the requested language -
@@ -1014,7 +1123,7 @@ static void parseManifestInto(const String& json, std::vector<DayInfo>& out) {
             // the simulator's Omer-night test; the clock agreed).
             const char* title = item["title_orig"] | item["title"] | "";
             for (int i = 0; title[i]; i++) {
-                if (isdigit(title[i])) {
+                if (StringTools::asciiDigit(title[i])) {
                     entry->omerDay = atoi(title + i);
                     break;
                 }
@@ -1024,25 +1133,25 @@ static void parseManifestInto(const String& json, std::vector<DayInfo>& out) {
         }
         else if (strcmp(cat, "parashat") == 0) {
             String parashaRaw = stripNikud(item["hebrew"] | "");
-            // Ensure the "Parashat " prefix is stripped from the source.
+            // Hebcal's Hebrew name always starts "פרשת " (no API option drops it) - taken off here.
             if (parashaRaw.startsWith("פרשת ")) {
                 parashaRaw.remove(0, strlen("פרשת "));
             }
-            strlcpy(entry->parashaHebrew, parashaRaw.c_str(), 80);
+            StringTools::utf8Copy(entry->parashaHebrew, parashaRaw.c_str());
 
             if (Logging::enabled(LogLevel::DEBUG)) CLOCK_LOG("Calendar", "[DataTrace] Parser -> Parasha [%s]: %s", dateKey, entry->parashaHebrew);
         }
         else if (strcmp(cat, "dafyomi") == 0) {
-            strlcpy(entry->dafYomi, item["title"] | "", 64);
+            StringTools::utf8Copy(entry->dafYomi, item["title"] | "");
             if (Logging::enabled(LogLevel::DEBUG)) CLOCK_LOG("Calendar", "[DataTrace] Parser -> Daf [%s]: %s", dateKey, entry->dafYomi);
         }
         else if (strcmp(cat, "mishnayomi") == 0) {
             String raw = item["title"] | "";
-            strlcpy(entry->mishnaYomit, mishnaRefToGematria(raw).c_str(), sizeof(entry->mishnaYomit));
+            StringTools::utf8Copy(entry->mishnaYomit, mishnaRefToGematria(raw).c_str());
             if (Logging::enabled(LogLevel::DEBUG)) CLOCK_LOG("Calendar", "[DataTrace] Parser -> Mishna [%s]: %s", dateKey, entry->mishnaYomit);
         }
         else if (strcmp(cat, "mevarchim") == 0) {
-            strlcpy(entry->mevarchimHebrew, stripNikud(item["hebrew"] | "").c_str(), 80);
+            StringTools::utf8Copy(entry->mevarchimHebrew, stripNikud(item["hebrew"] | "").c_str());
             if (Logging::enabled(LogLevel::DEBUG)) CLOCK_LOG("Calendar", "[DataTrace] Parser -> Mevarchim [%s]: %s", dateKey, entry->mevarchimHebrew);
         }
 
@@ -1086,12 +1195,12 @@ static void parseManifestInto(const String& json, std::vector<DayInfo>& out) {
             String heb = gematrizeTrailingYear(stripNikud(item["hebrew"] | "").c_str(), entry->hYear);
             bool yomTov = item["yomtov"].is<bool>() && item["yomtov"].as<bool>();
             if (!entry->holidayHebrew[0]) {
-                strlcpy(entry->holidayHebrew, heb.c_str(), sizeof(entry->holidayHebrew));
+                StringTools::utf8Copy(entry->holidayHebrew, heb.c_str());
             } else if (yomTov) {
-                strlcpy(entry->holidayHebrew2, entry->holidayHebrew, sizeof(entry->holidayHebrew2));
-                strlcpy(entry->holidayHebrew, heb.c_str(), sizeof(entry->holidayHebrew));
+                StringTools::utf8Copy(entry->holidayHebrew2, entry->holidayHebrew);
+                StringTools::utf8Copy(entry->holidayHebrew, heb.c_str());
             } else if (!entry->holidayHebrew2[0]) {
-                strlcpy(entry->holidayHebrew2, heb.c_str(), sizeof(entry->holidayHebrew2));
+                StringTools::utf8Copy(entry->holidayHebrew2, heb.c_str());
             } else {
                 LOG_AT(LogLevel::WARN, "Calendar", "A third holiday on %s not shown: %s", dateKey, heb.c_str());
             }
@@ -1141,14 +1250,7 @@ static void writeCacheFile(const std::vector<DayInfo>& days) {
         CLOCK_LOG("Calendar", "[DataTrace] Cache unchanged - not written");
         return;
     }
-    String tmp = String(CACHE_PATH) + ".tmp";
-    File f = LittleFS.open(tmp, "w");
-    if (!f) return;
-    size_t written = serializeJson(doc, f);
-    f.close();
-    if (!written) { LittleFS.remove(tmp); return; }
-    LittleFS.remove(CACHE_PATH);
-    LittleFS.rename(tmp, CACHE_PATH);
+    if (!FileTools::writeJsonAtomic(CACHE_PATH, doc)) return;   // whole or not at all (a cut-off file passed before)
     s_cacheFileHash = hash;
     CLOCK_LOG("Calendar", "[DataTrace] Cache SAVED: %d entries in manifest", (int)days.size());
 }
@@ -1197,47 +1299,43 @@ bool Calendar::loadCache() {
     // under rules since changed - is dropped, and the calendar downloaded anew.
     JsonArray arr = doc.as<JsonArray>();
     if (arr.size() == 0 || (arr[0]["v"] | 0) != CACHE_FORMAT) {
-        CLOCK_LOG("Calendar", "Cache from an older format - ignored, will download");
+        CLOCK_LOGF("Calendar", Texts::cacheOldFormat);
         return false;
     }
     s_manifest.clear();
     for (JsonObject obj : arr) {
         if (obj["v"].is<int>()) continue;   // the format marker
+        // A file is never assumed to hold only what our code wrote (CLAUDE.md):
+        // a day that isn't a real date is left out, a time that isn't one empty.
+        int gy, gm, gd;
+        if (!DateRules::parseIsoDate(obj["g"] | "", gy, gm, gd)) continue;
         s_manifest.emplace_back();
         DayInfo& d = s_manifest.back();
-        memset(&d, 0, sizeof(DayInfo)); 
-        strlcpy(d.gregorianDate, obj["g"] | "", 11);
-        // Cache files written before the חשוון spelling fix still hold the
-        // old spelling - fix on load, so no refetch is needed.
-        String hDate = obj["h"] | "";
-        fixMonthSpelling(hDate);
-        strlcpy(d.hebrewDateStr, hDate.c_str(), 64);
-        strlcpy(d.sunset, obj["ss"] | "", 10);
-        strlcpy(d.tzeit, obj["tz"] | "", 10);
-        strlcpy(d.fastBegin, obj["fb"] | "", sizeof(d.fastBegin));
-        strlcpy(d.fastEnd,   obj["fe"] | "", sizeof(d.fastEnd));
-        strlcpy(d.fastName,  obj["fn"] | "", sizeof(d.fastName));
-        strlcpy(d.candleLightStr, obj["cl"] | "", 10);
-        strlcpy(d.havdalahStr, obj["hv"] | "", 10);
-        strlcpy(d.omerHebrew, obj["om"] | "", sizeof(d.omerHebrew));
+        memset(&d, 0, sizeof(DayInfo));
+        snprintf(d.gregorianDate, sizeof(d.gregorianDate), "%04d-%02d-%02d", gy, gm, gd);
+        auto time_ = [](char* dst, size_t n, const char* src) {
+            int h, mi, s;
+            if (DateRules::parseTime(src, h, mi, s)) StringTools::utf8Cut(dst, n, src, n - 1); else dst[0] = 0;
+        };
+        // Texts as the parser left them (nikud, "פרשת ", spelling): an older
+        // firmware's file was turned away above by its format.
+        StringTools::utf8Copy(d.hebrewDateStr, obj["h"] | "");
+        time_(d.sunset, sizeof(d.sunset), obj["ss"] | "");
+        time_(d.tzeit, sizeof(d.tzeit), obj["tz"] | "");
+        time_(d.fastBegin, sizeof(d.fastBegin), obj["fb"] | "");
+        time_(d.fastEnd, sizeof(d.fastEnd), obj["fe"] | "");
+        StringTools::utf8Copy(d.fastName,  obj["fn"] | "");
+        time_(d.candleLightStr, sizeof(d.candleLightStr), obj["cl"] | "");
+        time_(d.havdalahStr, sizeof(d.havdalahStr), obj["hv"] | "");
+        StringTools::utf8Copy(d.omerHebrew, obj["om"] | "");
         d.omerDay = obj["od"] | 0;
-
-        String parashaRaw = obj["pa"] | "";
-        if (parashaRaw.startsWith("פרשת ")) {
-            parashaRaw.remove(0, strlen("פרשת "));
-        }
-        strlcpy(d.parashaHebrew, parashaRaw.c_str(), 80);
-
-        String holidayHeb = obj["ho"] | "";
-        fixMonthSpelling(holidayHeb);
-        strlcpy(d.holidayHebrew, holidayHeb.c_str(), 80);
-        strlcpy(d.holidayHebrew2, obj["h2"] | "", sizeof(d.holidayHebrew2));
-        String mevarchimHeb = obj["mv"] | "";
-        fixMonthSpelling(mevarchimHeb);
-        strlcpy(d.mevarchimHebrew, mevarchimHeb.c_str(), 80);
-        strlcpy(d.dafYomi, obj["df"] | "", 64);
-        strlcpy(d.mishnaYomit, obj["my"] | "", sizeof(d.mishnaYomit));
-        strlcpy(d.liturgy, obj["li"] | "", sizeof(d.liturgy));
+        StringTools::utf8Copy(d.parashaHebrew, obj["pa"] | "");
+        StringTools::utf8Copy(d.holidayHebrew, obj["ho"] | "");
+        StringTools::utf8Copy(d.holidayHebrew2, obj["h2"] | "");
+        StringTools::utf8Copy(d.mevarchimHebrew, obj["mv"] | "");
+        StringTools::utf8Copy(d.dafYomi, obj["df"] | "");
+        StringTools::utf8Copy(d.mishnaYomit, obj["my"] | "");
+        StringTools::utf8Copy(d.liturgy, obj["li"] | "");
         d.isYomTov = obj["yt"] | false;
         d.isFast = obj["if"] | false;
         d.isRoshChodesh = obj["rc"] | false;
@@ -1245,10 +1343,14 @@ bool Calendar::loadCache() {
         d.hYear  = obj["hy"] | 0;
         d.hMonth = obj["hm"] | 0;
         d.hDay   = obj["hd"] | 0;
+        if (!DateRules::validHebrew(d.hYear, d.hMonth, d.hDay) || d.hYear < 1) {   // not one: from the Gregorian day
+            HebrewDate h = JewishDateEngine::calculateHebrew({gy, gm, gd, false});
+            d.hYear = h.year; d.hMonth = h.month; d.hDay = h.day;
+        }
         d.isShabbat = obj["is"] | false;
     }
-    // What's on file, as writeCacheFile() would write it now (spelling fixes
-    // above included): an unchanged download then isn't written again.
+    // What's on file, as writeCacheFile() would write it now (dates that weren't
+    // real dates left out, above): an unchanged download then isn't written again.
     s_cacheFileHash = cacheHash(s_manifest);
     CLOCK_LOG("Calendar", "[DataTrace] Cache LOADED: %d entries in manifest", s_manifest.size());
     return true;
@@ -1281,7 +1383,7 @@ void Calendar::timeJumped() { s_timeJumped = true; }
 // on it avoids that - Parasha is unaffected either way, since it's populated
 // on every Shabbat and that's always the nearest one found here too. 8 days
 // is a full week of margin to find A Shabbat at all; the manifest is always
-// kept at least 21 days ahead of today (see the fetch logic above), so this
+// kept at least CALENDAR_DAYS_AHEAD_MIN + CALENDAR_DAYS_MARGIN days ahead of today (see the fetch logic above), so this
 // never runs dry.
 static String findOnNearestShabbat(const std::vector<DayInfo>& manifest, const char* todayDate, char (DayInfo::*field)[80]) {
     int startIdx = -1;
@@ -1332,6 +1434,39 @@ const char* Calendar::getTodaySummary() { return s_today.hebrewDateStr; }
 // sits on the eve and its end on the next day. Yom Kippur has no Hebcal fast
 // events at all - its eve gets the seudah mafseket notice (until candle
 // lighting, when Hebcal starts the fast); its end is the existing Havdalah slide.
+// The fast a calendar day starts, in the shapes Hebcal gives (2026-11-14: was
+// written out in both getFastNotice()s): a dawn-to-night fast (begin and end on
+// that day), an evening-start fast (Tisha B'Av: begins that evening, ends the
+// next day), or the eve of Yom Kippur (seudah mafseket until candle lighting).
+// t1 = the next day, nullptr if the calendar ends. Days counted from t0.
+namespace {
+struct FastStart { FastNotice n; int endDay = 0, fastDay = 0; };
+bool isMorning(const char* hhmm) { return atoi(hhmm) < 12; }
+bool fastStartingOn(const DayInfo& t0, const DayInfo* t1, FastStart& f) {
+    f = FastStart{};
+    FastNotice& n = f.n;
+    if (t0.fastBegin[0] && isMorning(t0.fastBegin)) {          // dawn to night
+        n.kind = FastNotice::Kind::Fast;
+        StringTools::utf8Copy(n.begin, t0.fastBegin);
+        StringTools::utf8Copy(n.end, t0.fastEnd);
+        StringTools::utf8Copy(n.name, t0.fastName);
+    } else if (t0.fastBegin[0]) {                              // evening start
+        n.kind = FastNotice::Kind::Fast;
+        StringTools::utf8Copy(n.begin, t0.fastBegin);
+        if (t1) StringTools::utf8Copy(n.end, t1->fastEnd);
+        StringTools::utf8Copy(n.name, t1 && t1->fastName[0] ? t1->fastName : t0.fastName);
+        f.endDay = f.fastDay = 1;
+    } else if (t0.candleLightStr[0] && t1 && strncmp(t1->holidayHebrew, "יום כיפור", strlen("יום כיפור")) == 0) {
+        n.kind = FastNotice::Kind::SeudaMafseket;
+        StringTools::utf8Copy(n.end, t0.candleLightStr);
+        f.fastDay = 1;
+    } else {
+        return false;
+    }
+    return true;
+}
+}  // namespace
+
 FastNotice Calendar::getFastNotice() {
     FastNotice n;
     int i = -1;
@@ -1340,35 +1475,25 @@ FastNotice Calendar::getFastNotice() {
     }
     if (i < 0) return n;
     const DayInfo& t0 = s_manifest[i];
-    static const DayInfo kEmpty{};
-    const DayInfo& t1 = (i + 1 < (int)s_manifest.size()) ? s_manifest[i + 1] : kEmpty;
-    auto isMorning = [](const char* hhmm) { return atoi(hhmm) < 12; };
-
-    if (t0.fastBegin[0] && isMorning(t0.fastBegin)) {          // fast day, dawn start
-        n.kind = FastNotice::Kind::Fast;
-        strlcpy(n.begin, t0.fastBegin, sizeof(n.begin));
-        strlcpy(n.end, t0.fastEnd, sizeof(n.end));
-        strlcpy(n.name, t0.fastName, sizeof(n.name));
-    } else if (t0.fastBegin[0]) {                              // eve of an evening-start fast
-        n.kind = FastNotice::Kind::Fast;
-        strlcpy(n.begin, t0.fastBegin, sizeof(n.begin));
-        strlcpy(n.end, t1.fastEnd, sizeof(n.end));
-        n.endInDays = 1;
-        strlcpy(n.name, t1.fastName[0] ? t1.fastName : t0.fastName, sizeof(n.name));
+    const DayInfo* t1 = i + 1 < (int)s_manifest.size() ? &s_manifest[i + 1] : nullptr;
+    FastStart f;
+    // Today's own fast (or the eve of an evening-start one / of Yom Kippur)
+    // first; then the 2nd day of an evening-start fast; then the day before a
+    // dawn-start one. (The eve of Yom Kippur and the day before a dawn fast
+    // can't meet: Yom Kippur itself starts no fast.)
+    if (fastStartingOn(t0, t1, f) && f.n.kind == FastNotice::Kind::Fast) {
+        n = f.n;
+        n.endInDays = f.endDay;
     } else if (t0.fastEnd[0]) {                                // 2nd day of an evening-start fast
         n.kind = FastNotice::Kind::Fast;
-        strlcpy(n.end, t0.fastEnd, sizeof(n.end));
-        strlcpy(n.name, t0.fastName, sizeof(n.name));
-    } else if (t1.fastBegin[0] && isMorning(t1.fastBegin)) {   // day before a dawn-start fast
-        n.kind = FastNotice::Kind::Fast;
-        strlcpy(n.begin, t1.fastBegin, sizeof(n.begin));
+        StringTools::utf8Copy(n.end, t0.fastEnd);
+        StringTools::utf8Copy(n.name, t0.fastName);
+    } else if (t1 && t1->fastBegin[0] && isMorning(t1->fastBegin) && fastStartingOn(*t1, nullptr, f)) {   // day before a dawn-start fast
+        n = f.n;
         n.beginInDays = 1;
-        strlcpy(n.end, t1.fastEnd, sizeof(n.end));
         n.endInDays = 1;
-        strlcpy(n.name, t1.fastName, sizeof(n.name));
-    } else if (t0.candleLightStr[0] && strncmp(t1.holidayHebrew, "יום כיפור", strlen("יום כיפור")) == 0) {
-        n.kind = FastNotice::Kind::SeudaMafseket;
-        strlcpy(n.end, t0.candleLightStr, sizeof(n.end));
+    } else if (fastStartingOn(t0, t1, f)) {                    // the eve of Yom Kippur
+        n = f.n;
     }
     return n;
 }
@@ -1383,14 +1508,14 @@ FastNotice Calendar::getFastNotice() {
 
 static long dayNumberOf(const DayInfo& d) {
     int y = 0, m = 0, dd = 0;
-    if (sscanf(d.gregorianDate, "%d-%d-%d", &y, &m, &dd) != 3) return LONG_MIN;
+    if (!DateRules::parseIsoDate(d.gregorianDate, y, m, dd)) return LONG_MIN;
     return (long)daysFromCivil(y, m, dd);
 }
 
 // "HH:MM" or "HH:MM:SS" on day `day`, or -1 when there is no time.
 static int64_t momentAt(long day, const char* hhmm) {
     int h = 0, mi = 0, s = 0;
-    if (!hhmm || !hhmm[0] || sscanf(hhmm, "%d:%d:%d", &h, &mi, &s) < 2) return -1;
+    if (!DateRules::parseTime(hhmm, h, mi, s)) return -1;
     return (int64_t)day * 86400 + h * 3600 + mi * 60 + s;
 }
 
@@ -1460,7 +1585,7 @@ static TimedNotice timedNotice(const Manifest& man, char (DayInfo::*field)[10], 
         const bool better = !found || (ahead && (!bestAhead || at < bestAt)) || (!ahead && !bestAhead && at > bestAt);
         if (!better) continue;
         found = true; bestAhead = ahead; bestAt = at;
-        strlcpy(out.time, time, sizeof(out.time));
+        StringTools::utf8Copy(out.time, time);
         out.inDays = (int)(day - today);
     }
     return out;
@@ -1470,7 +1595,7 @@ TimedNotice Calendar::getCandle(const AppConfig& cfg) {
     const ShowSpan& w = cfg.candleShow;
     if (w.from == ShowFrom::Midnight && w.until == ShowUntil::Midnight) {
         TimedNotice out;
-        strlcpy(out.time, s_civilToday.candleLightStr, sizeof(out.time));
+        StringTools::utf8Copy(out.time, s_civilToday.candleLightStr);
         return out;
     }
     return timedNotice(s_manifest, &DayInfo::candleLightStr, w, cfg);
@@ -1480,7 +1605,7 @@ TimedNotice Calendar::getHavdalah(const AppConfig& cfg) {
     const ShowSpan& w = cfg.havdalahShow;
     if (w.from == ShowFrom::Midnight && w.until == ShowUntil::Midnight) {
         TimedNotice out;
-        strlcpy(out.time, s_civilToday.havdalahStr, sizeof(out.time));
+        StringTools::utf8Copy(out.time, s_civilToday.havdalahStr);
         return out;
     }
     return timedNotice(s_manifest, &DayInfo::havdalahStr, w, cfg);
@@ -1535,33 +1660,26 @@ FastNotice Calendar::getFastNotice(const AppConfig& cfg) {
     if (w.from == ShowFrom::Midnight && w.until == ShowUntil::Midnight) return getFastNotice();
     const int64_t now = nowLocalSeconds();
     const long today = dayOfMoment(now);
-    auto isMorning = [](const char* hhmm) { return atoi(hhmm) < 12; };
     for (size_t k = 0; k < s_manifest.size(); k++) {
         const DayInfo& t0 = s_manifest[k];
         const DayInfo* t1 = k + 1 < s_manifest.size() ? &s_manifest[k + 1] : nullptr;
         const long day = dayNumberOf(t0);
         FastNotice n;
         long beginDay = day, endDay = day, fastDay = day;
-        if (t0.fastBegin[0] && isMorning(t0.fastBegin)) {                 // dawn to night
-            n.kind = FastNotice::Kind::Fast;
-            strlcpy(n.begin, t0.fastBegin, sizeof(n.begin));
-            strlcpy(n.end, t0.fastEnd, sizeof(n.end));
-            strlcpy(n.name, t0.fastName, sizeof(n.name));
-        } else if (t0.fastBegin[0]) {                                      // evening start (Tisha B'Av)
-            n.kind = FastNotice::Kind::Fast;
-            strlcpy(n.begin, t0.fastBegin, sizeof(n.begin));
-            if (t1) strlcpy(n.end, t1->fastEnd, sizeof(n.end));
-            strlcpy(n.name, t1 && t1->fastName[0] ? t1->fastName : t0.fastName, sizeof(n.name));
-            endDay = fastDay = day + 1;
+        FastStart f;
+        // The order of the code before fastStartingOn() (checked case by case,
+        // sim/test_fast_merge.py): a fast beginning that day, then the end of one
+        // begun before the calendar's first day, then the eve of Yom Kippur.
+        auto take = [&]() { n = f.n; endDay = day + f.endDay; fastDay = day + f.fastDay; };
+        if (t0.fastBegin[0] && fastStartingOn(t0, t1, f)) {               // dawn start, evening start
+            take();
         } else if (k == 0 && t0.fastEnd[0]) {                              // its eve is before the calendar's first day
             n.kind = FastNotice::Kind::Fast;
-            strlcpy(n.end, t0.fastEnd, sizeof(n.end));
-            strlcpy(n.name, t0.fastName, sizeof(n.name));
+            StringTools::utf8Copy(n.end, t0.fastEnd);
+            StringTools::utf8Copy(n.name, t0.fastName);
             beginDay = day - 1;
-        } else if (t0.candleLightStr[0] && t1 && strncmp(t1->holidayHebrew, "יום כיפור", strlen("יום כיפור")) == 0) {
-            n.kind = FastNotice::Kind::SeudaMafseket;
-            strlcpy(n.end, t0.candleLightStr, sizeof(n.end));
-            fastDay = day + 1;
+        } else if (fastStartingOn(t0, t1, f)) {                            // the eve of Yom Kippur
+            take();
         } else {
             continue;
         }
@@ -1591,8 +1709,8 @@ static int civilHebrewYear(long civilAbs) {
 // The mention, switching at Musaf of the switch day. Pesach's is shown only
 // from its eve on (the user, 2026-11-01: nobody needs reminding that Pesach
 // is coming, and before it the screen is full enough).
-// Ashkenazim outside Israel say nothing in summer instead of מוריד הטל, so
-// for them there's no summer phrase (the request's ותן ברכה still shows).
+// Ashkenazim outside Israel say nothing (בלי משיב הרוח) in summer instead of
+// מוריד הטל, so a stop notice shows for them (the request's ותן ברכה still shows).
 PrayerSwitchNotice Calendar::getPrayerSwitch(int windowDays, Nusach nusach, bool inIsrael, long civilTodayAbs) {
     PrayerSwitchNotice n;
     if (civilTodayAbs <= 0) return n;   // date not known yet
@@ -1604,11 +1722,12 @@ PrayerSwitchNotice Calendar::getPrayerSwitch(int windowDays, Nusach nusach, bool
         { 7, 15, "מוריד הטל" },   // Nisan 15, first day of Pesach
     };
     for (const auto& sw : kSwitches) {
-        if (sw.month == 7 && !inIsrael && nusach == Nusach::Ashkenaz) continue;
+        bool ashkenazAbroad = sw.month == 7 && !inIsrael && nusach == Nusach::Ashkenaz;
+        const char* phrase = ashkenazAbroad ? "בלי משיב הרוח" : sw.phrase;
         long d = civilTodayAbs - JewishDateEngine::hebrewToAbsolute(hy, sw.month, sw.day);
         const int before = sw.month == 7 ? (windowDays > 0 ? 1 : 0) : windowDays;   // Pesach: only its eve
         if (d >= -before && d <= windowDays) {
-            n.phrase = sw.phrase;
+            n.phrase = phrase;
             n.daysFromSwitch = (int)d;
             return n;
         }

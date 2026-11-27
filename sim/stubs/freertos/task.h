@@ -11,3 +11,6 @@ void xTaskNotifyGive(TaskHandle_t handle);
 // still screen (Calendar.cpp, since 2026-10-30) spin while simulated time
 // stood still - runs froze from the first calendar cache save on.
 void vTaskDelay(TickType_t ticks);
+// Stack use can't be measured on the PC: no handle, 0 (the clock leaves the key out).
+inline TaskHandle_t xTaskGetHandle(const char*) { return nullptr; }
+inline UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t) { return 0; }

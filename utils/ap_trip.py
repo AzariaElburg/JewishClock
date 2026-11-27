@@ -83,16 +83,20 @@ def log(msg):
 
 
 @contextlib.contextmanager
-def on_clock_ap():
+def on_clock_ap(clock_ap=CLOCK_AP, home=None):
+    """home: the network to come back to - by default the one this PC is on now (at the parents':
+    their Wi-Fi, not ours - 2026-11-19), else HOME."""
+    home = home or (_connected_ssid() if _connected_ssid() not in (None, clock_ap) else HOME)
+    log("will come back to %s" % home)
     try:
-        took = _join(CLOCK_AP, lambda: _reachable(CLOCK_URL + "/api/status"), 120)
-        log("on %s after %.0f s" % (CLOCK_AP, took))
+        took = _join(clock_ap, lambda: _reachable(CLOCK_URL + "/api/status"), 120)
+        log("on %s after %.0f s" % (clock_ap, took))
         yield CLOCK_URL
     finally:
         for attempt in range(5):
             try:
-                took = _join(HOME, lambda: _reachable("http://www.msftconnecttest.com/connecttest.txt"))
-                log("back on %s after %.0f s" % (HOME, took))
+                took = _join(home, lambda: _reachable("http://www.msftconnecttest.com/connecttest.txt"))
+                log("back on %s after %.0f s" % (home, took))
                 break
             except RuntimeError as e:
                 log("%s (attempt %d)" % (e, attempt + 1))

@@ -1,7 +1,13 @@
 #include "MessageAggregator.h"
+#include "Uptime.h"
+#include "DateRules.h"
 #include "EventsLock.h"
 #include "Display.h"
 #include "NTPManager.h"
+#include "Storage.h"
+#include "OnlineUpdate.h"
+#include "DiagnosticLog.h"
+#include "Updater.h"
 #include "JewishDateEngine.h"
 #include "Calendar.h"
 #include "lang.h"
@@ -9,7 +15,10 @@
 #include "StringTools.h"
 #include "Font.h"
 #include "OnScreenElement.h"
+#include "Tunables.h"
+#include "Texts.h"
 #include <LittleFS.h>
+#include <WiFi.h>
 #include <limits.h>
 #include <vector>
 #include <atomic>
@@ -20,10 +29,17 @@
 static const uint32_t STATUS_LINE_REPEAT_AFTER_MS = 2000;
 // "Internet unreachable" (offlineNoticeDue()): shown once no known network
 // has been joined for this long - a short drop and its reconnect show nothing.
-static const uint32_t OFFLINE_NOTICE_AFTER_MS = 60UL * 1000UL;
+static const int64_t OFFLINE_NOTICE_AFTER_MS = 60LL * 1000;
+TUNABLE_SHARED(OFFLINE_NOTICE_AFTER_MS)
+// Online, but no time server answered for this long: the status slide says so (the
+// clock's own crystal drifts about a second a day - the time shown is still right).
+static const int64_t NTP_NOTICE_AFTER_MS = 3LL * 24 * 3600 * 1000;
+TUNABLE_SHARED(NTP_NOTICE_AFTER_MS)
 // ... then every Nth round (batch / scroll lap); every round during the
-// startup minutes (main.cpp BOOT_OVERLAY_MS).
+// startup minutes (BOOT_OVERLAY_MS, MessageAggregator.h).
 static const uint32_t OFFLINE_NOTICE_EVERY_N_ROUNDS = 4;
+TUNABLE_SHARED(OFFLINE_NOTICE_EVERY_N_ROUNDS)
+TUNABLE_SHARED_AS(BOOT_OVERLAY_MS, MessageAggregator::BOOT_OVERLAY_MS)
 
 static std::vector<OnScreenElement> g_elements;
 static uint16_t            g_currentColor = COLOR_TEXT_NORMAL;
@@ -53,10 +69,20 @@ static uint32_t g_messageId       = 1; // Start at 1, so 0 can be an "invalid" I
 // have several - one per holiday of the day, two rain/dew lines; see partsOf()).
 struct BatchSlot { ContentType type; size_t part; };
 static std::vector<BatchSlot> s_currentBatch;
+static const AppConfig* s_loopCfg = nullptr;   // the settings loop() last ran with (upcomingRounds())
+// A new order or "every Nth" (Calendar Content on the page): the batch on
+// screen used to play on in the old order to its end - up to minutes on a
+// Friday at a slow scroll, and the user's father took it for "the drag didn't
+// take effect" (2026-11-09, measured on the simulator). Now the slide on
+// screen finishes and the next one starts a new batch in the new order -
+// without showing the slide just shown again first (s_avoidFirst).
+static bool      s_orderChanged = false;
+static BatchSlot s_avoidFirst   = {ContentType::COUNT, 0};
+static bool      s_haveAvoid    = false;
 static size_t    s_batchIndex   = 0;
 static uint32_t  s_batchCounter = 0; // "round" counter for Alternating mode - one per completed batch, not tied to wall-clock time.
 
-static uint32_t s_lastDwellTime = 0;
+static int64_t  s_lastDwellTime = 0;   // Uptime::ms()
 static RotationMode s_lastRotationMode = RotationMode::SingleScroll; // Initialize to a default
 
 // --- Content round counter (per-item frequency: "every Nth round") ---
@@ -80,6 +106,7 @@ static uint32_t s_roundCounter    = 0;
 static std::atomic<int> s_demoRequest{0};      // set by the web handler: 1 = start, 2 = stop
 static bool     s_demoActive = false;
 static uint32_t s_demoStartRound = 0;          // SingleScroll: ends after one full lap
+static bool     s_demoOnScreen = false;         // SingleScroll: its ticker built for the screen (the lap counts from then)
 static std::vector<std::vector<OnScreenElement>> s_demoSlides;
 static std::vector<std::vector<OnScreenElement>> buildDemoSlides(const AppConfig& cfg, const DisplayStrings& strings);
 
@@ -118,9 +145,58 @@ static bool offlineNoticeDue(uint32_t roundCounter) {
     if (WiFiManager::offlineForMs() < OFFLINE_NOTICE_AFTER_MS) return false;
     return s_startupMinutes || roundCounter % OFFLINE_NOTICE_EVERY_N_ROUNDS == 0;
 }
+// The status slide - system messages, English in every display language (the user,
+// 2026-11-14):
+//  - "No internet!" (offlineNoticeDue());
+//  - online, but no time server answered for NTP_NOTICE_AFTER_MS: "No NTP for 3 days",
+//    the count going on as long as it lasts (the settings' name, NTP).
+//    One wording each, chosen to fit the window without scrolling (the user, 2026-11-14:
+//    no long/short versions; measured in the 475 px window: 292 px and 440 px - "for 100
+//    days" and more is a little wider and scrolls);
+//  - the clock's own Wi-Fi and its password - in the startup minutes and whenever
+//    offline (no lockout: the clock has no buttons, so a person who doesn't know the
+//    password and can't reach the clock over the home network unplugs it and reads it
+//    off the screen). The name is the Wi-Fi up now: the clock's, or "...-Setup".
+static bool ntpNoticeDue() {
+    return WiFiManager::offlineForMs() < OFFLINE_NOTICE_AFTER_MS && NTPManager::isSynced()
+        && NTPManager::msSinceSync() >= NTP_NOTICE_AFTER_MS;
+}
+// An update that went back by itself (Updater::failedUpdateOnScreen()): "Update to 2.3.0
+// failed" - so the family knows to call (the user, 2026-11-14): at most 3 days, or until
+// "OK, seen" in Settings. Asked once a round (a small file).
+static String s_failedUpdate;
+// "Error - see Settings" (the user, 2026-11-15) - whatever the clock found wrong by itself,
+// Settings saying what: texts too long in its own files (Storage::textNotesOnScreen(): for 3 days),
+// the update feed not there (OnlineUpdate::feedMissingOnScreen(): after 3 days, until it is back).
+static bool s_textsTooLong = false;
+static bool statusNoticeDue(uint32_t roundCounter) {
+    s_failedUpdate = Updater::failedUpdateOnScreen();
+    time_t local = NTPManager::getLocalEpoch();
+    s_textsTooLong = Storage::textNotesOnScreen(local > 0 ? (long)(local / 86400) : 0) || OnlineUpdate::feedMissingOnScreen();
+    return s_startupMinutes || offlineNoticeDue(roundCounter)
+        || ((ntpNoticeDue() || NTPManager::hasRefusedServer() || s_failedUpdate.length() || s_textsTooLong) && roundCounter % OFFLINE_NOTICE_EVERY_N_ROUNDS == 0);
+}
+static String ntpNotice() {
+    return Texts::fill(Texts::noNtp, String((long)(NTPManager::msSinceSync() / (24LL * 3600 * 1000))));
+}
 static std::vector<OnScreenElement> offlineNotice(const DisplayStrings& strings) {
-    if (WiFiManager::offlineForMs() < OFFLINE_NOTICE_AFTER_MS) return {};   // back meanwhile
-    return { OnScreenElement(OnScreenElementType::TEXT, strings.internetUnreachable, _measureString(strings.internetUnreachable)) };
+    (void)strings;
+    bool offline = WiFiManager::offlineForMs() >= OFFLINE_NOTICE_AFTER_MS;
+    String t;
+    auto add = [&t](const String& part) { t += (t.length() ? String(Texts::partsJoin) : String()) + part; };
+    if (offline) add(Texts::noInternet);
+    else if (NTPManager::hasRefusedServer()) add(Texts::ntpServerRefused);
+    else if (ntpNoticeDue()) add(ntpNotice());
+    if (s_failedUpdate.length()) add(Texts::fill(Texts::updateFailed, s_failedUpdate));
+    // One wording for whatever Settings lists as wrong (the user, 2026-11-15: "something wrong, see
+    // Settings", fitting the window): measured 467 px in the default 475 px window - alone on its slide
+    // it doesn't scroll. Today: texts too long in the clock's own files.
+    if (s_textsTooLong) add(Texts::errorSeeSettings);
+    String name = WiFiManager::ownWifiName();
+    if ((offline || s_startupMinutes) && name.length())
+        add(Texts::fill(Texts::clockWifi, name, WiFiManager::apPassword()));
+    if (!t.length()) return {};
+    return { OnScreenElement(OnScreenElementType::TEXT, t, _measureString(t.c_str())) };
 }
 
 static long getTodayAbsolute() {
@@ -171,10 +247,11 @@ void MessageAggregator::begin(const AppConfig& cfg, const EventList& events) {
 }
 
 void MessageAggregator::loop(const AppConfig& cfg, bool showOverlay) {
+    s_loopCfg = &cfg;
     // Performance Gate: Only rebuild the message list once per second.
-    static unsigned long lastUpdate = 0;
-    if (millis() - lastUpdate < 1000) return;
-    lastUpdate = millis();
+    static int64_t lastUpdate = 0;
+    if (Uptime::ms() - lastUpdate < 1000) return;
+    lastUpdate = Uptime::ms();
     s_startupMinutes = showOverlay;
 
     // CLOCK_LOG("Aggregator", "Loop Start. RotationMode: %d", (int)cfg.rotationMode);
@@ -183,7 +260,7 @@ void MessageAggregator::loop(const AppConfig& cfg, bool showOverlay) {
     if (cfg.rotationMode != s_lastRotationMode) {
         s_currentBatch.clear();
         s_batchIndex = 0;
-        s_lastDwellTime = millis(); // Reset timer on mode change
+        s_lastDwellTime = Uptime::ms(); // Reset timer on mode change
         s_lastRotationMode = cfg.rotationMode;
     }
 
@@ -193,9 +270,10 @@ void MessageAggregator::loop(const AppConfig& cfg, bool showOverlay) {
         s_demoSlides = buildDemoSlides(cfg, getStrings(cfg.language));
         s_demoActive = true;
         s_batchIndex = 0;
-        s_lastDwellTime = millis();
+        s_lastDwellTime = Uptime::ms();
         DisplayManager::consumeSingleScrollLapCompleted();   // a lap of the previous ticker doesn't count
         s_demoStartRound = s_roundCounter;
+        s_demoOnScreen = false;   // single scroll: its lap counts from when its ticker is built (buildElements)
         CLOCK_LOG("Aggregator", "Demo started: %u slides", (unsigned)s_demoSlides.size());
     } else if (req == 2 && s_demoActive) {
         s_demoActive = false;
@@ -205,7 +283,7 @@ void MessageAggregator::loop(const AppConfig& cfg, bool showOverlay) {
         s_demoSlides.clear();
         s_currentBatch.clear();
         s_batchIndex = 0;
-        s_lastDwellTime = millis();
+        s_lastDwellTime = Uptime::ms();
     }
 
     // --- SingleScroll's round advance (lap-based - see comment above s_roundCounter) ---
@@ -213,9 +291,21 @@ void MessageAggregator::loop(const AppConfig& cfg, bool showOverlay) {
         s_roundCounter++;
     }
 
+    {   // Calendar Content's order / frequency changed? (see s_orderChanged)
+        static uint8_t s_seenOrder[(int)ContentType::COUNT], s_seenFreq[(int)ContentType::COUNT];
+        static bool s_seen = false;
+        if (!s_seen || memcmp(s_seenOrder, cfg.contentOrder, sizeof(s_seenOrder)) != 0
+                    || memcmp(s_seenFreq, cfg.contentFrequency, sizeof(s_seenFreq)) != 0) {
+            if (s_seen) s_orderChanged = true;
+            memcpy(s_seenOrder, cfg.contentOrder, sizeof(s_seenOrder));
+            memcpy(s_seenFreq, cfg.contentFrequency, sizeof(s_seenFreq));
+            s_seen = true;
+        }
+    }
+
     if (cfg.rotationMode == RotationMode::Alternating) {
-        uint32_t dwellMs = (uint32_t)cfg.messageDwellSec * 1000;
-        uint32_t elapsed = millis() - s_lastDwellTime;
+        int64_t dwellMs = (int64_t)cfg.messageDwellSec * 1000;
+        int64_t elapsed = Uptime::ms() - s_lastDwellTime;
         bool advance;
         if (DisplayManager::isAlternatingScrollActive()) {
             // Currently holding before, mid-round, or repeating another round of
@@ -235,8 +325,15 @@ void MessageAggregator::loop(const AppConfig& cfg, bool showOverlay) {
             }
         }
         if (advance) {
+            if (s_orderChanged && !s_demoActive) {   // a new batch in the new order, from this slide on
+                s_haveAvoid = s_batchIndex < s_currentBatch.size();
+                if (s_haveAvoid) s_avoidFirst = s_currentBatch[s_batchIndex];
+                s_currentBatch.clear();
+                s_orderChanged = false;
+                CLOCK_LOG("Aggregator", "Calendar Content order/frequency changed - new batch from the next slide");
+            }
             s_batchIndex++; // buildElements() starts a fresh batch once this runs off the end.
-            s_lastDwellTime = millis();
+            s_lastDwellTime = Uptime::ms();
         }
     }
 
@@ -250,7 +347,7 @@ void MessageAggregator::loop(const AppConfig& cfg, bool showOverlay) {
     // all — e.g. while only an icon with no label is on screen.
     static char s_lastLanguage[4] = "";
     bool languageChanged = (strcmp(cfg.language, s_lastLanguage) != 0);
-    strlcpy(s_lastLanguage, cfg.language, sizeof(s_lastLanguage));
+    StringTools::utf8Copy(s_lastLanguage, cfg.language);
 
     // 1. Clear and rebuild the list of on-screen elements.
     g_elements.clear();
@@ -263,11 +360,11 @@ void MessageAggregator::loop(const AppConfig& cfg, bool showOverlay) {
         // in Alternating mode a long one scrolled to its end once and then
         // stood still there - nothing came next (seen 2026-10-24: the setup
         // screen showed only "| PASS: jewishclock"). Start it over once read.
-        static uint32_t s_statusLineEndMs = 0;   // when its scroll was first seen finished
+        static int64_t s_statusLineEndMs = 0;   // when its scroll was first seen finished
         bool statusLine = !overlayMsg.isEmpty() || !NTPManager::isSynced();
         if (!statusLine || DisplayManager::getAlternatingScrollRevealElapsedMs() == 0) s_statusLineEndMs = 0;
-        else if (!s_statusLineEndMs) s_statusLineEndMs = millis() | 1;
-        else if (millis() - s_statusLineEndMs >= STATUS_LINE_REPEAT_AFTER_MS) { s_forceRefresh = true; s_statusLineEndMs = 0; }
+        else if (!s_statusLineEndMs) s_statusLineEndMs = Uptime::ms() | 1;
+        else if (Uptime::ms() - s_statusLineEndMs >= STATUS_LINE_REPEAT_AFTER_MS) { s_forceRefresh = true; s_statusLineEndMs = 0; }
         if (!overlayMsg.isEmpty()) {
             g_elements.emplace_back(OnScreenElementType::TEXT, overlayMsg, _measureString(overlayMsg.c_str()));
             g_currentColor = COLOR_GOLD; // Use a distinct color for setup info.
@@ -283,10 +380,13 @@ void MessageAggregator::loop(const AppConfig& cfg, bool showOverlay) {
             for (int i = 0; i < WIFI_NETWORKS; i++) anyNetwork |= wifiSsidAt(cfg, i)[0] != '\0';
             if (anyNetwork) {
                 // While choosing among several known networks, no name yet.
-                String msg = joining.length() ? "Connecting to " + joining + "..." : String("Looking for Wi-Fi...");
+                // Joined but the time servers don't answer: say that, not
+                // "Connecting" (2026-11-10, drill ntp_blocked_at_start).
+                String msg = WiFi.status() == WL_CONNECTED ? String(Texts::waitingForTime)
+                           : joining.length() ? Texts::fill(Texts::connecting, joining) : String(Texts::lookingForWifi);
                 g_elements.emplace_back(OnScreenElementType::TEXT, msg, _measureString(msg.c_str()));
             } else {
-                String msg = "No Wi-Fi configured. Starting AP...";
+                String msg = Texts::noWifiConfigured;
                 g_elements.emplace_back(OnScreenElementType::TEXT, msg, _measureString(msg.c_str()));
             }
             g_currentColor = COLOR_GOLD;
@@ -446,16 +546,6 @@ static String formatEventLabel(const PersonalEvent& ev, int age, int diffDays, c
     return label;
 }
 
-// The event form fills the icon in from the type; an event without one
-// (e.g. imported) still gets its type's picture - without it "Name (25)"
-// doesn't say whether it's a birthday, an anniversary or a yahrzeit.
-static const char* defaultEventIcon(const char* type) {
-    if (strcasecmp(type, "birthday") == 0) return "🎂";
-    if (strcasecmp(type, "wedding") == 0)  return "💍";
-    if (strcasecmp(type, "yahrzeit") == 0) return "🕯";
-    return "🗓";
-}
-
 // Adds one event to an events slide: its picture glued to its label, the
 // way Candles/Havdalah are. The picture is the event's uploaded image if it
 // has one the screen can show, otherwise its icon (decided 2026-10-21: the
@@ -474,8 +564,12 @@ static void appendEvent(std::vector<OnScreenElement>& out, const PersonalEvent& 
     const bool star = hebrewDate && ev.hasJewish && ev.hasGregorian;
     String picture = ev.image[0] ? imagePath(ev.image) : String();
     bool ownImage = picture.length() && DisplayManager::hasImage(picture.c_str());
+    if (!ownImage && ev.iconImage[0]) {   // an icon the font can't draw, as the page drew it
+        picture = imagePath(ev.iconImage);
+        ownImage = DisplayManager::hasImage(picture.c_str());
+    }
     if (!ownImage) {
-        picture = eventIconPath(ev.icon[0] ? ev.icon : defaultEventIcon(ev.type));
+        picture = eventIconPath(ev.icon[0] ? ev.icon : Storage::defaultIconForType(ev.type));   // (every event read gets one)
     }
     if (picture.length()) {
         OnScreenElement pic(OnScreenElementType::STATIC_IMAGE, picture, FONT_H);
@@ -510,23 +604,36 @@ static String daysAheadWord(int inDays, const DisplayStrings& strings) {
     return String();
 }
 
-static String formatFast(const FastNotice& f, const DisplayStrings& strings) {
+// A time of day as the screen shows it: "17:26", or with the 24-hour clock
+// off (Settings, cfg.use24Hour) "5:26" - no AM/PM, a candle-lighting or fast
+// time says itself which half of the day it is in. The calendar keeps its
+// times as "HH:MM" (compared as such); only the screen gets this form
+// (2026-11-10: the setting was saved but used nowhere on the clock).
+static String clockTime(const char* hhmm, const AppConfig& cfg) {
+    int h, m, sec;
+    if (cfg.use24Hour || !DateRules::parseTime(hhmm, h, m, sec)) return String(hhmm ? hhmm : "");
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%d:%02d", h % 12 ? h % 12 : 12, m);
+    return buf;
+}
+
+static String formatFast(const FastNotice& f, const DisplayStrings& strings, const AppConfig& cfg) {
     String msg;
-    if (f.kind == FastNotice::Kind::SeudaMafseket) return String(strings.seudaMafseketUntil) + " " + daysAheadWord(f.endInDays, strings) + f.end;
+    if (f.kind == FastNotice::Kind::SeudaMafseket) return String(strings.seudaMafseketUntil) + " " + daysAheadWord(f.endInDays, strings) + clockTime(f.end, cfg);
     // Without an end time the fast's own name says which fast it is.
     msg = String(!f.end[0] && f.name[0] ? f.name : strings.fastLabel) + ": ";
     if (f.begin[0]) {
         msg += daysAheadWord(f.beginInDays, strings);
-        msg += f.begin;
+        msg += clockTime(f.begin, cfg);
     }
     if (f.end[0]) {
         if (f.begin[0] && f.endInDays == f.beginInDays) {
-            msg += String("-") + f.end;
+            msg += String("-") + clockTime(f.end, cfg);
         } else {
             if (f.begin[0]) msg += " ";
             msg += String(strings.until) + " ";
             msg += daysAheadWord(f.endInDays, strings);
-            msg += f.end;
+            msg += clockTime(f.end, cfg);
         }
     }
     return msg;
@@ -644,7 +751,7 @@ static std::vector<OnScreenElement> buildContentType(ContentType type, size_t pa
         // Icon + time glued together, no text label ("מחר 16:22" when shown
         // the evening before and the user wants it). 90 ms = the animation's
         // baked-in frame cadence.
-        String text = (cfg.candleShow.tomorrow ? daysAheadWord(t.inDays, strings) : String()) + t.time;
+        String text = (cfg.candleShow.tomorrow ? daysAheadWord(t.inDays, strings) : String()) + clockTime(t.time, cfg);
         out = iconAndText(builtinImage("Candles"), text, 90);
     }
     break; }
@@ -654,7 +761,7 @@ static std::vector<OnScreenElement> buildContentType(ContentType type, size_t pa
     TimedNotice t = Calendar::getHavdalah(cfg);
     if (t.time[0]) {
         // Icon immediately followed by the time, no label, no separator.
-        String text = (cfg.havdalahShow.tomorrow ? daysAheadWord(t.inDays, strings) : String()) + t.time;
+        String text = (cfg.havdalahShow.tomorrow ? daysAheadWord(t.inDays, strings) : String()) + clockTime(t.time, cfg);
         out = iconAndText(builtinImage("Havdala"), text);
     }
     break; }
@@ -711,7 +818,7 @@ static std::vector<OnScreenElement> buildContentType(ContentType type, size_t pa
     case ContentType::Fast: {
     FastNotice f = Calendar::getFastNotice(cfg);   // when: cfg.fastShow
     if (f.kind == FastNotice::Kind::None) break;
-    out.push_back(textElement(formatFast(f, strings)));   // examples: see formatFast()
+    out.push_back(textElement(formatFast(f, strings, cfg)));   // examples: see formatFast()
     break; }
     case ContentType::PrayerSwitch: {
     // "משיב הרוח ממחרתיים", "... ממחר", "... ממוסף", then "משיב הרוח";
@@ -741,6 +848,19 @@ static std::vector<OnScreenElement> buildContentType(ContentType type, size_t pa
 
 // Next occurrence (from today, inclusive) of an event on its Gregorian or
 // Hebrew date: the absolute day and the age then (-1 = no year given).
+// A date the mapping refused (DateRules / JewishDateEngine say it isn't one): never
+// expected - every way in checks dates first - so something is wrong: said in the log,
+// once per event and calendar, and the event skipped instead of shown on a made-up day.
+static void mappingRefused(const PersonalEvent& ev, bool hebrew) {
+    static std::vector<String> said;
+    String key = String(ev.id) + (hebrew ? "h" : "g");
+    for (const String& k : said) if (k == key) return;
+    if (said.size() < 64) said.push_back(key);
+    DiagnosticLog::record("Events", "\"%s\": its %s date %d/%d/%d is no date - not shown (please open the event and check it)",
+                          ev.name, hebrew ? "Hebrew" : "Gregorian", hebrew ? ev.jDay : ev.gDay, hebrew ? ev.jMonth : ev.gMonth,
+                          hebrew ? ev.jYear : ev.gYear);
+}
+
 static bool nextOccurrence(const PersonalEvent& ev, bool hebrew, long todayAbs, long& outAbs, int& outAge) {
     int gy, gm, gd, hy, hm, hd;
     JewishDateEngine::absoluteToGregorian(todayAbs, gy, gm, gd);
@@ -748,15 +868,18 @@ static bool nextOccurrence(const PersonalEvent& ev, bool hebrew, long todayAbs, 
     for (int k = 0; k < 2; k++) {
         long abs; int year;
         if (hebrew) {
-            HebrewDate original = { ev.jYear, ev.jMonth, ev.jDay };
+            if (!DateRules::validHebrew(0, ev.jMonth, ev.jDay)) return false;
+            HebrewDate original = { ev.jYear, ev.jMonth, ev.jDay };   // 30 Cheshvan, Adar II ... in other years: the Hebcal rules
             HebrewDate r = strcmp(ev.type, "yahrzeit") == 0 ? JewishDateEngine::resolveYahrzeit(hy + k, original)
                                                            : JewishDateEngine::resolveBirthdayOrAnniversary(hy + k, original);
+            if (r.month == 0) { mappingRefused(ev, true); return false; }
             abs = JewishDateEngine::hebrewToAbsolute(r.year, r.month, r.day);
             year = hy + k;
             outAge = ev.jYear > 0 ? year - ev.jYear : -1;
         } else {
-            if (ev.gMonth < 1 || ev.gMonth > 12 || ev.gDay < 1) return false;
-            abs = JewishDateEngine::gregorianToAbsolute(gy + k, ev.gMonth, ev.gDay);
+            if (!DateRules::validGregorian(0, ev.gMonth, ev.gDay)) return false;
+            abs = DateRules::resolveGregorian(gy + k, ev.gMonth, ev.gDay);   // 29 Feb in other years: 1 Mar
+            if (abs == DateRules::RESOLVE_NONE) { mappingRefused(ev, false); return false; }
             year = gy + k;
             outAge = ev.gYear > 0 ? year - ev.gYear : -1;
         }
@@ -786,8 +909,8 @@ static std::vector<std::vector<OnScreenElement>> buildDemoSlides(const AppConfig
 
     // Shabbat. Times: this week's real ones when known, else typical.
     const DayInfo& civil = Calendar::getCivilToday();
-    slides.push_back(iconAndText(builtinImage("Candles"), civil.candleLightStr[0] ? String(civil.candleLightStr) : String("17:39"), 90));
-    slides.push_back(iconAndText(builtinImage("Havdala"), civil.havdalahStr[0] ? String(civil.havdalahStr) : String("18:36")));
+    slides.push_back(iconAndText(builtinImage("Candles"), clockTime(civil.candleLightStr[0] ? civil.candleLightStr : "17:39", cfg), 90));
+    slides.push_back(iconAndText(builtinImage("Havdala"), clockTime(civil.havdalahStr[0] ? civil.havdalahStr : "18:36", cfg)));
     slides.push_back(iconAndText(builtinImage("Torah"), " לך־לך"));
     text("מברכים חודש כסלו");
 
@@ -821,13 +944,13 @@ static std::vector<std::vector<OnScreenElement>> buildDemoSlides(const AppConfig
     // Fasts, with times as the clock words them.
     FastNotice f;
     f.kind = FastNotice::Kind::Fast;
-    strlcpy(f.begin, "05:18", sizeof(f.begin)); strlcpy(f.end, "16:55", sizeof(f.end));
-    f.beginInDays = f.endInDays = 1;  text(formatFast(f, strings));                   // the day before
-    f.beginInDays = f.endInDays = 0;  text(formatFast(f, strings));                   // the fast day
-    strlcpy(f.begin, "19:29", sizeof(f.begin)); strlcpy(f.end, "19:56", sizeof(f.end));
-    f.endInDays = 1; text(formatFast(f, strings));                                   // Tisha B'Av, evening to evening
-    FastNotice s; s.kind = FastNotice::Kind::SeudaMafseket; strlcpy(s.end, "17:54", sizeof(s.end));
-    text(formatFast(s, strings));                                                     // before Yom Kippur
+    StringTools::utf8Copy(f.begin, "05:18"); StringTools::utf8Copy(f.end, "16:55");
+    f.beginInDays = f.endInDays = 1;  text(formatFast(f, strings, cfg));                   // the day before
+    f.beginInDays = f.endInDays = 0;  text(formatFast(f, strings, cfg));                   // the fast day
+    StringTools::utf8Copy(f.begin, "19:29"); StringTools::utf8Copy(f.end, "19:56");
+    f.endInDays = 1; text(formatFast(f, strings, cfg));                                   // Tisha B'Av, evening to evening
+    FastNotice s; s.kind = FastNotice::Kind::SeudaMafseket; StringTools::utf8Copy(s.end, "17:54");
+    text(formatFast(s, strings, cfg));                                                     // before Yom Kippur
 
     // Omer, in each wording the settings offer (day 23 = 3 weeks and 2 days,
     // so the weeks-and-days wording shows both parts; Full = Hebcal's text).
@@ -841,6 +964,7 @@ static std::vector<std::vector<OnScreenElement>> buildDemoSlides(const AppConfig
     text(String("משיב הרוח ") + strings.prayerSwitchFrom[1]);
     text(String(cfg.nusach == Nusach::Sefard ? "ברך עלינו " : "ותן טל ומטר ") + strings.prayerSwitchEvening[0]);
     const bool noDew = cfg.nusach == Nusach::Ashkenaz && !cfg.inIsrael;   // see Calendar::getPrayerSwitch()
+    if (noDew) text(String("בלי משיב הרוח ") + strings.prayerSwitchFrom[0]);
     if (!noDew) text(String("מוריד הטל ") + strings.prayerSwitchFrom[0]);
     text(String(cfg.nusach == Nusach::Sefard ? "ברכנו " : "ותן ברכה ") + strings.prayerSwitchEvening[0]);
 
@@ -894,11 +1018,11 @@ static std::vector<std::vector<OnScreenElement>> buildDemoSlides(const AppConfig
     // scrolling left-to-right.
     PersonalEvent example{};
     std::vector<OnScreenElement> twoEvents;
-    strlcpy(example.icon, "🎂", sizeof(example.icon));
-    strlcpy(example.name, "Example", sizeof(example.name));
+    StringTools::utf8Copy(example.icon, "🎂");
+    StringTools::utf8Copy(example.name, "Example");
     appendEvent(twoEvents, example, -1, 0, strings);
-    strlcpy(example.icon, "💍", sizeof(example.icon));
-    strlcpy(example.name, "Another", sizeof(example.name));
+    StringTools::utf8Copy(example.icon, "💍");
+    StringTools::utf8Copy(example.name, "Another");
     appendEvent(twoEvents, example, -1, 0, strings);
     slides.push_back(twoEvents);
     // Every event icon the event form offers, as pictures.
@@ -924,19 +1048,34 @@ bool MessageAggregator::isDemoActive() { return s_demoActive; }
 // something to show. s_batchCounter only advances here - once per batch,
 // not on any wall-clock timer - so "every Nth round" means "every Nth
 // batch", immune to drift between unrelated timers.
-static void buildNewBatch(const AppConfig& cfg, const DayInfo& today, const DisplayStrings& strings) {
-    s_batchCounter++;
-    s_currentBatch.clear();
+// The slides of round `counter`, in the configured order: each content type's parts that are
+// due and have something to show, the status slide first when due. The one place a round is
+// decided - the Alternating batch, the Single-scroll ticker and upcomingRounds() all use it.
+static std::vector<BatchSlot> roundSlots(const AppConfig& cfg, const DayInfo& today, const DisplayStrings& strings, uint32_t counter) {
+    std::vector<BatchSlot> slots;
     for (int i = 0; i < (int)ContentType::COUNT; i++) {
         ContentType type = (ContentType)cfg.contentOrder[i];
         for (size_t part = 0; part < partsOf(type, today); part++) {
-            if (!buildContentType(type, part, cfg, today, strings, s_batchCounter).empty()) {
-                s_currentBatch.push_back({type, part});
-            }
+            if (!buildContentType(type, part, cfg, today, strings, counter).empty()) slots.push_back({type, part});
         }
     }
-    if (offlineNoticeDue(s_batchCounter)) s_currentBatch.insert(s_currentBatch.begin(), BatchSlot{ContentType::COUNT, 0});
+    if (statusNoticeDue(counter)) slots.insert(slots.begin(), BatchSlot{ContentType::COUNT, 0});
+    return slots;
+}
+
+static std::vector<OnScreenElement> slotElements(const BatchSlot& slot, const AppConfig& cfg, const DayInfo& today,
+                                                 const DisplayStrings& strings, uint32_t counter) {
+    return slot.type == ContentType::COUNT ? offlineNotice(strings) : buildContentType(slot.type, slot.part, cfg, today, strings, counter);
+}
+
+static void buildNewBatch(const AppConfig& cfg, const DayInfo& today, const DisplayStrings& strings) {
+    s_batchCounter++;
+    s_currentBatch = roundSlots(cfg, today, strings, s_batchCounter);
     s_batchIndex = 0;
+    // Built because the order changed: don't open with the slide just shown.
+    if (s_haveAvoid && s_currentBatch.size() > 1 &&
+        s_currentBatch[0].type == s_avoidFirst.type && s_currentBatch[0].part == s_avoidFirst.part) s_batchIndex = 1;
+    s_haveAvoid = false;
     CLOCK_LOG("Aggregator", "New batch #%u: %u items | freeHeap=%u maxAllocHeap=%u",
               (unsigned)s_batchCounter, (unsigned)s_currentBatch.size(), (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
 }
@@ -948,6 +1087,15 @@ void MessageAggregator::buildElements(const AppConfig& cfg) {
     // Demo: its slides instead of the normal ones, in the same mode.
     if (s_demoActive) {
         if (cfg.rotationMode == RotationMode::SingleScroll) {
+            // The demo's ticker starts over now, and its one lap counts from here - not from the
+            // request: the screen took new content only when the running lap ended, the moment
+            // that counted as the demo's lap, so it ended unseen; a request during the start-up
+            // status line, before anything is built, the same (2026-11-18, sim/test_screen_edges.py).
+            if (!s_demoOnScreen) {
+                s_demoOnScreen = true;
+                s_demoStartRound = s_roundCounter;
+                s_forceRefresh = true;
+            }
             if ((int32_t)(s_roundCounter - s_demoStartRound) >= 1) {
                 s_demoActive = false;   // one full lap of the demo ticker shown
                 CLOCK_LOG("Aggregator", "Demo finished");
@@ -973,13 +1121,9 @@ void MessageAggregator::buildElements(const AppConfig& cfg) {
     if (cfg.rotationMode == RotationMode::SingleScroll) {
         // Everything due this round, concatenated in the user's configured order.
         g_elements.clear();
-        if (offlineNoticeDue(s_roundCounter)) g_elements = offlineNotice(strings);
-        for (int i = 0; i < (int)ContentType::COUNT; i++) {
-            ContentType type = (ContentType)cfg.contentOrder[i];
-            for (size_t part = 0; part < partsOf(type, today); part++) {
-                std::vector<OnScreenElement> items = buildContentType(type, part, cfg, today, strings, s_roundCounter);
-                g_elements.insert(g_elements.end(), items.begin(), items.end());
-            }
+        for (const BatchSlot& slot : roundSlots(cfg, today, strings, s_roundCounter)) {
+            std::vector<OnScreenElement> items = slotElements(slot, cfg, today, strings, s_roundCounter);
+            g_elements.insert(g_elements.end(), items.begin(), items.end());
         }
     } else { // Alternating
         // Play the current fixed batch, slot by slot. A slot's own content is
@@ -998,16 +1142,18 @@ void MessageAggregator::buildElements(const AppConfig& cfg) {
                 buildNewBatch(cfg, today, strings);
                 if (s_currentBatch.empty()) break; // nothing due/available at all right now
             }
-            const BatchSlot& slot = s_currentBatch[s_batchIndex];
-            current = slot.type == ContentType::COUNT ? offlineNotice(strings)
-                                                      : buildContentType(slot.type, slot.part, cfg, today, strings, s_batchCounter);
+            current = slotElements(s_currentBatch[s_batchIndex], cfg, today, strings, s_batchCounter);
             if (!current.empty()) break;
             s_batchIndex++;
         }
         g_elements = (!s_currentBatch.empty() && s_batchIndex < s_currentBatch.size())
             ? current : std::vector<OnScreenElement>{};
+        // The status slide: red when it says something is wrong (no internet, no time
+        // server - the user, 2026-11-14), gold when it only gives the clock's Wi-Fi.
+        // (Single-scroll: one ticker, one colour - not marked.)
         if (!g_elements.empty() && s_currentBatch[s_batchIndex].type == ContentType::COUNT)
-            g_currentColor = COLOR_GOLD;   // like the other status lines
+            g_currentColor = (WiFiManager::offlineForMs() >= OFFLINE_NOTICE_AFTER_MS || ntpNoticeDue() || s_failedUpdate.length() || s_textsTooLong)
+                             ? COLOR_RED : COLOR_GOLD;
     }
 
     // Fallback: If after all logic, g_elements is still empty, add the project name.
@@ -1027,4 +1173,37 @@ uint32_t MessageAggregator::getCurrentMessageId() {
 
 uint16_t MessageAggregator::getCurrentColor() {
     return g_currentColor;
+}
+
+// The next n rounds as this clock would show them now (2026-11-15): the same roundSlots() /
+// slotElements() as the screen, from the clock's own settings, events and day - nothing
+// changed by asking. Single-scroll: one slide per round (the ticker). For the tests: what a
+// change on the page does to the clock, without watching rounds go by in real time.
+std::vector<std::vector<std::vector<OnScreenElement>>> MessageAggregator::upcomingRounds(int n) {
+    if (!s_loopCfg) return {};
+    const AppConfig& cfg = *s_loopCfg;
+    const DayInfo& today = Calendar::getToday();
+    const DisplayStrings& strings = getStrings(cfg.language);
+    bool single = cfg.rotationMode == RotationMode::SingleScroll;
+    std::vector<std::vector<std::vector<OnScreenElement>>> rounds;
+    for (int k = 1; k <= n; k++) {
+        uint32_t counter = (single ? s_roundCounter : s_batchCounter) + k;
+        std::vector<std::vector<OnScreenElement>> slides;
+        for (const BatchSlot& slot : roundSlots(cfg, today, strings, counter)) {
+            std::vector<OnScreenElement> els = slotElements(slot, cfg, today, strings, counter);
+            if (els.empty()) continue;
+            if (single && !slides.empty()) slides[0].insert(slides[0].end(), els.begin(), els.end());
+            else slides.push_back(els);
+        }
+        if (slides.empty()) {   // as buildElements(): nothing due - the clock's name
+            String name = StringTools::formatProjectName(cfg.projectName);
+            slides.push_back({ OnScreenElement(OnScreenElementType::TEXT, name, _measureString(name.c_str())) });
+        }
+        rounds.push_back(slides);
+    }
+    return rounds;
+}
+
+uint32_t MessageAggregator::roundsDone() {
+    return s_batchCounter + s_roundCounter;   // each counts in its own mode only
 }

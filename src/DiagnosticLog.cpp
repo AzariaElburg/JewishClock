@@ -1,8 +1,10 @@
 #include "DiagnosticLog.h"
+#include "Uptime.h"
 #include "Config.h"
 #include "StringTools.h"
 #include "DebugTime.h"
 #include "Display.h"
+#include "Texts.h"
 
 #include <LittleFS.h>
 #include <ESPAsyncWebServer.h>
@@ -44,7 +46,7 @@ struct Pending {
 };
 RTC_NOINIT_ATTR Pending s_pending;
 const uint32_t PENDING_MAGIC = 0x4C4F4731;   // "LOG1"
-uint32_t s_oldestPendingMs = 0;              // millis() of the oldest waiting line, 0 = none this boot
+int64_t  s_oldestPendingMs = 0;              // Uptime::ms() of the oldest waiting line, 0 = none this boot
 
 uint32_t pendingSum() {
     uint32_t s = 0;
@@ -88,11 +90,11 @@ void flush() {
     pendingClear();
     xSemaphoreGive(s_mutex);
     if (len) {
-        uint32_t t0 = micros();
+        int64_t t0 = Uptime::us();
         rotateIfNeeded();
         File f = LittleFS.open(LOG_PATH, "a");
         if (f) { f.write((const uint8_t*)batch, len); f.close(); }
-        uint32_t us = micros() - t0;
+        uint32_t us = (uint32_t)(Uptime::us() - t0);
         s_stats.writes++;
         if (us > 50000)  s_stats.over50ms++;
         if (us > 100000) s_stats.over100ms++;
@@ -126,6 +128,7 @@ size_t DiagnosticLog::growthLeft() {
 void DiagnosticLog::loop() {
     if (s_oldestPendingMs && DisplayManager::goodMomentToWrite(s_oldestPendingMs)) flush();
 }
+
 
 void DiagnosticLog::flushNow() { flush(); }
 
@@ -161,8 +164,8 @@ void DiagnosticLog::record(const char* category, const char* fmt, ...) {
     }
 
     char line[LINE_MAX_BYTES];
-    int n = snprintf(line, sizeof(line), "uptime=%lu clock=%s [%s] %s\r\n",
-                     millis(), clockBuf, category, msgBuf);
+    int n = snprintf(line, sizeof(line), "uptime=%lld clock=%s [%s] %s\r\n",
+                     (long long)Uptime::ms(), clockBuf, category, msgBuf);
     if (n < 0) return;
     if (n >= (int)sizeof(line)) { n = sizeof(line) - 1; line[n - 2] = '\r'; line[n - 1] = '\n'; }
 
@@ -174,7 +177,7 @@ void DiagnosticLog::record(const char* category, const char* fmt, ...) {
     xSemaphoreGive(s_mutex);
     if (full) flush();
     xSemaphoreTake(s_mutex, portMAX_DELAY);
-    uint32_t nowMs = millis();
+    int64_t nowMs = Uptime::ms();
     if (s_pending.len + n <= PENDING_BYTES) {
         memcpy(s_pending.data + s_pending.len, line, n);
         s_pending.len += n;
@@ -195,11 +198,11 @@ DiagnosticLog::WriteStats DiagnosticLog::writeStats() {
 }
 
 void DiagnosticLog::Streak::fail(const char* category, const char* what, const char* detail) {
-    if (++failed == after) record(category, "%s failing: %s", what, detail ? detail : "");
+    if (++failed == after) record(category, Texts::logFailing, what, detail ? detail : "");
 }
 
 void DiagnosticLog::Streak::ok(const char* category, const char* what) {
-    if (failed >= after) record(category, "%s works again after %u failed attempt(s)", what, (unsigned)failed);
+    if (failed >= after) record(category, Texts::logWorksAgain, what, (unsigned long long)failed);
     failed = 0;
 }
 

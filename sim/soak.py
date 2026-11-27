@@ -11,8 +11,6 @@ and new ERROR/WARN/watchdog/crash lines in its log. A summary at the end.
 """
 import argparse
 import json
-import socket
-import struct
 import sys
 import time
 import urllib.request
@@ -20,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sim_ports import urls  # noqa: E402
+from clock_facts import ntp_now  # noqa: E402 - the checked reference time
 DEV_HOME, _, DEV_CTL = urls("dev")
 
 OUT = Path("C:/pio3/jc_clean/sim/soak")
@@ -28,15 +27,6 @@ OUT = Path("C:/pio3/jc_clean/sim/soak")
 def get(url, timeout=10):
     with urllib.request.urlopen(url, timeout=timeout) as r:
         return r.read()
-
-
-def ntp_now():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.settimeout(5)
-    s.sendto(b"\x23" + 47 * b"\0", ("pool.ntp.org", 123))
-    d = s.recv(48)
-    sec, frac = struct.unpack("!II", d[40:48])
-    return sec - 2208988800 + frac / 2 ** 32
 
 
 def main():
@@ -57,8 +47,10 @@ def main():
             now = datetime.now()
             try:
                 st = json.loads(get(DEV_HOME + "/api/status"))
+                st_at = time.time()
                 ctl = json.loads(get(DEV_CTL + "/state"))
-                diff = st["utcTime"] - ntp_now()
+                ref, at = ntp_now(json.loads(get(DEV_HOME + "/api/tunables"))["SAME_SERVER_MIN_MS"] / 1000)
+                diff = st["utcTime"] + (at - st_at) - ref   # both at the same moment (a silent server first: 5 s later)
                 up = st.get("uptimeMs", 0) / 1000
                 if last_up is not None and up < last_up:
                     restarts += 1

@@ -13,7 +13,7 @@ G = second blessing (גבורות), B = ninth blessing (ברכת השנים, wee
 |---|---|---|---|---|
 | Musaf, 22 Tishrei | משיב הרוח ומוריד הגשם | משיב הרוח ומוריד הגשם | - | - |
 | Maariv of 4 Dec (5 Dec before a Gregorian leap year) | - | - | ותן טל ומטר לברכה | ברך עלינו |
-| Musaf, 15 Nisan | **nothing** (stop משיב הרוח) | מוריד הטל | - | - |
+| Musaf, 15 Nisan | בלי משיב הרוח | מוריד הטל | - | - |
 | Maariv after the 2nd day of Yom Tov (16 Nisan; on a Friday: Motzei Shabbat) | - | - | ותן ברכה | ברכנו |
 
 In Israel everyone says מוריד הטל in summer, B switches at Maariv of 7 Cheshvan
@@ -24,16 +24,12 @@ or Yom Tov, so an evening that starts Shabbat moves to Motzei Shabbat
 ## What the clock shows abroad
 
 Everything that *is* said, with its when ("ממוסף", "מהערב", ...), the same as in
-Israel. **The gap:** for Ashkenaz abroad at Pesach, G changes to saying nothing,
-and the slide shows nothing about it - only "ותן ברכה מהערב" after Yom Tov.
-The one change that's easy to forget there (stop saying משיב הרוח) gets no
-reminder.
+Israel. For Ashkenaz abroad at Pesach, the slide shows "בלי משיב הרוח ממוסף" so
+the change (stop saying משיב הרוח) gets its reminder (fixed 2026-11-21).
 
 ## To improve abroad support
 
 Decisions:
-- What the slide says for that gap, e.g. "בלי משיב הרוח ממוסף", or leave it
-  as it is.
 - Whether abroad needs more nusach choices than Ashkenaz / Sefard.
 
 Points to check:
@@ -44,6 +40,6 @@ Points to check:
   as in Israel; B from the evening after 16 Nisan (Motzei Shabbat when that
   is a Friday) - both cases in `sim/test_prayer.py`, never seen on a clock
   outside Israel.
-- Code: `Calendar::getPrayerSwitch()` (G, incl. the Ashkenaz-abroad case),
+- Code: `Calendar::getPrayerSwitch()` (G, incl. the Ashkenaz-abroad "בלי משיב הרוח"),
   `Calendar::getRainRequest()` (B), the slide in `MessageAggregator.cpp`
   (`ContentType::PrayerSwitch`). Tests: `sim/test_prayer.py` (abroad cases).

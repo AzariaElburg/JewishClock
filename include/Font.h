@@ -10308,7 +10308,6 @@ inline uint8_t fontGetCoverage(const uint8_t* glyph, int col, int row) {
 // =============================================================================
 void fontComputeMetrics();
 uint8_t fontGetGlyphAdvance(uint8_t index);
-uint8_t fontGetGlyphLeftBearing(uint8_t index);
 
 // Convenience: advance width for a raw codepoint (looks up the glyph index
 // itself). Falls back to the full cell width for anything not in the font,
@@ -10319,7 +10318,6 @@ uint8_t fontGetAdvanceForCodepoint(uint32_t cp);
 // in Config.h). Changing this immediately recomputes the whole advance table
 // above from the real glyph bitmaps - there's nothing else to keep in sync.
 void fontSetSpacing(uint8_t charGapPx, uint8_t wordGapPx);
-void fontGetSpacing(uint8_t& charGapPx, uint8_t& wordGapPx);
 
 // Runtime-adjustable glyph WIDTH, as a percentage of each glyph's own natural
 // ink width (default: FONT_WIDTH_SCALE_DEFAULT in Config.h, 100 = unchanged).
@@ -10329,19 +10327,7 @@ void fontGetSpacing(uint8_t& charGapPx, uint8_t& wordGapPx);
 // FONT_DATA - it's applied live, by drawGlyph() resampling (nearest-neighbor)
 // only as many source columns as fontGetGlyphScaledInkWidth() says to draw.
 void fontSetWidthScale(uint8_t percent);
-uint8_t fontGetWidthScale();
 uint8_t fontGetGlyphScaledInkWidth(uint8_t index);
 uint8_t fontGetGlyphSourceCol(uint8_t index, uint8_t outCol);
 #define FONT_NO_COLUMN 0xFF   // fontGetGlyphSourceCol(): an empty column, draw nothing
 
-// =============================================================================
-// isHebrew(codepoint)
-// True for any codepoint in the Hebrew Unicode block we support.
-// Used by Display.cpp for RTL rendering decisions.
-// =============================================================================
-inline bool isHebrew(uint16_t cp) {
-    // This is intentionally ONLY the letters Alef through Tav.
-    // Punctuation like Maqaf, Geresh, and Gershayim should be treated
-    // as neutral and will be rendered correctly within their text run.
-    return (cp >= 0x05D0 && cp <= 0x05EA);
-}

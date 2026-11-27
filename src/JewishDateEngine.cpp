@@ -1,4 +1,6 @@
 #include "JewishDateEngine.h"
+#include "DateRules.h"
+#include "StringTools.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -173,6 +175,12 @@ void JewishDateEngine::absoluteToHebrew(long abs, int& y, int& m, int& d) {
 long JewishDateEngine::gregorianToAbsolute(int y, int m, int d) {
     bool leap = ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0);
     const int days[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
+    // Never past the table (2026-11-14: month 40 read 27 ints beyond it); what comes
+    // in is checked by DateRules.h first - this is the last guard. 13 stays 13: it
+    // means 1 January of the next year, which absoluteToGregorian() asks for (a cap
+    // at 12 made its month search endless for every December date - caught by the tests).
+    if (m < 1) m = 1;
+    if (m > 13) m = 13;
     long abs = (long)d + 365L * (y - 1) + (y - 1) / 4 - (y - 1) / 100 + (y - 1) / 400;
     for (int i = 1; i < m; i++) {
         abs += days[i];
@@ -216,7 +224,23 @@ static int lastMonthOfHebrewYear(int year) {
     return JewishDateEngine::isHebrewLeapYear(year) ? HebrewMonths::ADAR_II : HebrewMonths::ADAR;
 }
 
+// The mapping checks its own input and gives only real dates (the user, 2026-11-14:
+// no counting on the caller to have checked): a date no year has, or not in its own
+// year (DateRules.h), maps to nothing - {0, 0, 0}; a result past its month's end (an
+// unknown-year 30 Adar in a leap year -> "30 Adar II") is the real day it stands for
+// (1 Nisan - the same day the arithmetic always gave).
+static bool mappable(int targetYear, const HebrewDate& o) {
+    return targetYear >= 1 && DateRules::validHebrew(o.year > 0 ? o.year : 0, o.month, o.day);
+}
+static HebrewDate realDay(const HebrewDate& r) {
+    if (DateRules::validHebrew(r.year, r.month, r.day)) return r;
+    HebrewDate x;
+    JewishDateEngine::absoluteToHebrew(JewishDateEngine::hebrewToAbsolute(r.year, r.month, 1) + r.day - 1, x.year, x.month, x.day);
+    return x;
+}
+
 HebrewDate JewishDateEngine::resolveBirthdayOrAnniversary(int targetYear, const HebrewDate& original) {
+    if (!mappable(targetYear, original)) return HebrewDate{0, 0, 0};
     // Birthdays/weddings/other: a missing 30th always rolls FORWARD to the
     // 1st of the next month, recomputed fresh for every target year.
     if (original.year > 0 && targetYear == original.year) return original;
@@ -238,10 +262,11 @@ HebrewDate JewishDateEngine::resolveBirthdayOrAnniversary(int targetYear, const 
 
     HebrewDate result;
     result.year = targetYear; result.month = month; result.day = day;
-    return result;
+    return realDay(result);
 }
 
 HebrewDate JewishDateEngine::resolveYahrzeit(int targetYear, const HebrewDate& original) {
+    if (!mappable(targetYear, original)) return HebrewDate{0, 0, 0};
     int month = original.month, day = original.day;
 
     // "Locked" by the character of the FIRST anniversary (the year right
@@ -280,7 +305,7 @@ HebrewDate JewishDateEngine::resolveYahrzeit(int targetYear, const HebrewDate& o
 
     HebrewDate result;
     result.year = targetYear; result.month = month; result.day = day;
-    return result;
+    return realDay(result);
 }
 
 // =============================================================================
@@ -312,10 +337,42 @@ int JewishDateEngine::getMonthFromName(const char* name) {
     return 0;
 }
 
+bool JewishDateEngine::parseHebcalDate(const char* s, HebrewDate& out) {
+    // Hebcal's English transliteration; plain "Adar" in a common year, Adar I/II in a leap year.
+    static const struct { const char* name; int month; } NAMES[] = {
+        {"Tishrei", 1}, {"Cheshvan", 2}, {"Kislev", 3}, {"Tevet", 4}, {"Sh'vat", 5},
+        {"Adar I", 6}, {"Adar II", 13}, {"Adar", 6}, {"Nisan", 7}, {"Iyyar", 8},
+        {"Sivan", 9}, {"Tamuz", 10}, {"Av", 11}, {"Elul", 12},
+    };
+    if (!s) return false;
+    int day = 0, n = 0;
+    if (sscanf(s, "%2d %n", &day, &n) != 1 || n == 0) return false;
+    const char* rest = s + n;
+    const char* sp = strrchr(rest, ' ');                 // the year is the last word
+    if (!sp || sp == rest) return false;
+    int year = 0, used = 0;
+    if (sscanf(sp + 1, "%4d%n", &year, &used) != 1 || sp[1 + used] != '\0') return false;
+    size_t monthLen = (size_t)(sp - rest);
+    for (const auto& m : NAMES) {
+        if (strlen(m.name) != monthLen || strncmp(rest, m.name, monthLen) != 0) continue;
+        if ((m.month == 6 || m.month == 13) && (strcmp(m.name, "Adar") == 0) == isHebrewLeapYear(year)) return false;
+        if (!DateRules::validHebrew(year, m.month, day)) return false;
+        out = HebrewDate{year, m.month, day};
+        return true;
+    }
+    return false;
+}
+
 void JewishDateEngine::numToGematria(int n, char* buf, size_t len) {
     static const char* hundreds[] = {"","ק","ר","ש","ת","תק","תר","תש","תת","תתק"};
     static const char* tens[]     = {"","י","כ","ל","מ","נ","ס","ע","פ","צ"};
     static const char* units[]    = {"","א","ב","ג","ד","ה","ו","ז","ח","ט"};
+
+    // Outside what the letters below spell (1..9999): "?" - hundreds[] has 10
+    // entries, and n / 100 would read past it (found by code_check, 2026-11-13;
+    // no date reaches it, but this runs on whatever a file or a service gives).
+    if (len == 0) return;
+    if (n <= 0 || n > 9999) { StringTools::utf8Cut(buf, len, "?", len - 1); return; }
 
     // Thousands: their own letter + geresh, then the rest with its own
     // gershayim - 5787 -> "ה׳תשפ״ז", 6000 -> "ו׳", 6060 -> "ו׳ס׳". (The
@@ -336,7 +393,7 @@ void JewishDateEngine::numToGematria(int n, char* buf, size_t len) {
     if (n >= 1)   { strncat(tmp, units[n],           sizeof(tmp) - strlen(tmp) - 1); }
 
     size_t tlen = strlen(tmp);
-    if (tlen == 0) { strncpy(buf, "?", len); return; }
+    if (tlen == 0) { StringTools::utf8Cut(buf, len, "?", len - 1); return; }
     if (tlen == 2) { // One Hebrew letter = 2 UTF-8 bytes (not 1 — strlen counts bytes)
         snprintf(buf, len, "%s׳", tmp); // Geresh for single letters
     } else {
@@ -346,7 +403,7 @@ void JewishDateEngine::numToGematria(int n, char* buf, size_t len) {
         out[split] = '\0';
         strncat(out, "״", sizeof(out) - strlen(out) - 1);
         strncat(out, tmp + split, sizeof(out) - strlen(out) - 1); // Append last character
-        strncpy(buf, out, len);
+        StringTools::utf8Cut(buf, len, out, len - 1);
     }
     buf[len - 1] = '\0';
 }

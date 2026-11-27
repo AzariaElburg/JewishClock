@@ -35,6 +35,8 @@
 #include "Display.h"
 #include "Storage.h"
 #include "DiagnosticLog.h"
+#include "Uptime.h"
+#include "Tunables.h"
 #include <math.h>
 #include <atomic>
 
@@ -49,30 +51,34 @@ static const float FADE_DOWN_SEC = 3.0f;   // the room got darker
 // How long a brightness slider move shows its level on the clock.
 static const uint32_t BRIGHTNESS_PREVIEW_MS = 4000;
 // Learning (see above).
-static const uint32_t LEARN_AVG_MS       = 60000;    // only light lasting this long counts
-static const uint32_t LEARN_WINDOW_DAYS  = 3;        // an edge not come near this long moves in
+static const int64_t  LEARN_AVG_MS       = 60000;    // only light lasting this long counts
+static const int64_t  LEARN_WINDOW_DAYS  = 3;        // an edge not come near this long moves in
+TUNABLE_SHARED(LEARN_WINDOW_DAYS)
 static const float    LEARN_NEAR_PCT     = 5.0f;     // "near" an edge, in room-light %
 static const float    LEARN_MIN_GAP_PCT  = 20.0f;    // edges never closer (x10 in lux)
-static const uint32_t LEARN_SAVE_MIN_MS  = 3600000;  // learned edges saved at most this often
+TUNABLE_SHARED(LEARN_MIN_GAP_PCT)
+static const int64_t  LEARN_SAVE_MIN_MS  = 3600000;  // learned edges saved at most this often
+TUNABLE_SHARED(LEARN_SAVE_MIN_MS)
 
 static float    s_levelPct = -1;          // current level (perceived %), -1 = not set yet
 static uint32_t s_duty = 0;               // what's on the PWM now
-static uint32_t s_lastMs = 0;
+static Timer    s_sinceLastLoop;          // dt between loops (not running = first loop)
 static std::atomic<int>      s_previewTenths{-1};   // preview level x10, -1 = none
-static std::atomic<uint32_t> s_previewUntilMs{0};
+static std::atomic<int64_t>  s_previewUntilMs{0};   // Uptime::ms(); only read while s_previewTenths >= 0
 
 // Learning state (main loop only, except the reset flag).
 static std::atomic<bool> s_learnReset{true};   // start a new window (boot, user edit)
 static double   s_avgSum = 0;
-static uint32_t s_avgN = 0, s_avgStartMs = 0;
+static uint32_t s_avgN = 0;
+static int64_t  s_avgStartMs = 0;
 static float    s_winMin = 0, s_winMax = 0;     // the window's darkest/lightest minute
 static bool     s_winAny = false;
-static uint32_t s_winStartMs = 0;
+static int64_t  s_winStartMs = 0;
 static bool     s_dirty = false;
-static uint32_t s_lastSaveMs = 0;
+static int64_t  s_lastSaveMs = 0;
 
 bool BrightnessManager::begin(const AppConfig& cfg) {
-    s_lastSaveMs = millis();
+    s_lastSaveMs = Uptime::ms();
     return AmbientLight::begin();
 }
 
@@ -102,7 +108,7 @@ float BrightnessManager::autoLevelPct(float roomPct, const AppConfig& cfg) {
 
 void BrightnessManager::preview(float pct) {
     s_previewTenths = (int)lroundf(pct * 10);
-    s_previewUntilMs = millis() + BRIGHTNESS_PREVIEW_MS;
+    s_previewUntilMs = Uptime::ms() + BRIGHTNESS_PREVIEW_MS;
 }
 
 void BrightnessManager::edgesChangedByUser() { s_learnReset = true; }
@@ -111,14 +117,14 @@ float BrightnessManager::currentPct() { return s_levelPct < 0 ? 0 : s_levelPct; 
 uint32_t BrightnessManager::currentDuty() { return s_duty; }
 
 // One minute's average room light: widen the edges at once, track the window.
-static void learnMinute(AppConfig& cfg, float avg, uint32_t now) {
+static void learnMinute(AppConfig& cfg, float avg, int64_t now) {
     if (avg < cfg.roomDarkPct)  { cfg.roomDarkPct  = avg; s_dirty = true; }
     if (avg > cfg.roomLightPct) { cfg.roomLightPct = avg; s_dirty = true; }
     if (!s_winAny || avg < s_winMin) s_winMin = avg;
     if (!s_winAny || avg > s_winMax) s_winMax = avg;
     s_winAny = true;
 
-    if (now - s_winStartMs < LEARN_WINDOW_DAYS * 86400000UL) return;
+    if (now - s_winStartMs < LEARN_WINDOW_DAYS * 86400000LL) return;
     // Window over: move in an edge the room didn't come near, keeping the gap.
     float dark = cfg.roomDarkPct, light = cfg.roomLightPct;
     if (s_winMin > dark + LEARN_NEAR_PCT)   dark = s_winMin;
@@ -148,7 +154,7 @@ static void learnMinute(AppConfig& cfg, float avg, uint32_t now) {
     s_winStartMs = now;
 }
 
-static void learn(AppConfig& cfg, uint32_t now) {
+static void learn(AppConfig& cfg, int64_t now) {
     if (s_learnReset.exchange(false) || !cfg.learnRoomLight || !AmbientLight::isSensorAvailable()) {
         s_avgSum = 0; s_avgN = 0; s_avgStartMs = now;
         s_winAny = false; s_winStartMs = now;
@@ -161,7 +167,7 @@ static void learn(AppConfig& cfg, uint32_t now) {
         learnMinute(cfg, (float)(s_avgSum / s_avgN), now);
         s_avgSum = 0; s_avgN = 0; s_avgStartMs = now;
     }
-    uint32_t sinceSave = now - s_lastSaveMs;
+    int64_t sinceSave = now - s_lastSaveMs;
     if (s_dirty && sinceSave >= LEARN_SAVE_MIN_MS) {
         Storage::saveConfigSoon();
         s_dirty = false;
@@ -171,16 +177,16 @@ static void learn(AppConfig& cfg, uint32_t now) {
 
 void BrightnessManager::loop(AppConfig& cfg) {
     AmbientLight::loop();
-    uint32_t now = millis();
-    float dt = (s_lastMs == 0) ? 0 : (now - s_lastMs) / 1000.0f;
-    s_lastMs = now;
+    int64_t now = Uptime::ms();
+    float dt = s_sinceLastLoop.elapsedMs(now) / 1000.0f;   // 0 the first time
+    s_sinceLastLoop.startAt(now);
 
     learn(cfg, now);
 
     float target = cfg.useLightSensor ? autoLevelPct(lightPct(AmbientLight::readLux()), cfg) : cfg.brightPct;
     int prev = s_previewTenths;
     if (prev >= 0) {
-        if ((int32_t)(now - s_previewUntilMs) < 0) { s_levelPct = prev / 10.0f; target = s_levelPct; }
+        if (now < s_previewUntilMs) { s_levelPct = prev / 10.0f; target = s_levelPct; }
         else s_previewTenths = -1;   // over: fade back from the previewed level
     }
 

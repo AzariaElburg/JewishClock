@@ -5,7 +5,7 @@ before to 3 days after each switch day at noon, with the "days before/after"
 setting at 0, 1 and 2; plus the evening before each switch day (after צאת),
 nusach Sefard and abroad. About 80 runs, a few minutes.
 
-    python sim/test_prayer.py
+    python sim/test_prayer.py [--only LABEL ...]   (labels: see cases(); six cases at a time)
 
 Expected (decided 2026-11-02), all in civil days (midnight to midnight):
 - משיב הרוח (22 Tishrei): 2 days before "ממחרתיים", the day before "ממחר",
@@ -18,8 +18,8 @@ Expected (decided 2026-11-02), all in civil days (midnight to midnight):
   0), after it the phrase alone. An evening starting Shabbat moves to
   Motzei Shabbat.
 - One line per switch; one for both when they say the same ("מוריד הטל,
-  ותן ברכה" after Pesach). Ashkenazim abroad say nothing in summer: no
-  מוריד הטל. Sefard: "ברך עלינו" / "ברכנו".
+  ותן ברכה" after Pesach). Ashkenazim abroad say "אין משיב הרוח" at Pesach
+  instead of מוריד הטל, saying "בלי משיב הרוח". Sefard: "ברך עלינו" / "ברכנו".
 Exit code 1 on any wrong text.
 """
 import json
@@ -103,7 +103,7 @@ def cases():
     for d in (0, 1, 2):   # Friday 4 Dec 2026: from Motzei Shabbat
         yield ("abroad request friday", 2, abroad, REQUEST_ABROAD_FRIDAY + timedelta(days=d), "12:00", request(d - 1, 2))
     for d in range(-1, 5):   # 16 Nisan is Friday: ותן ברכה from Motzei Shabbat (17 Nisan)
-        yield ("abroad ashkenaz pesach", 2, abroad, PESACH + timedelta(days=d), "12:00", pesach(d, 2, dew="", r_day=2))
+        yield ("abroad ashkenaz pesach", 2, abroad, PESACH + timedelta(days=d), "12:00", pesach(d, 2, dew="בלי משיב הרוח", r_day=2))
         yield ("abroad sefard pesach", 2, {**abroad, **sefard}, PESACH + timedelta(days=d), "12:00",
                pesach(d, 2, ask="ברכנו", r_day=2))
 
@@ -130,8 +130,14 @@ def main():
         func(path)
     if root.exists():
         shutil.rmtree(root, onerror=clear_readonly)
-    fails = 0
-    for i, (label, w, extra, day, hhmm, want) in enumerate(cases()):
+    # --only LABEL ...: just those cases (e.g. --only "abroad request"); six simulators at a time (2026-11-11)
+    only = sys.argv[sys.argv.index("--only") + 1:] if "--only" in sys.argv else None
+    todo = [(i, c) for i, c in enumerate(cases()) if not only or c[0] in only]
+    if not todo:
+        sys.exit("no such case - labels: %s" % ", ".join(sorted({c[0] for c in cases()})))
+
+    def one(item):
+        i, (label, w, extra, day, hhmm, want) = item
         fs = root / ("fs%03d" % i)
         shutil.copytree(base, fs)
         (fs / "jewish_calendar_data.json").unlink(missing_ok=True)
@@ -140,7 +146,13 @@ def main():
         cfg.update(extra)
         (fs / "config.json").write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
         texts = run(fs, "%s %s" % (day.isoformat(), hhmm), root / ("out%03d" % i))
-        shown = sorted({p.strip() for t in texts for p in t.split(" | ") if PRAYER.search(p)})
+        return sorted({p.strip() for t in texts for p in t.split(" | ") if PRAYER.search(p)})
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(6) as pool:
+        shown_all = list(pool.map(one, todo))
+    fails = 0
+    for (i, (label, w, extra, day, hhmm, want)), shown in zip(todo, shown_all):
         ok = shown == sorted(want)
         fails += not ok
         print("%-5s %-22s setting %d  %s %s  %s" % ("ok" if ok else "WRONG", label, w, day, hhmm,

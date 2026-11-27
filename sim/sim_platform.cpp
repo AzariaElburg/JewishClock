@@ -13,7 +13,10 @@
 #include <freertos/task.h>
 #include <Arduino_GFX_Library.h>
 #include "sim_platform.h"
+#include "Tunables.h"
+TUNABLE_SHARED_AS(HTTPCLIENT_DEFAULT_TCP_TIMEOUT, HTTPCLIENT_DEFAULT_TCP_TIMEOUT)   // the stand-in's connect timeout (tests)
 
+#include <process.h>   // _getpid
 #include <filesystem>
 #include <chrono>
 #include <thread>
@@ -25,11 +28,59 @@
 
 namespace stdfs = std::filesystem;
 
+std::string simWhoHolds(const std::string& path);   // sim_win.cpp
+int simRun(const std::string& cmd);                  // sim_win.cpp: a helper program, without the clock's open files
+
 // ── Simulated time ────────────────────────────────────────────────────────────
-static std::atomic<unsigned long> g_simMillis{0};
-unsigned long millis() { return g_simMillis; }
-unsigned long micros() { return g_simMillis * 1000UL; }
-void delay(unsigned long ms) { g_simMillis += ms; }
+// Simulated time since start, 64-bit - like the ESP32's esp_timer, which the
+// system time runs on. millis() is its low 32 bits (unsigned long is 32-bit here
+// as on the ESP32), so it wraps after 49.7 days exactly as on the clock.
+// JC_UPTIME_START_MS (2026-11-14, read by sim_clock_main.cpp - jcsim's own
+// simulated-time loop isn't made for it): the clock's uptime starts there instead of 0
+// - esp_timer (Uptime::ms(), the firmware's only clock since 2026-11-14) and millis()
+// alike: e.g. a few minutes before 24.8 / 49.7 days, or 1000 years (sim/run_all_tests.py
+// --uptime-start). The simulator's own timing (Sim::uptimeMs) and the system time are
+// not moved by it.
+static std::atomic<uint64_t> g_simMs{0};
+static std::atomic<uint64_t> g_msStart{0};   // Sim::setUptimeStart() - the full simulator only
+void Sim::setUptimeStart(uint64_t ms) { g_msStart = ms; }
+// The full simulator runs in real time: its uptime follows the PC's clock continuously, to the
+// microsecond, as the ESP32's timer does (Sim::followRealTime()). Until 2026-11-20 it moved
+// only between loop passes - standing still during one, then jumping: everything read during a
+// pass got a stale time (the web server's answers, NTP's stamp of a reply's arrival - a
+// "stand-in behaving like a shortcut", found by resilience ntp). It may still run ahead of the
+// PC (a delay() in the clock's code); jcsim's simulated time (no followRealTime) is unchanged.
+static std::atomic<int64_t> g_realStartUs{-1};
+static int64_t steadyUs() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+void Sim::followRealTime() { g_realStartUs = steadyUs() - (int64_t)g_simMs.load() * 1000; }
+static uint64_t nowUs() {
+    uint64_t s = g_simMs.load() * 1000ULL;
+    int64_t r = g_realStartUs.load();
+    if (r >= 0) {
+        int64_t e = steadyUs() - r;
+        if (e > (int64_t)s) return (uint64_t)e;
+    }
+    return s;
+}
+unsigned long millis() { return (unsigned long)((g_msStart * 1000ULL + nowUs()) / 1000ULL); }
+unsigned long micros() { return (unsigned long)(g_msStart * 1000ULL + nowUs()); }
+int64_t simUptimeUs() { return (int64_t)(g_msStart * 1000ULL + nowUs()); }
+uint64_t Sim::uptimeMs() { return g_simMs; }
+// In real time (the full simulator) a delay really waits, as on the ESP32 (2026-11-20: it only
+// moved the counter on - the uptime then stood still until real time caught up, and the first
+// NTP time, taken right after the clock's own Wi-Fi started (its delay(100)), was set during that
+// standstill: the clock ended up ~65 ms behind, its round trip read as -1 ms). jcsim: moves on.
+void delay(unsigned long ms) {
+    if (g_realStartUs.load() >= 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+        uint64_t now = nowUs() / 1000ULL;
+        if (now > g_simMs.load()) g_simMs = now;
+        return;
+    }
+    g_simMs = nowUs() / 1000ULL + ms;
+}
 // Sim::advanceMillis: below, with the background task it has to wait for.
 
 // ── Startup and network timing, as measured on the real clock ─────────────────
@@ -54,6 +105,7 @@ void delay(unsigned long ms) { g_simMillis += ms; }
 Sim::Range Sim::setupTime{2700, 6500}, Sim::wifiUp{6900, 20200}, Sim::ntpAfterWifi{350, 7800};
 Sim::Range Sim::netMain{1400, 6100}, Sim::netZmanim{2700, 7400}, Sim::netGeo{60, 3200};
 unsigned long Sim::setupMs = 0, Sim::wifiUpMs = 0, Sim::ntpSyncMs = 0;
+int64_t Sim::ntpSilentMs = 0;
 static uint32_t g_seed = 0;
 static std::map<std::string, unsigned long> g_pinned;      // "main#2" -> ms, or "main" -> ms for every one
 static std::map<std::string, int> g_occurrences;
@@ -83,6 +135,10 @@ static unsigned long draw(const Sim::Range& r, const std::string& kind) {
 void Sim::pinTiming(const std::string& name, unsigned long ms) { g_pinned[name] = ms; }
 unsigned long Sim::drawTiming(const Range& r, const std::string& kind) { return draw(r, kind); }
 bool (*Sim::internetUp)() = nullptr;
+bool (*Sim::urlBlocked)(const std::string&) = nullptr;
+bool (*Sim::urlFake)(const std::string&, std::string&) = nullptr;
+int  (*Sim::urlFakeStatus)(const std::string&) = nullptr;
+bool (*Sim::urlFakeHdr)(const std::string&, const std::string&, std::string&) = nullptr;
 bool Sim::liveNetwork = false;
 bool Sim::fsFull = false;   // the full simulator: writes fail when the partition is full, as on the clock
 float Sim::roomLux = 120.0f;
@@ -234,9 +290,25 @@ File FS::open(const char* path, const char* mode, bool create) {
     return File(fp, path, pc);
 }
 bool FS::exists(const char* path) { std::error_code ec; return stdfs::exists(pcPath(path), ec); }
-bool FS::remove(const char* path) { std::error_code ec; return stdfs::remove(pcPath(path), ec); }
+bool FS::remove(const char* path) {
+    std::error_code ec;
+    bool ok = stdfs::remove(pcPath(path), ec);
+    if (ec && stdfs::exists(pcPath(path)))   // there, but not removable: who holds it (see FS::rename)
+        fprintf(stderr, "[sim] FS remove %s FAILED (%d: %s); held by: %s\n", path, ec.value(), ec.message().c_str(),
+                simWhoHolds(pcPath(path)).c_str());
+    return ok;
+}
 bool FS::rename(const char* from, const char* to) {
-    std::error_code ec; stdfs::rename(pcPath(from), pcPath(to), ec); return !ec;
+    // One try, as the flash: a closed file's rename doesn't fail by itself there. What made it
+    // fail here (2026-11-14/15) was the simulator's own curl holding the clock's open files -
+    // fixed at its start (sim_win.cpp simRun()); retries had only hidden it. A failure says
+    // who holds the file.
+    std::error_code ec;
+    stdfs::rename(pcPath(from), pcPath(to), ec);
+    if (ec && stdfs::exists(pcPath(from)))
+        fprintf(stderr, "[sim] FS rename %s -> %s FAILED (%d: %s); held by: %s\n", from, to, ec.value(), ec.message().c_str(),
+                simWhoHolds(pcPath(from)).c_str());
+    return !ec;
 }
 bool FS::mkdir(const char* path) { std::error_code ec; stdfs::create_directories(pcPath(path), ec); return !ec; }
 bool FS::rmdir(const char* path) { std::error_code ec; return stdfs::remove(pcPath(path), ec); }
@@ -253,28 +325,83 @@ size_t FS::usedBytes() {
 
 // ── Downloads: curl.exe, cached on disk by URL ────────────────────────────────
 std::string Sim::httpCacheDir = "sim_http_cache";
-static void simSleepUntil(unsigned long targetMs);   // below, with the task
+static void simSleepUntil(uint64_t targetMs);   // below, with the task (Sim::uptimeMs())
 int HTTPClient::GET() {
-    const unsigned long startMs = millis();
-    struct Done { unsigned long at; ~Done() { simSleepUntil(at); } } done{0};   // answer arrives after the clock's measured time
+    const uint64_t startMs = Sim::uptimeMs();
+    struct Done { uint64_t at; ~Done() { simSleepUntil(at); } } done{0};   // answer arrives after the clock's measured time
     body_ = String();
+    raw_.clear();
     std::string url = url_.c_str();
     if (url.empty()) return -1;
     if (Sim::liveNetwork) {   // jcclock: the real download, now, as the clock makes it
         if (Sim::internetUp && !Sim::internetUp()) return -1;
+        if (Sim::urlBlocked && Sim::urlBlocked(url)) {   // the service is down: no connection
+            done.at = startMs + HTTPCLIENT_DEFAULT_TCP_TIMEOUT;   // the clock's own connect timeout (the library's)
+            return -1;
+        }
+        std::string fake;
+        if (Sim::urlFake && Sim::urlFake(url, fake)) {   // fake answer (the world's keywords: garbage, emptyjson, ratelimit, retry429...)
+            done.at = startMs + 300;
+            raw_ = fake;
+            body_ = String(fake.c_str());
+            int sc = Sim::urlFakeStatus ? Sim::urlFakeStatus(url) : 200;
+            for (const std::string& w : want_) {
+                std::string val;
+                if (Sim::urlFakeHdr && Sim::urlFakeHdr(url, w, val))
+                    got_.emplace_back(w, val);
+            }
+            return sc;
+        }
         std::error_code ec;
         stdfs::create_directories(Sim::httpCacheDir, ec);
-        std::string file = Sim::httpCacheDir + "/live_" + std::to_string((uintptr_t)this) + ".txt";
-        std::string cmd = "curl.exe -s -f -m 30 -o \"" + file + "\" \"" + url + "\"";
-        int rc = std::system(cmd.c_str());
-        FILE* fp = rc == 0 ? fopen(file.c_str(), "rb") : nullptr;
-        if (!fp) { stdfs::remove(file, ec); return -1; }
+        // The process id too: several clocks share this folder (drills side by side, 2026-11-11),
+        // and the object's address alone can be the same in two of them.
+        std::string file = Sim::httpCacheDir + "/live_" + std::to_string(_getpid()) + "_" + std::to_string((uintptr_t)this) + ".txt";
+        // As the clock's HTTPClient: its headers and user agent; redirects only when asked
+        // (setFollowRedirects - GitHub's release downloads redirect). An update download is
+        // a few MB: the time limit is the clock's own read time, not 30 s.
+        // Any answer's own status code, as HTTPClient::GET() returns it (404, 500, ...); negative
+        // only when no answer came (2026-11-15: with curl -f every error answer read as "no
+        // connection" - the clock's messages for a feed's 500 / a download's 404 never showed).
+        std::string hdr = file + ".hdr";
+        std::string cmd = "curl.exe -s -m 300 " + std::string(follow_ ? "-L " : "");
+        if (!ua_.empty()) cmd += "-A \"" + ua_ + "\" ";
+        for (const std::string& h : headers_) cmd += "-H \"" + h + "\" ";
+        cmd += "-D \"" + hdr + "\" -o \"" + file + "\" \"" + url + "\"";
+        int rc = simRun(cmd);
+        int status = -1;
+        got_.clear();
+        if (FILE* hf = rc == 0 ? fopen(hdr.c_str(), "rb") : nullptr) {
+            char line[512];
+            while (fgets(line, sizeof(line), hf)) {   // the last status line: the answer after any redirects
+                int c;
+                if (!strncmp(line, "HTTP/", 5) && sscanf(strchr(line, ' ') ? strchr(line, ' ') : line, "%d", &c) == 1) { status = c; got_.clear(); }
+                else if (const char* colon = strchr(line, ':')) {   // a header of that answer - kept if asked for
+                    std::string name(line, colon - line), value(colon + 1);
+                    while (!value.empty() && (value.back() == '\r' || value.back() == '\n' || value.back() == ' ')) value.pop_back();
+                    while (!value.empty() && value.front() == ' ') value.erase(0, 1);
+                    for (const std::string& w : want_) if (_stricmp(w.c_str(), name.c_str()) == 0) got_.emplace_back(name, value);
+                }
+            }
+            fclose(hf);
+        }
+        stdfs::remove(hdr, ec);
+        FILE* fp = status > 0 ? fopen(file.c_str(), "rb") : nullptr;
         std::string data; char buf[8192]; size_t n;
-        while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) data.append(buf, n);
-        fclose(fp); stdfs::remove(file, ec);
+        if (fp) { while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) data.append(buf, n); fclose(fp); }
+        stdfs::remove(file, ec);
+        if (status <= 0) return -1;
+        raw_ = data;
         body_ = String(data);
-        return 200;
+        return status;
     }
+    // jcsim --down: the service out of reach for a while - the same connect timeout as jcclock's.
+    if (Sim::urlBlocked && Sim::urlBlocked(url)) {
+        done.at = startMs + HTTPCLIENT_DEFAULT_TCP_TIMEOUT;
+        fprintf(stderr, "download %llu down %s\n", (unsigned long long)startMs, url.substr(0, 60).c_str());
+        return -1;
+    }
+    if (Sim::urlBlocked) fprintf(stderr, "download %llu ok %s\n", (unsigned long long)startMs, url.substr(0, 60).c_str());
     done.at = startMs + latencyFor(url);
     uint64_t h = 1469598103934665603ULL;   // FNV-1a of the URL = cache file name
     for (unsigned char c : url) { h ^= c; h *= 1099511628211ULL; }
@@ -283,8 +410,13 @@ int HTTPClient::GET() {
     stdfs::create_directories(Sim::httpCacheDir, ec);
     std::string file = Sim::httpCacheDir + "/" + name;
     if (!stdfs::exists(file, ec) || stdfs::file_size(file, ec) == 0) {
-        std::string cmd = "curl.exe -s -f -m 30 -o \"" + file + "\" \"" + url + "\"";
-        if (std::system(cmd.c_str()) != 0) { stdfs::remove(file, ec); return -1; }
+        // Into a file of its own, then renamed: simulators side by side (2026-11-11) may
+        // fetch the same address at once - never one reading another's half-written file.
+        std::string tmp = file + "." + std::to_string(_getpid()) + ".part";
+        std::string cmd = "curl.exe -s -f -m 30 -o \"" + tmp + "\" \"" + url + "\"";
+        if (simRun(cmd) != 0) { stdfs::remove(tmp, ec); return -1; }
+        stdfs::rename(tmp, file, ec);   // replaces; if another got there first, same content
+        if (ec) stdfs::remove(tmp, ec);
         FILE* idx = fopen((Sim::httpCacheDir + "/index.txt").c_str(), "ab");
         if (idx) { fprintf(idx, "%s %s\n", name, url.c_str()); fclose(idx); }
     }
@@ -293,6 +425,7 @@ int HTTPClient::GET() {
     std::string data; char buf[8192]; size_t n;
     while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) data.append(buf, n);
     fclose(fp);
+    raw_ = data;
     body_ = String(data);
     return 200;
 }
@@ -308,27 +441,27 @@ namespace {
 struct SimTask {
     std::mutex m; std::condition_variable cv;
     int notifications = 0; bool busy = false;
-    bool sleeping = false; unsigned long wakeAt = 0;
+    bool sleeping = false; uint64_t wakeAt = 0;
 };
 SimTask g_task;
 thread_local bool t_isTask = false;
 bool taskSettled() {   // idle, or asleep until a later simulated moment
-    return (!g_task.busy && g_task.notifications == 0) || (g_task.sleeping && g_task.wakeAt > g_simMillis);
+    return (!g_task.busy && g_task.notifications == 0) || (g_task.sleeping && g_task.wakeAt > g_simMs);
 }
 }
-static void simSleepUntil(unsigned long targetMs) {
+static void simSleepUntil(uint64_t targetMs) {
     if (!t_isTask) return;   // only the background task can wait for simulated time
     std::unique_lock<std::mutex> lk(g_task.m);
-    if (g_simMillis >= targetMs) return;
+    if (g_simMs >= targetMs) return;
     g_task.sleeping = true; g_task.wakeAt = targetMs;
     g_task.cv.notify_all();
-    g_task.cv.wait(lk, [targetMs] { return g_simMillis >= targetMs; });
+    g_task.cv.wait(lk, [targetMs] { return g_simMs >= targetMs; });
     g_task.sleeping = false;
 }
-void vTaskDelay(TickType_t ticks) { simSleepUntil(millis() + ticks); }   // pdMS_TO_TICKS: 1 tick = 1 ms
+void vTaskDelay(TickType_t ticks) { simSleepUntil(g_simMs + ticks); }   // pdMS_TO_TICKS: 1 tick = 1 ms
 void Sim::advanceMillis(unsigned long ms) {
     std::unique_lock<std::mutex> lk(g_task.m);
-    g_simMillis += ms;
+    g_simMs += ms;
     g_task.cv.notify_all();
     // The full simulator: the task runs alongside the main loop, as on the clock.
     if (!Sim::liveNetwork) g_task.cv.wait(lk, [] { return taskSettled(); });   // a woken download finishes first

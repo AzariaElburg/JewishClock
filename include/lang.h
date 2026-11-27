@@ -64,8 +64,8 @@ struct DisplayStrings {
     const char* until;              // "עד" / "until" / "tot"
     const char* seudaMafseketUntil; // "סעודה מפסקת עד" / "Pre-fast meal until" / "Laatste maaltijd tot"
 
-    // No known Wi-Fi network for a while (MessageAggregator's offline slide)
-    const char* internetUnreachable; // "אין חיבור לאינטרנט" / "Internet unreachable" / "Internet onbereikbaar"
+    // (System messages - "Internet unreachable", the clock's Wi-Fi, the time server -
+    // are English in every language: MessageAggregator.cpp, the user 2026-11-14.)
 
     // Gregorian month names, index 0 = January. Used for the Gregorian date
     // slide, formatted as "<day> <month> <year>".

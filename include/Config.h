@@ -262,18 +262,36 @@ static constexpr int DEFAULT_CALIB_TEAR_US = 10800;
 
 #define PROJECT_NAME_DEFAULT         "JewishClock"
 #define AP_SSID_PREFIX               "JewishClock-"
-#define AP_PASSWORD_DEFAULT          "jewishclock"
+// The clock's own Wi-Fi (setup mode and normal operation) - a network WE make:
+// always WPA2 with a password, never open (the user, 2026-11-13). Either fixed
+// here (this clock: printed on the family's start guide), or "" = every clock
+// makes its own at its first start, at random, and keeps it (AppConfig::
+// apPassword; shown on its setup screen and in Settings) - the clean copy
+// (utils/clean/snapshot.py writes "" here; a published password would open
+// every clock built from it). WPA2 wants 8-63 characters (a shorter one would
+// silently leave the clock without its own Wi-Fi: AP.cpp refuses it).
+#ifndef AP_PASSWORD_DEFAULT
+#define AP_PASSWORD_DEFAULT          ""
+#endif
+static constexpr int AP_OWN_PASSWORD_CHARS = 10;   // made at random: ~49 bits
+static constexpr char AP_OWN_PASSWORD_LETTERS[] = "abcdefghjkmnpqrstuvwxyz23456789";   // no 0/O, 1/l/i: read off the screen, typed on a phone
+// (8 to 63 characters: AP_PASSWORD_MIN/MAX_CHARS in LIMITS, checked against the default there)
 
 
 // =============================================================================
 // NTP TIME SERVERS
 // =============================================================================
 // Default server list for config.json. Sync policy (step/slew/ignore
-// thresholds, intervals): see TUNABLES in NTPManager.cpp.
+// thresholds, intervals): see TUNABLES in NTPManager.cpp. The clock uses one
+// at a time and moves on to the next when it doesn't answer. Three operators,
+// so one's outage doesn't stop the clock (the user, 2026-11-12/13): the
+// volunteer pool, then two companies' worldwide networks (Google spreads leap
+// seconds over a day - under a second off then, invisible on a minutes clock).
+// Was pool / il.pool / cloudflare, but the page saved only the first.
 
 #define NTP_SERVER_1         "pool.ntp.org"
-#define NTP_SERVER_2         "il.pool.ntp.org"
-#define NTP_SERVER_3         "time.cloudflare.com"
+#define NTP_SERVER_2         "time.cloudflare.com"
+#define NTP_SERVER_3         "time.google.com"
 
 
 // =============================================================================
@@ -356,13 +374,22 @@ static constexpr int DEFAULT_CALIB_TEAR_US = 10800;
 #define FS_EVENTS_PATH  "/events.json"
 // Deleted events (the recycle bin, 2026-11-07): restorable until emptied.
 #define FS_DELETED_EVENTS_PATH "/deleted_events.json"
+// Where the clock asks for new versions (OnlineUpdate.h): the public repository's latest release.
+// The repository is named once, here: the manual, the release script and the feed check read it.
+#define UPDATE_FEED_REPO "AzariaElburg/JewishClock-Updates"
+#define UPDATE_FEED_URL "https://api.github.com/repos/" UPDATE_FEED_REPO "/releases/latest"
+// Is the internet there, when a time server is silent? (NetHealth.h) A tiny answer (HTTP 204) - the
+// connectivity check phones use; plain HTTP (no TLS handshake to pay for a yes/no).
+#define CONNECTIVITY_CHECK_URL "http://connectivitycheck.gstatic.com/generate_204"
+#define TIME_SEEN_PATH  "/time_seen.txt"            // NTPManager: the latest real time seen (NTP era pivot)
+#define UPDATE_FAILED_PATH "/update_failed.txt"   // Updater: an update that went back by itself (shown until "OK, seen")
+#define TEXT_NOTES_PATH "/text_notes.json"         // Storage: texts found too long in the clock's files - said until changed
+#define FEED_MISSING_PATH "/feed_missing.txt"      // OnlineUpdate: the local day the update feed was first found not there
+#define NTP_TROUBLE_PATH "/ntp_trouble.json"       // NTPManager: time servers "not recommended" (failed with the internet there)
 
 // Event pictures: a shared library, FS_IMAGE_DIR/<id>.bmp - see ImageLibrary.h.
 #define FS_IMAGE_DIR    "/images"
 inline String imagePath(const char* imageId) { return String(FS_IMAGE_DIR "/") + imageId + ".bmp"; }
-// Where event photos were kept 2026-10-19..21 (one per event, by event id);
-// ImageLibrary::migrateOldPhotos() moves them into the library.
-#define FS_OLD_PHOTO_DIR "/photos"
 // Waiting area for an update's web files (Updater.cpp).
 #define FS_UPDATE_DIR    "/upd"
 // The family's replacements for the clock's own pictures (/IMG/<name>.bmp ->
@@ -386,11 +413,12 @@ inline bool isClockDataPath(const String& p) {
     static const char* const files[] = {
         FS_CONFIG_PATH, FS_EVENTS_PATH, FS_DELETED_EVENTS_PATH,
         "/jewish_calendar_data.json", "/backup_tmp.json", "/upload_image.tmp", "/upload_custom.tmp",
+        TIME_SEEN_PATH, UPDATE_FAILED_PATH, TEXT_NOTES_PATH, FEED_MISSING_PATH, NTP_TROUBLE_PATH,
     };
     for (const char* f : files) {
         if (p.equalsIgnoreCase(f) || p.equalsIgnoreCase(String(f) + ".tmp")) return true;   // + writeJsonAtomic()'s temp file
     }
-    for (const char* d : { FS_IMAGE_DIR, FS_OLD_PHOTO_DIR, FS_UPDATE_DIR, FS_CUSTOM_DIR, FS_LOG_DIR }) {
+    for (const char* d : { FS_IMAGE_DIR, FS_UPDATE_DIR, FS_CUSTOM_DIR, FS_LOG_DIR }) {
         if (p.equalsIgnoreCase(d) || p.startsWith(String(d) + "/")) return true;
     }
     return false;
@@ -433,8 +461,48 @@ static constexpr IntRange FONT_WIDTH_SCALE_RANGE = { 50, 200 };
 // reminder of any event (+7 days, Calendar.cpp) - an unlimited one made the
 // clock download, keep and search a whole year or more (docs/limits.md).
 static constexpr IntRange EVENT_WARN_DAYS_RANGE = { 0, 30 };
+// An event's "your own" icon: one emoji, or up to this many letters/signs
+// (2026-11-10, the user). The page draws it into a picture the clock shows
+// (PersonalEvent::iconImage); more would not fit the icon's square-ish room.
+static constexpr int EVENT_ICON_MAX_CHARS = 3;
+// Time servers (2026-11-13): this many in the settings, each a host name or IPv4
+// address of at most this many characters; at least one must be set.
+static constexpr int NTP_SERVER_SLOTS     = 3;
+static constexpr int NTP_SERVER_MAX_CHARS = 63;
+// Texts typed in (2026-11-13), in bytes of UTF-8: a Hebrew letter is 2, an emoji
+// 4 - what the clock stores. A longer one typed or imported is refused, never cut
+// (until then strlcpy cut it silently, possibly inside a letter). One already in
+// the clock's files that is longer is kept as far as its field holds and said in
+// the page until changed. All texts and their limits: Storage::configTextProblems()
+// / eventProblems(). The page stops typing at the limit (/api/limits "textBytes").
+static constexpr int EVENT_NAME_MAX_BYTES    = 127;   // ~63 Hebrew letters
+static constexpr int SEPARATOR_MAX_BYTES     = 15;    // between slides in scroll mode (settings import only)
+// Wi-Fi: a network name is at most 32 bytes (802.11). A password is the home
+// network's business - no minimum (open networks have none, old WEP ones 5 or 13);
+// at most 64, all the Wi-Fi driver takes (STA.cpp: 63 letters or a 64-digit key).
+static constexpr int WIFI_SSID_MAX_BYTES     = 32;
+static constexpr int WIFI_PASSWORD_MAX_CHARS = 64;
+// The clock's OWN Wi-Fi password (Settings > Change, 2026-11-15): WPA2's passphrase,
+// 8 to 63 characters, plain ASCII only (32..126) - phones type it, and the radio
+// refuses anything else (no own Wi-Fi at all). Storage::apPasswordProblem().
+static constexpr int AP_PASSWORD_MIN_CHARS   = 8;
+static constexpr int AP_PASSWORD_MAX_CHARS   = 63;
+static_assert(sizeof(AP_PASSWORD_DEFAULT) == 1 || (sizeof(AP_PASSWORD_DEFAULT) - 1 >= AP_PASSWORD_MIN_CHARS &&
+              sizeof(AP_PASSWORD_DEFAULT) - 1 <= AP_PASSWORD_MAX_CHARS),
+              "the clock's own Wi-Fi needs a password of 8 to 63 characters (or \"\": its own)");
+static_assert(AP_OWN_PASSWORD_CHARS >= AP_PASSWORD_MIN_CHARS && AP_OWN_PASSWORD_CHARS <= AP_PASSWORD_MAX_CHARS, "a made password must be a valid one");
+// The clock's name is also its own Wi-Fi's name (an SSID) and its .local name;
+// only letters and digits are kept (StringTools::normalize), 1 byte each.
+static constexpr int PROJECT_NAME_MAX_CHARS  = WIFI_SSID_MAX_BYTES;
 // Years an event's date may have: the same span in both calendars (5560 =
-// 1799/1800, 5999 = 2238/2239 - the last year written with ה׳).
+// 1799/1800, 5999 = 2238/2239). Why it ends at 2239: 5999 is the last Hebrew
+// year of the current thousand, written ה׳תתקצ״ט; Rosh Hashana of autumn 2239
+// starts 6000, written with ו׳. The event editor assumes every Hebrew date is
+// in the ה׳ thousand - a year typed without it ("תשפ״ז", "787") becomes 5787,
+// and only ה׳ years are accepted (index.html parseHebrewYear()). Our own little
+// Y2K bug, due in about 200 years; whoever is still running this clock then
+// gets to fix it. Only events are limited: the clock's own date writes 6000+
+// correctly (JewishDateEngine, "ו׳") and its time was checked up to 2299.
 static constexpr IntRange EVENT_GREG_YEAR_RANGE = { 1800, 2239 };
 static constexpr IntRange EVENT_HEB_YEAR_RANGE  = { 5560, 5999 };
 // Debug time: only years the clock was checked at (CLAUDE.md "Time is 64-bit").
@@ -502,6 +570,10 @@ struct PersonalEvent {
     int   jDay, jMonth, jYear;   // jMonth: 1=Tishrei…13=Adar II; jYear 0 = every year
     char  icon[32];              // Display icon / emoji
     char  image[12];             // picture shown instead of the icon: ImageLibrary id, "" = none
+    // The icon drawn as a picture, when the clock's font can't draw it (an
+    // emoji typed as "your own" icon; 2026-11-10): made by the page, an
+    // ImageLibrary id. "" = the icon is drawn as text, or is a built-in one.
+    char  iconImage[12];
     char  type[32];              // birthday, wedding, yahrzeit, other
 
     int   warningDays;           // 0 = no early warning; >0 show days before
@@ -530,6 +602,7 @@ struct Place {
     bool  confirmed;        // accepted or chosen by the user (else: as looked up)
     char  city[48];
     char  country[48];
+    char  countryCode[4];   // ISO 3166-1 alpha-2 lowercase ("il"), from ip-api; "" = unknown
     float lat, lon;
     char  tzid[48];         // IANA zone name ("Europe/London")
     char  tzPOSIX[64];      // its rule, from FS_TZ_TABLE; "" = not in the table
@@ -545,8 +618,8 @@ struct AppConfig {
     // as always. Networks 2-3: extraWifi[], keys "wifiSSID2"/"wifiPassword2"
     // etc. Use wifiSsidAt()/wifiPasswordAt() (below) to go through all three.
     char     wifiSSID[64];
-    char     wifiPassword[64];       // Plaintext in RAM; encrypted on flash/backup
-    struct { char ssid[64]; char password[64]; } extraWifi[WIFI_NETWORKS - 1];
+    char     wifiPassword[WIFI_PASSWORD_MAX_CHARS + 1];   // Plaintext in RAM; encrypted on flash/backup
+    struct { char ssid[64]; char password[WIFI_PASSWORD_MAX_CHARS + 1]; } extraWifi[WIFI_NETWORKS - 1];
     int8_t   wifiLastNetwork;        // the one connected last (0..2), tried first; -1 = none yet
     Place    places[WIFI_NETWORKS];  // where each network is (see Place)
 
@@ -562,8 +635,8 @@ struct AppConfig {
 
     // -- Time --
     bool     use24Hour;
-    char     ntpServers[4][64];
-    int      ntpServerCount;
+    char     ntpServers[NTP_SERVER_SLOTS][NTP_SERVER_MAX_CHARS + 1];   // "" = slot not used
+    int      ntpServerCount;   // always NTP_SERVER_SLOTS since 2026-11-13 (empty slots allowed)
     bool     manualTimeSet;
 
     // -- Language --
@@ -632,7 +705,24 @@ struct AppConfig {
     // (seconds since 1970) it goes back to "info" - kept across restarts.
     // 0 = no end ("always", or nothing timed).
     int64_t  logLevelUntil;
+    // Its own Wi-Fi's password (WiFiManager::apPassword()): made once - the compiled-in
+    // AP_PASSWORD_DEFAULT, else at random - then kept; Settings' Change replaces it.
+    char     apPassword[AP_PASSWORD_MAX_CHARS + 1];
+    // New versions from the internet (OnlineUpdate.h): installed at night by themselves
+    // when on; updateFeed "" = UPDATE_FEED_URL (another feed: tests only, not on the page).
+    bool     autoUpdate;
+    char     updateFeed[160];
+    // The public key update packages are checked with (UpdateKeyState.h): hex of its DER,
+    // "" = none (cleared in Settings: the next update is not validated); written by each
+    // firmware the first time it runs (updateKeyBy = that version).
+    char     updateKey[200];
+    char     updateKeyBy[48];
 };
+static_assert(sizeof(AP_PASSWORD_DEFAULT) <= sizeof(AppConfig::apPassword), "AP_PASSWORD_DEFAULT must fit the setting it is copied into");
+
+static_assert(sizeof(PersonalEvent::name) > EVENT_NAME_MAX_BYTES && sizeof(AppConfig::messageSeparator) > SEPARATOR_MAX_BYTES &&
+              sizeof(AppConfig::wifiSSID) > WIFI_SSID_MAX_BYTES && sizeof(AppConfig::wifiPassword) > WIFI_PASSWORD_MAX_CHARS &&
+              sizeof(AppConfig::projectName) > PROJECT_NAME_MAX_CHARS, "a text limit doesn't fit its field");
 
 // Known Wi-Fi network i (0 .. WIFI_NETWORKS-1); "" = slot empty.
 inline char* wifiSsidAt(AppConfig& c, int i)     { return i == 0 ? c.wifiSSID : c.extraWifi[i - 1].ssid; }

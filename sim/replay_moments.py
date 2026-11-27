@@ -46,29 +46,36 @@ def main():
         moments.EXE = Path(args.exe)
     base, summary = WORK / "fs", []
     totals = {"OK": 0, "EXPECTED": 0, "MISMATCH": 0}
-    for name, when in MOMENTS:
-        if args.only and not any(o in name for o in args.only):
-            continue
-        for outdir, w in setting_dirs(name):
-            fs = OUT / name / ("replay_fs_w%d" % w)
-            make_fs(base, fs, w)
-            rows, _ = run_sim_match(fs, outdir, sim_epoch(fs, when), BOOT_TO_CAPTURE_S + 120)
-            same = [r for r in rows if r[1] == "SAME"]
-            diff = [r for r in rows if r[1] != "SAME"]
-            allowed = [r for r in diff if any(c in r[5] for c in args.expect_changed)]
-            # A flame's few pixels (cake, candles) are the animation's phase, not a fault (sim/README.md).
-            flame = [r for r in diff if r not in allowed and any(p in r[5] for p in ANIMATED)
-                     and r[2].isdigit() and int(r[2]) <= FLAME_MAX_PX]
-            bad = [r for r in diff if r not in allowed and r not in flame]
-            verdict = "MISMATCH" if bad else ("EXPECTED" if allowed else "OK")
-            totals[verdict] += 1
-            line = "%s setting %d\t%s\t%d/%d identical%s%s%s" % (
-                name, w, verdict, len(same), len(rows),
-                ("\tflame phase: %d" % len(flame)) if flame else "",
-                ("\tchanged as expected: %d" % len(allowed)) if allowed else "",
-                ("\tdiffer: %s" % ["%s %s px %s" % (r[0], r[2], r[5]) for r in bad]) if bad else "")
-            (outdir / "replay.txt").write_text(line + "\n", encoding="utf-8")
-            summary.append(line); print(line, flush=True)
+    todo = [(name, when, outdir, w) for name, when in MOMENTS if not args.only or any(o in name for o in args.only)
+            for outdir, w in setting_dirs(name)]
+
+    def one(item):   # each moment in its own folder - six at a time (2026-11-11; 5 min one by one)
+        name, when, outdir, w = item
+        fs = OUT / name / ("replay_fs_w%d" % w)
+        make_fs(base, fs, w)
+        rows, _ = run_sim_match(fs, outdir, sim_epoch(fs, when), BOOT_TO_CAPTURE_S + 120)
+        return rows
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(6) as pool:
+        all_rows = list(pool.map(one, todo))
+    for (name, when, outdir, w), rows in zip(todo, all_rows):
+        same = [r for r in rows if r[1] == "SAME"]
+        diff = [r for r in rows if r[1] != "SAME"]
+        allowed = [r for r in diff if any(c in r[5] for c in args.expect_changed)]
+        # A flame's few pixels (cake, candles) are the animation's phase, not a fault (sim/README.md).
+        flame = [r for r in diff if r not in allowed and any(p in r[5] for p in ANIMATED)
+                 and r[2].isdigit() and int(r[2]) <= FLAME_MAX_PX]
+        bad = [r for r in diff if r not in allowed and r not in flame]
+        verdict = "MISMATCH" if bad else ("EXPECTED" if allowed else "OK")
+        totals[verdict] += 1
+        line = "%s setting %d\t%s\t%d/%d identical%s%s%s" % (
+            name, w, verdict, len(same), len(rows),
+            ("\tflame phase: %d" % len(flame)) if flame else "",
+            ("\tchanged as expected: %d" % len(allowed)) if allowed else "",
+            ("\tdiffer: %s" % ["%s %s px %s" % (r[0], r[2], r[5]) for r in bad]) if bad else "")
+        (outdir / "replay.txt").write_text(line + "\n", encoding="utf-8")
+        summary.append(line); print(line, flush=True)
     summary.append("== %d OK, %d with only the expected changes, %d MISMATCH ==" % (
         totals["OK"], totals["EXPECTED"], totals["MISMATCH"]))
     print(summary[-1])

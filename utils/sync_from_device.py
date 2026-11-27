@@ -16,7 +16,6 @@ post: waits for the clock to come back and notes "Data flash complete".
 import argparse
 import datetime
 import json
-import os
 import shutil
 import sys
 import time
@@ -100,21 +99,13 @@ def pre():
     else:
         (data / "log" / "diagnostic_log.old.txt").unlink(missing_ok=True)
 
-    # Event pictures: Data/images (or, from older firmware, Data/photos).
-    shutil.rmtree(data / "photos", ignore_errors=True)
+    # Event pictures: Data/images (the picture library, since 2026-10-21; the move of the
+    # older per-event photos was taken out of the firmware 2026-11-17).
     emptied(data / "images")
-    try:
-        images = json.loads(get("/api/images/list", 60).decode("utf-8"))
-        for im in images:
-            (data / "images" / (im["id"] + ".bmp")).write_bytes(get("/api/images/get?id=" + im["id"], 30))
-        print("pictures copied:", len(images))
-    except urllib.error.HTTPError:   # firmware before the picture library
-        listed = json.loads(get("/api/events/list", 60).decode("utf-8"))
-        photos = [e["id"] for e in listed if e.get("photo")]
-        (data / "photos").mkdir()
-        for pid in photos:
-            (data / "photos" / (pid + ".bmp")).write_bytes(get("/api/events/photo?id=" + pid, 30))
-        print("photos copied (old firmware):", len(photos))
+    images = json.loads(get("/api/images/list", 60).decode("utf-8"))
+    for im in images:
+        (data / "images" / (im["id"] + ".bmp")).write_bytes(get("/api/images/get?id=" + im["id"], 30))
+    print("pictures copied:", len(images))
 
     # The clock's own pictures the family replaced: Data/custom.
     emptied(data / "custom")

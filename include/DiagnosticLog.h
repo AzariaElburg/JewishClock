@@ -40,7 +40,7 @@ namespace DiagnosticLog {
     // reply is normal, not news).
     struct Streak {
         uint32_t after  = 1;
-        uint32_t failed = 0;
+        uint64_t failed = 0;   // 64-bit: a retry every 5 s fills 32 bits in 680 years
         void fail(const char* category, const char* what, const char* detail);
         void ok(const char* category, const char* what);
     };
@@ -56,12 +56,13 @@ namespace DiagnosticLog {
     void sendTo(AsyncWebServerRequest* req, bool old = false);
 
     // Lines wait and are written together while the screen stands still, by
-    // loop() (DiagnosticLog.cpp, s_pending); flushNow() at once. A restart or crash keeps waiting
+    // loop() (DiagnosticLog.cpp, s_pending). A restart or crash keeps waiting
     // lines (begin() writes them).
     void loop();
-    void flushNow();
     // Drops the waiting lines (factory reset: the new log starts empty).
     void discardPending();
+    // Writes every waiting line now - before a restart the clock makes itself (Restart.h).
+    void flushNow();
 
     // Batch writes to flash since boot, and how long they took - for
     // /api/status. Written from the main loop, the screen waits for them.

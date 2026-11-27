@@ -35,6 +35,7 @@
 // current, for sim/viewer.py.
 // =============================================================================
 
+#include "Tunables.h"
 #include <Arduino.h>
 #include <string>
 #include <vector>
@@ -53,6 +54,7 @@
 #include "Font.h"
 #include "OnScreenElement.h"
 #include "sim_platform.h"
+#include "Texts.h"
 
 namespace stdfs = std::filesystem;
 
@@ -181,7 +183,11 @@ static void setupLikeTheClock() {   // src/main.cpp setup(), minus hardware
     DisplayManager::setScrollSpeed(g_cfg.scrollSpeed);
     fontSetSpacing((uint8_t)g_cfg.fontCharGapPx, (uint8_t)g_cfg.fontWordGapPx);
     fontSetWidthScale((uint8_t)g_cfg.fontWidthScalePct);
-    NTPManager::begin(g_cfg.ntpServerCount > 0 ? g_cfg.ntpServers[0] : NTP_SERVER_1, g_cfg.tzPOSIX);
+    {
+        const char* ntp[NTP_SERVER_SLOTS];
+        for (int i = 0; i < NTP_SERVER_SLOTS; i++) ntp[i] = g_cfg.ntpServers[i];
+        NTPManager::begin(ntp, NTP_SERVER_SLOTS, g_cfg.tzPOSIX);   // as main.cpp
+    }
     Calendar::begin(g_cfg);
     MessageAggregator::begin(g_cfg, g_events);
     WiFiManager::begin(g_cfg);
@@ -196,13 +202,13 @@ static long g_demoAtMs = -1;   // --demo-at: press the web page's Demo button at
 static int  g_calibration = 0; // --calibration: 0 off, 1 content, 2 pattern
 static bool g_everyMessage = false; // --every-message
 static std::string g_frameDiffPath; // --frame-diff FILE
-static const unsigned long BOOT_OVERLAY_MS = 3UL * 60UL * 1000UL;   // = src/main.cpp's (keep in step)
 static void loopLikeTheClock() {    // src/main.cpp loop(), minus hardware
+    NTPManager::beginPass();
     NTPManager::loop();
     WiFiManager::loop();
     Location::loop(g_cfg);
     bool hasTime = NTPManager::isSynced() || Calendar::getToday().hYear != 0;
-    bool showOverlay = (millis() < BOOT_OVERLAY_MS) || (!hasTime && WiFiManager::isApActive());
+    bool showOverlay = (millis() < MessageAggregator::BOOT_OVERLAY_MS) || (!hasTime && WiFiManager::isApActive());
     if (g_demoAtMs >= 0 && (long)millis() >= g_demoAtMs) { MessageAggregator::requestDemo(true); g_demoAtMs = -1; }
     Calendar::update(g_cfg, g_events);
     Sim::waitForTasks();             // the download task is idle, or asleep until its answer is due
@@ -215,6 +221,7 @@ static void loopLikeTheClock() {    // src/main.cpp loop(), minus hardware
     }
     DisplayManager::update(g_cfg);
     Storage::loop(g_cfg);
+    NTPManager::endPass();
     Sim::advanceMillis(STEP_MS);
 }
 
@@ -269,6 +276,7 @@ int main(int argc, char** argv) {
         }
         else if (a == "--demo-at") g_demoAtMs = (long)(atof(next().c_str()) * 1000);
         else if (a == "--every-message") g_everyMessage = true;
+        else if (a == "--ntp-silent-hours") Sim::ntpSilentMs = (int64_t)(atof(next().c_str()) * 3600000.0);
         else if (a == "--frame-diff") g_frameDiffPath = next();
         else if (a == "--measure") measureFile = next();
         else if (a == "--setup-mode") { extern bool g_simSetupMode; g_simSetupMode = true; }
@@ -276,6 +284,31 @@ int main(int argc, char** argv) {
             std::string m = next();
             if (m == "content") g_calibration = 1; else if (m == "pattern") g_calibration = 2;
             else { fprintf(stderr, "--calibration: content or pattern\n"); return 2; }
+        }
+        else if (a == "--down") {   // "hebcal.com@60-7200": downloads whose address contains the text fail
+            // (5 s connect timeout) from 60 s to 7200 s after power-on (simulated); without @: all along.
+            // Each download is then listed on stderr: "download <millis> ok|down <url>" (sim/test_retry.py).
+            static std::string text; static unsigned long fromMs = 0, untilMs = ~0UL;
+            std::string v = next();
+            size_t at = v.find('@');
+            text = v.substr(0, at);
+            if (at != std::string::npos) {
+                double f = 0, u = 0;
+                if (sscanf(v.c_str() + at + 1, "%lf-%lf", &f, &u) != 2) { fprintf(stderr, "--down: TEXT[@FROM-UNTIL seconds]\n"); return 2; }
+                fromMs = (unsigned long)(f * 1000); untilMs = (unsigned long)(u * 1000);
+            }
+            Sim::urlBlocked = [](const std::string& url) {
+                unsigned long t = millis();
+                return url.find(text) != std::string::npos && t >= fromMs && t < untilMs;
+            };
+        }
+        else if (a == "--texts") {   // the screen's system messages (Texts.h), as /api/texts gives them
+            JsonDocument d; Texts::toJson(d);
+            std::vector<char> buf(measureJson(d) + 1); serializeJson(d, buf.data(), buf.size()); puts(buf.data()); return 0;   // sized to the answer: a fixed buffer cut the growing list off
+        }
+        else if (a == "--tunables") {   // the tunables tests depend on (Tunables.h), as /api/tunables gives them
+            JsonDocument d; Tunables::toJson(d);
+            std::vector<char> buf(measureJson(d) + 1); serializeJson(d, buf.data(), buf.size()); puts(buf.data()); return 0;   // sized to the answer: a fixed buffer cut the growing list off
         }
         else if (a == "--instant-boot") Sim::setupTime = Sim::wifiUp = Sim::ntpAfterWifi = Sim::netMain = Sim::netZmanim = Sim::netGeo = {0, 0};
         else { fprintf(stderr, "unknown option %s\n", a.c_str()); return 2; }
